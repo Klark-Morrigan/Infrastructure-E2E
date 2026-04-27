@@ -4,9 +4,9 @@
 
 - [Step 1 - Repo skeleton + GitHub App setup](#step-1---repo-skeleton--github-app-setup)
 - [Step 2 - Invoke-GitHubApi in Infrastructure-Common](#step-2---invoke-githubapi-in-infrastructure-common)
-- [Step 3 - Migrate Infrastructure-GitHubRunners to Invoke-GitHubApi](#step-3---migrate-infrastructure-githubrunners-to-invoke-githubapi)
-- [Step 4 - GitHub App authentication in Infrastructure-Common](#step-4---github-app-authentication-in-infrastructure-common)
-- [Step 5 - Deployments API in Infrastructure-Common](#step-5---deployments-api-in-infrastructure-common)
+- [Step 3 - GitHub App authentication in Infrastructure-Common](#step-3---github-app-authentication-in-infrastructure-common)
+- [Step 4 - Deployments API in Infrastructure-Common](#step-4---deployments-api-in-infrastructure-common)
+- [Step 5 - Migrate Infrastructure-GitHubRunners to Invoke-GitHubApi](#step-5---migrate-infrastructure-githubrunners-to-invoke-githubapi)
 - [Step 6 - Polling agent](#step-6---polling-agent)
 - [Step 7 - GitHub Actions workflow](#step-7---github-actions-workflow)
 - [Step 8 - VM provisioning E2E test](#step-8---vm-provisioning-e2e-test)
@@ -46,7 +46,7 @@ docs/
 GitHub App registration is a one-time manual step that must happen
 before any code can authenticate - documenting it here ensures it is
 not skipped. GitHub API functions are not scaffolded here because they
-live in `Infrastructure-Common` (steps 2, 4, 5).
+live in `Infrastructure-Common` (steps 2, 3, 4).
 
 **GitHub App registration (manual, one-time):**
 1. Create app at `github.com/settings/apps/new`
@@ -123,7 +123,7 @@ Sets `Authorization: Bearer`, `User-Agent: Infrastructure`, and
 `Invoke-RestMethod` response.
 
 Update `Infrastructure.Common.psm1` to dot-source the new function.
-The `.psd1` version and `FunctionsToExport` are updated once in step 5
+The `.psd1` version and `FunctionsToExport` are updated once in step 4
 when all Common additions are complete.
 
 **Why:** Centralizing the GitHub HTTP call in Common gives all
@@ -145,7 +145,7 @@ graph TD
         GHA["Invoke-GitHubApi.ps1"]
     end
 
-    subgraph Callers["Callers (steps 3+)"]
+    subgraph Callers["Callers (steps 5+)"]
         GHR["Infrastructure-GitHubRunners"]
         E2E["Infrastructure-E2E"]
     end
@@ -156,7 +156,114 @@ graph TD
 
 ---
 
-## Step 3 - Migrate Infrastructure-GitHubRunners to Invoke-GitHubApi
+## Step 3 - GitHub App authentication in Infrastructure-Common
+
+**What:** New function
+`Infrastructure.Common\Public\Get-GitHubAppToken.ps1` - given app ID,
+installation ID, and private key path, returns a short-lived
+installation access token.
+
+Steps:
+1. Build JWT header + payload (`iat`, `exp`, `iss`=appId), sign with
+   RS256 using the private key (.pem)
+2. Call `Invoke-GitHubApi` with the JWT as Bearer token:
+   `POST /app/installations/{installationId}/access_tokens`
+3. Return `token` and `expires_at` from the response
+
+Update `Infrastructure.Common.psm1` to dot-source the new function.
+The `.psd1` version and `FunctionsToExport` are updated in step 4.
+
+**Why:** Authentication is cross-cutting - both the polling agent and
+any infrastructure repo that needs to call the GitHub API without a PAT
+will use this. Implemented on top of `Invoke-GitHubApi` so the HTTP
+concerns stay in one place.
+
+**Tests:** Unit - assert JWT claims structure and RS256 signing with a
+test key; assert `Invoke-GitHubApi` is called with the correct endpoint
+and JWT as Bearer. Integration (tagged, skipped in CI) - assert a real
+token is returned from GitHub.
+
+**README update:** Add `Get-GitHubAppToken` to the Infrastructure-Common
+function reference.
+
+```mermaid
+sequenceDiagram
+    participant C as caller
+    participant F as Get-GitHubAppToken.ps1
+    participant G as Invoke-GitHubApi.ps1
+    participant GH as GitHub API
+
+    C->>F: appId, installationId, privateKeyPath
+    F->>F: build + sign JWT (RS256)
+    F->>G: POST /app/installations/{id}/access_tokens (Bearer JWT)
+    G->>GH: request
+    GH-->>G: { token, expires_at }
+    G-->>F: response
+    F-->>C: token, expires_at
+```
+
+---
+
+## Step 4 - Deployments API in Infrastructure-Common
+
+**Version bump:** `1.2.1` -> `1.3.1`
+
+**What:** Two new functions:
+
+- `Infrastructure.Common\Public\Get-PendingDeployment.ps1` - calls
+  `GET /repos/{owner}/{repo}/deployments?environment=e2e-workstation`
+  via `Invoke-GitHubApi`, filters to entries with no terminal status
+  (`success`, `failure`, `error`, `inactive`), returns the oldest
+  pending one or `$null`
+- `Infrastructure.Common\Public\Set-DeploymentStatus.ps1` - calls
+  `POST /repos/{owner}/{repo}/deployments/{id}/statuses` via
+  `Invoke-GitHubApi` with state, description, and optional log URL
+
+Update `Infrastructure.Common.psm1` to dot-source both new functions.
+Bump `ModuleVersion` to `1.3.1` in the `.psd1` and add all four new
+functions to `FunctionsToExport`:
+`Invoke-GitHubApi`, `Get-GitHubAppToken`, `Get-PendingDeployment`,
+`Set-DeploymentStatus`.
+
+**Why:** Deployment signaling is the coordination mechanism between
+the GitHub Actions workflow and the polling agent. Placing it in Common
+keeps `Infrastructure-E2E` free of raw HTTP concerns and makes the
+functions available to any future repo that needs deployment-based
+signaling. The version bump is consolidated here so only one publish
+is needed for all four new functions.
+
+**Tests:** Unit - mock `Invoke-GitHubApi`; assert filtering logic in
+`Get-PendingDeployment`; assert request body shape in
+`Set-DeploymentStatus`.
+
+**README update:** Add `Get-PendingDeployment` and
+`Set-DeploymentStatus` to the Infrastructure-Common function reference.
+
+```mermaid
+sequenceDiagram
+    participant AG as polling agent
+    participant GP as Get-PendingDeployment
+    participant SD as Set-DeploymentStatus
+    participant G as Invoke-GitHubApi
+    participant GH as GitHub API
+
+    AG->>GP: token, owner, repo
+    GP->>G: GET /repos/.../deployments?environment=e2e-workstation
+    G->>GH: request
+    GH-->>G: deployment list
+    G-->>GP: response
+    GP-->>AG: oldest pending deployment (or null)
+
+    AG->>SD: token, owner, repo, deploymentId, state, description
+    SD->>G: POST /repos/.../deployments/{id}/statuses
+    G->>GH: request
+    GH-->>G: ok
+    G-->>SD: response
+```
+
+---
+
+## Step 5 - Migrate Infrastructure-GitHubRunners to Invoke-GitHubApi
 
 **What:** Replace `Invoke-GitHubRunnersApi.ps1` with calls to
 `Invoke-GitHubApi` from `Infrastructure-Common`. Rename `-Pat` to
@@ -170,13 +277,15 @@ Changes:
    `Remove-GitHubRunner.ps1`, `Resolve-RunnerVersion.ps1`) to call
    `Invoke-GitHubApi` directly with a full `-Uri`
 3. Rename `-Pat` to `-Token` in all function signatures and call sites
-4. Update `setup-secrets.ps1` (or wherever `Invoke-ModuleInstall` is
-   called) to require minimum version `1.3.1`
+4. Update `setup-secrets.ps1`, `register-runners.ps1`, and
+   `deregister-runners.ps1` to require minimum version `1.3.1`
 5. Update all tests that reference `-Pat` or `Invoke-GitHubRunnersApi`
 
 **Why:** Removes the duplicate HTTP caller and aligns the repo with the
 Common module. Renaming `-Pat` to `-Token` prepares the functions to
 accept GitHub App tokens in step 10 without a further signature change.
+This step must follow the Common publish so the repo can install the
+version it requires.
 
 **Tests:** Existing unit tests updated - mock `Invoke-GitHubApi`
 instead of `Invoke-GitHubRunnersApi`; assert `-Token` parameter is
@@ -206,112 +315,6 @@ graph TD
         RGR2 --> NEW
         RRV2 --> NEW
     end
-```
-
----
-
-## Step 4 - GitHub App authentication in Infrastructure-Common
-
-**What:** New function
-`Infrastructure.Common\Public\Get-GitHubAppToken.ps1` - given app ID,
-installation ID, and private key path, returns a short-lived
-installation access token.
-
-Steps:
-1. Build JWT header + payload (`iat`, `exp`, `iss`=appId), sign with
-   RS256 using the private key (.pem)
-2. Call `Invoke-GitHubApi` with the JWT as Bearer token:
-   `POST /app/installations/{installationId}/access_tokens`
-3. Return `token` and `expires_at` from the response
-
-Update `Infrastructure.Common.psm1` to dot-source the new function.
-The `.psd1` version and `FunctionsToExport` are updated in step 5.
-
-**Why:** Authentication is cross-cutting - both the polling agent and
-(in future) any infrastructure repo that needs to call the GitHub API
-without a PAT will use this. Implemented on top of `Invoke-GitHubApi`
-so the HTTP concerns stay in one place.
-
-**Tests:** Unit - assert JWT claims structure and RS256 signing with a
-test key; assert `Invoke-GitHubApi` is called with the correct endpoint
-and JWT as Bearer. Integration (tagged, skipped in CI) - assert a real
-token is returned from GitHub.
-
-**README update:** Add `Get-GitHubAppToken` to the Infrastructure-Common
-function reference.
-
-```mermaid
-sequenceDiagram
-    participant C as caller
-    participant F as Get-GitHubAppToken.ps1
-    participant G as Invoke-GitHubApi.ps1
-    participant GH as GitHub API
-
-    C->>F: appId, installationId, privateKeyPath
-    F->>F: build + sign JWT (RS256)
-    F->>G: POST /app/installations/{id}/access_tokens (Bearer JWT)
-    G->>GH: request
-    GH-->>G: { token, expires_at }
-    G-->>F: response
-    F-->>C: token, expires_at
-```
-
----
-
-## Step 5 - Deployments API in Infrastructure-Common
-
-**Version bump:** `1.2.1` - `1.3.1`
-
-**What:** Two new functions:
-
-- `Infrastructure.Common\Public\Get-PendingDeployment.ps1` - calls
-  `GET /repos/{owner}/{repo}/deployments?environment=e2e-workstation`
-  via `Invoke-GitHubApi`, filters to entries with no terminal status
-  (`success`, `failure`, `error`, `inactive`), returns the oldest
-  pending one or `$null`
-- `Infrastructure.Common\Public\Set-DeploymentStatus.ps1` - calls
-  `POST /repos/{owner}/{repo}/deployments/{id}/statuses` via
-  `Invoke-GitHubApi` with state, description, and optional log URL
-
-Update `Infrastructure.Common.psm1` to dot-source both new functions.
-Bump `ModuleVersion` to `1.3.1` in the `.psd1` and add all four new
-functions to `FunctionsToExport`:
-`Invoke-GitHubApi`, `Get-GitHubAppToken`, `Get-PendingDeployment`,
-`Set-DeploymentStatus`.
-
-**Why:** Deployment signaling is the coordination mechanism between
-the GitHub Actions workflow and the polling agent. Placing it in Common
-keeps `Infrastructure-E2E` free of raw HTTP concerns and makes the
-functions available to any future repo that needs deployment-based
-signaling.
-
-**Tests:** Unit - mock `Invoke-GitHubApi`; assert filtering logic in
-`Get-PendingDeployment`; assert request body shape in
-`Set-DeploymentStatus`.
-
-**README update:** Add `Get-PendingDeployment` and
-`Set-DeploymentStatus` to the Infrastructure-Common function reference.
-
-```mermaid
-sequenceDiagram
-    participant AG as polling agent
-    participant GP as Get-PendingDeployment
-    participant SD as Set-DeploymentStatus
-    participant G as Invoke-GitHubApi
-    participant GH as GitHub API
-
-    AG->>GP: token, owner, repo
-    GP->>G: GET /repos/.../deployments?environment=e2e-workstation
-    G->>GH: request
-    GH-->>G: deployment list
-    G-->>GP: response
-    GP-->>AG: oldest pending deployment (or null)
-
-    AG->>SD: token, owner, repo, deploymentId, state, description
-    SD->>G: POST /repos/.../deployments/{id}/statuses
-    G->>GH: request
-    GH-->>G: ok
-    G-->>SD: response
 ```
 
 ---
@@ -552,7 +555,7 @@ and verification. This is the script the polling agent calls.
 6. Destroy VM via the users layer teardown phase (in `finally` block)
 
 **Prerequisite:** `Infrastructure-GitHubRunners` runner scripts accept
-`-Token` after step 3 - no further change needed here.
+`-Token` after step 5 - no further change needed here.
 
 **Why:** Reuses the verified provisioning and users layers - only the
 runner-specific setup, assertions, and teardown are new here. The full
