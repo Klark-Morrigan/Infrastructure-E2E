@@ -34,12 +34,6 @@ agent/
     runner-lifecycle/
       Invoke-RunnerLifecycleTest.ps1              (placeholder)
   Start-E2EAgent.ps1                             (placeholder)
-Tests/
-  agent/
-    e2e/
-      vm-provisioning/                            (placeholder)
-      vm-users/                                   (placeholder)
-      runner-lifecycle/                           (placeholder)
 docs/
   dev/
     implementation/
@@ -470,8 +464,8 @@ before higher layers are built on top of it. Keeping it separate means
 provisioning failures are immediately identifiable without runner or
 user concerns in the stack trace.
 
-**Tests:** Unit - mock provisioner scripts and SSH check; assert
-destroy runs in `finally` on both success and failure.
+**Tests:** None - the script is thin orchestration; correctness is
+verified by running it.
 
 **README update:** Add test coverage section documenting what the
 provisioning test verifies.
@@ -510,8 +504,8 @@ provisioning layer with user setup verification.
 test passes, the VM and its users are confirmed correct - runner
 registration can rely on both.
 
-**Tests:** Unit - mock provisioner and users scripts; assert user
-assertions are made; assert destroy runs in `finally`.
+**Tests:** None - the script is thin orchestration; correctness is
+verified by running it.
 
 **README update:** Expand test coverage section with users test.
 
@@ -565,8 +559,8 @@ runner-specific setup, assertions, and teardown are new here. The full
 stack always runs since a broken VM or missing user will break runner
 registration regardless of which repo triggered the test.
 
-**Tests:** Unit - mock all external script calls; assert each stage
-is called in order; assert teardown runs on failure at each stage.
+**Tests:** None - the script is thin orchestration; correctness is
+verified by running it.
 
 **README update:** Expand test coverage section with runner lifecycle
 test; add the full end-to-end flow diagram.
