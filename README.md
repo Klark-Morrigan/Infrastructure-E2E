@@ -8,6 +8,7 @@
 - [What this repo does not do](#what-this-repo-does-not-do)
 - [Prerequisites](#prerequisites)
 - [GitHub App setup](#github-app-setup)
+- [How to run the polling agent](#how-to-run-the-polling-agent)
 - [Repo structure](#repo-structure)
 
 ---
@@ -44,7 +45,7 @@ polling agent that receives signals from GitHub Actions workflows.
   - `VmUsers` (owned by `Infrastructure-Vm-Users`)
   - `GitHubRunners` (owned by `Infrastructure-GitHubRunners`)
   - `E2EConfig` (owned by this repo - see [GitHub App setup](#github-app-setup))
-- `Infrastructure.Common` >= `1.3.1` installed from PSGallery
+- `Infrastructure.Common` >= `1.3.3` installed from PSGallery
 
 ---
 
@@ -100,20 +101,62 @@ following GitHub Actions secrets:
 
 ---
 
+## How to run the polling agent
+
+Start the agent on the workstation **before** triggering a workflow run.
+The agent must be running when the workflow creates the deployment so it
+can pick it up and post a status update promptly.
+
+```powershell
+# Run from the repo root (elevated PowerShell on the workstation)
+.\agent\Start-E2EAgent.ps1
+```
+
+Expected console output when a deployment is found and tests pass:
+
+```
+E2E agent started. Polling 'e2e-workstation' in my-org/Infrastructure-E2E.
+Poll interval: 30s   Timeout: 60min
+[10:02:00] No pending deployment. 59min remaining. Waiting 30s ...
+[10:02:30] No pending deployment. 59min remaining. Waiting 30s ...
+Deployment 123 found - running E2E tests ...
+E2E tests passed.
+```
+
+Expected output on test failure (exception from the lifecycle test is
+re-thrown after posting `failure` status):
+
+```
+Deployment 124 found - running E2E tests ...
+E2E tests failed: SSH connection refused - VM did not start
+```
+
+The agent exits cleanly when the timeout is reached with no deployment:
+
+```
+Agent timed out after 60 minutes - no deployment found.
+```
+
+---
+
 ## Repo structure
 
 ```
 .github/
   workflows/
-    e2e.yml                   - E2E workflow (manual, scheduled, cross-repo)
+    e2e.yml                        - E2E workflow (manual, scheduled, cross-repo)
 agent/
-  github/                     - GitHub API functions (added in steps 2-5)
   e2e/
-    vm-provisioning/          - VM provisioning E2E test
-    vm-users/                 - VM users E2E test
-    runner-lifecycle/         - Full runner lifecycle E2E test
-  Start-E2EAgent.ps1          - Polling agent (run manually on workstation)
+    vm-provisioning/
+      Invoke-VmProvisioningTest.ps1  - VM provisioning E2E test (step 8)
+    vm-users/
+      Invoke-VmUsersTest.ps1         - VM users E2E test (step 9)
+    runner-lifecycle/
+      Invoke-RunnerLifecycleTest.ps1 - Full runner lifecycle E2E test (step 10)
+  Start-E2EAgent.ps1               - Polling agent (run manually on workstation)
+Tests/
+  Invoke-E2EAgentLoop.Tests.ps1    - Unit tests for the polling loop
 docs/
   dev/
-    implementation/           - Problem and plan docs per implementation phase
+    implementation/                - Problem and plan docs per implementation phase
 ```
