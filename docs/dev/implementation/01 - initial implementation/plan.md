@@ -180,8 +180,7 @@ concerns stay in one place.
 
 **Tests:** Unit - assert JWT claims structure and RS256 signing with a
 test key; assert `Invoke-GitHubApi` is called with the correct endpoint
-and JWT as Bearer. Integration (tagged, skipped in CI) - assert a real
-token is returned from GitHub.
+and JWT as Bearer.
 
 **README update:** Add `Get-GitHubAppToken` to the Infrastructure-Common
 function reference.
