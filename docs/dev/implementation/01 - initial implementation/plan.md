@@ -9,10 +9,11 @@
 - [Step 5 - Migrate Infrastructure-GitHubRunners to Invoke-GitHubApi](#step-5---migrate-infrastructure-githubrunners-to-invoke-githubapi)
 - [Step 6 - Polling agent](#step-6---polling-agent)
 - [Step 7 - GitHub Actions workflow](#step-7---github-actions-workflow)
-- [Step 8 - VM provisioning E2E test](#step-8---vm-provisioning-e2e-test)
-- [Step 9 - VM users E2E test](#step-9---vm-users-e2e-test)
-- [Step 10 - Runner lifecycle E2E test](#step-10---runner-lifecycle-e2e-test)
-- [Step 11 - Cross-repo trigger workflows](#step-11---cross-repo-trigger-workflows)
+- [Step 8 - Dedicated E2E VmLAN](#step-8---dedicated-e2e-vmlan)
+- [Step 9 - VM provisioning E2E test](#step-9---vm-provisioning-e2e-test)
+- [Step 10 - VM users E2E test](#step-10---vm-users-e2e-test)
+- [Step 11 - Runner lifecycle E2E test](#step-11---runner-lifecycle-e2e-test)
+- [Step 12 - Cross-repo trigger workflows](#step-12---cross-repo-trigger-workflows)
 
 ---
 
@@ -450,19 +451,99 @@ sequenceDiagram
 
 ---
 
-## Step 8 - VM provisioning E2E test
+## Step 8 - Dedicated E2E VmLAN
+
+**What:** Surface `switchName`, `natName`, and `gateway` as optional fields
+in `VmProvisionerConfig`, then use them in `provision.ps1` and
+`deprovision.ps1` instead of the hardcoded `VmLAN` / `VmLAN-NAT` values.
+
+Changes to `Infrastructure-Vm-Provisioner`:
+1. Add optional `switchName` (default `'VmLAN'`), `natName` (default
+   `'VmLAN-NAT'`) fields to `ConvertFrom-VmConfigJson` - validated and
+   defaulted there so all callers get them for free.
+2. Replace the hardcoded `$switchName = 'VmLAN'` / `$natName = 'VmLAN-NAT'`
+   literals in `provision.ps1` and `deprovision.ps1` with values read from
+   the first VM definition.
+
+Changes to `Infrastructure-E2E`:
+3. Add `switchName = 'E2E-VmLAN'`, `natName = 'E2E-VmLAN-NAT'` to the
+   `$vmEntry` in `Invoke-VmProvisioningSetup`. Use subnet
+   `192.168.101.0/24` (gateway `192.168.101.1`) - distinct from the
+   shared VmLAN (`192.168.100.0/24`) so the two can coexist on the same
+   workstation without address conflict.
+4. Update `Start-VmProvisioningTest.ps1` defaults: `Gateway` ->
+   `192.168.101.1`, `IpAddress` -> `192.168.101.10`.
+5. Update teardown assertion in `Invoke-VmProvisioningTest` to assert
+   `E2E-VmLAN` switch and `E2E-VmLAN-NAT` are gone unconditionally -
+   no guard needed since no other VMs share this switch.
+
+**Why:** The shared `VmLAN` switch may have other VMs attached during a
+test run. Teardown skips network removal in that case, making an
+unconditional network teardown assertion impossible. A dedicated switch
+scoped to the E2E test is always empty after teardown, so the assertion
+is always meaningful. The default values in `ConvertFrom-VmConfigJson`
+preserve full backwards compatibility for existing operator configs that
+omit the new fields.
+
+**Tests:** Unit - update `ConvertFrom-VmConfigJson` tests to cover
+defaulting of the new fields; assert `provision.ps1` and `deprovision.ps1`
+pass the config-sourced names to `Invoke-NetworkSetup` /
+`Invoke-NetworkTeardown`.
+
+**README update:** Add `switchName` and `natName` to the
+`VmProvisionerConfig` field reference in `Infrastructure-Vm-Provisioner`.
+
+```mermaid
+graph TD
+    subgraph Provisioner["Infrastructure-Vm-Provisioner"]
+        CFG["ConvertFrom-VmConfigJson\n(defaults switchName/natName)"]
+        PROV["provision.ps1\n(reads switchName/natName from config)"]
+        DEPROV["deprovision.ps1\n(reads switchName/natName from config)"]
+        NS["Invoke-NetworkSetup -SwitchName"]
+        NT["Invoke-NetworkTeardown -SwitchName"]
+        CFG --> PROV
+        CFG --> DEPROV
+        PROV --> NS
+        DEPROV --> NT
+    end
+
+    subgraph E2E["Infrastructure-E2E"]
+        SETUP["Invoke-VmProvisioningSetup\n(switchName=E2E-VmLAN)"]
+        ASSERT["Teardown assertion\n(E2E-VmLAN gone unconditionally)"]
+    end
+
+    subgraph Network["Hyper-V / Windows networking"]
+        SHARED["VmLAN (192.168.100.0/24)\nshared - unaffected"]
+        E2ELAN["E2E-VmLAN (192.168.101.0/24)\nE2E-only - always torn down"]
+    end
+
+    SETUP -->|writes config| CFG
+    SETUP --> E2ELAN
+    ASSERT --> E2ELAN
+```
+
+---
+
+## Step 9 - VM provisioning E2E test
 
 **What:** `agent/e2e/vm-provisioning/Invoke-VmProvisioningTest.ps1` -
 the first and lowest layer of E2E coverage.
 
-1. Provision Ubuntu VM via `Infrastructure-Vm-Provisioner` scripts
-2. Assert VM is reachable via SSH
-3. Destroy VM (in `finally` block)
+1. Generate a random VM admin password at runtime
+2. Write a test-scoped `VmProvisionerConfig` to the `VmProvisioner` vault
+   (fixed test values for vmName, IP, CPU/RAM/disk; random password)
+3. Provision Ubuntu VM via `Infrastructure-Vm-Provisioner` scripts
+4. Assert VM is reachable via SSH (`hostname` exits 0)
+5. In `finally`: destroy VM, then remove the test `VmProvisionerConfig`
+   from the vault - runs regardless of test outcome
 
 **Why:** Establishes the provisioning layer as a verified baseline
 before higher layers are built on top of it. Keeping it separate means
 provisioning failures are immediately identifiable without runner or
-user concerns in the stack trace.
+user concerns in the stack trace. Generating the VM password at runtime
+and writing it to the vault keeps secrets out of source code and git
+history; the vault entry is removed in `finally` so no credentials
+outlive the test regardless of outcome.
 
 **Tests:** None - the script is thin orchestration; correctness is
 verified by running it.
@@ -474,35 +555,50 @@ provisioning test verifies.
 sequenceDiagram
     participant C as caller
     participant T as Invoke-VmProvisioningTest.ps1
+    participant V as VmProvisioner vault
     participant PROV as Infrastructure-Vm-Provisioner
     participant VM as Ubuntu VM
 
     C->>T: invoke
-    T->>PROV: provision VM
-    PROV-->>T: VM IP
-    T->>VM: SSH - assert reachable
+    T->>T: generate random VM password
+    T->>V: Set-Secret VmProvisionerConfig (test entry)
+    T->>PROV: provision.ps1 (reads vault)
+    PROV-->>T: ok
+    T->>V: Get-Secret VmProvisionerConfig (read IP + creds)
+    V-->>T: vmDef
+    T->>VM: SSH - hostname (assert exit 0)
     VM-->>T: ok
     note over T: finally block - always runs
-    T->>PROV: destroy VM
+    T->>PROV: deprovision.ps1
+    T->>V: Remove-Secret VmProvisionerConfig
     T-->>C: success / throw
 ```
 
 ---
 
-## Step 9 - VM users E2E test
+## Step 10 - VM users E2E test
 
 **What:** `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` - extends the
 provisioning layer with user setup verification.
 
-1. Call `Invoke-VmProvisioningTest` setup phase (provision VM, get IP)
-   - reuses provisioning without duplicating it
-2. Set up users via `Infrastructure-Vm-Users` scripts
-3. Assert expected users and groups exist on the VM via SSH
-4. Destroy VM (in `finally` block)
+1. Write a test-scoped `VmUsersConfig` to the `VmUsers` vault
+   (fixed test users and groups; `vmName` matches the provisioner entry)
+2. Call `Invoke-VmProvisioningSetup` (provisions VM, writes + reads
+   `VmProvisionerConfig`, returns vmDef) - reuses provisioning without
+   duplicating it
+3. Set up users via `Infrastructure-Vm-Users` scripts
+4. Assert expected users and groups exist on the VM via SSH
+5. In `finally`: call `Invoke-VmProvisioningTeardown` (destroys VM,
+   removes `VmProvisionerConfig`), then remove `VmUsersConfig` -
+   runs regardless of test outcome
 
 **Why:** Builds directly on the verified provisioning layer. If this
 test passes, the VM and its users are confirmed correct - runner
-registration can rely on both.
+registration can rely on both. `VmUsersConfig` is written at runtime
+for the same reason as `VmProvisionerConfig` - no test secrets in
+source. The users teardown removes its own vault entry after the
+provisioner teardown removes the VM, preserving the same
+write-on-setup / remove-in-finally contract at every layer.
 
 **Tests:** None - the script is thin orchestration; correctness is
 verified by running it.
@@ -513,43 +609,51 @@ verified by running it.
 sequenceDiagram
     participant C as caller
     participant T as Invoke-VmUsersTest.ps1
-    participant VP as Invoke-VmProvisioningTest.ps1
+    participant UV as VmUsers vault
+    participant VP as Invoke-VmProvisioningSetup/Teardown
     participant USERS as Infrastructure-Vm-Users
     participant VM as Ubuntu VM
 
     C->>T: invoke
-    T->>VP: provision VM (setup phase)
-    VP-->>T: VM IP
-    T->>USERS: setup users (VM IP)
+    T->>UV: Set-Secret VmUsersConfig (test entry)
+    T->>VP: Invoke-VmProvisioningSetup
+    VP-->>T: vmDef (IP + creds)
+    T->>USERS: create-users.ps1 (reads both vaults)
     USERS->>VM: SSH - groups + users + sudoers
     VM-->>USERS: ok
     T->>VM: SSH - assert users + groups exist
     VM-->>T: ok
     note over T: finally block - always runs
-    T->>VP: destroy VM (teardown phase)
+    T->>VP: Invoke-VmProvisioningTeardown
+    T->>UV: Remove-Secret VmUsersConfig
     T-->>C: success / throw
 ```
 
 ---
 
-## Step 10 - Runner lifecycle E2E test
+## Step 11 - Runner lifecycle E2E test
 
 **What:** `agent/e2e/runner-lifecycle/Invoke-RunnerLifecycleTest.ps1` -
 the full E2E test, extending the users layer with runner registration
 and verification. This is the script the polling agent calls.
 
-1. Call `Invoke-VmUsersTest` setup phase (provision VM + users, get IP)
-   - reuses the verified users layer without duplicating it
-2. Register runner via `Infrastructure-GitHubRunners`
-   `register-runners.ps1`, passing the GitHub App token obtained via
-   `Get-GitHubAppToken` (GitHubRunners installation)
-3. Assert runner service is active on the VM via SSH:
+1. Write a test-scoped `GitHubRunnersConfig` to the `GitHubRunners`
+   vault (fixed test runner name, target repo URL)
+2. Call `Invoke-VmUsersSetup` (writes `VmUsersConfig`, provisions VM +
+   users, returns vmDef) - reuses the verified users layer without
+   duplicating it
+3. Obtain a GitHub App token via `Get-GitHubAppToken`
+   (GitHubRunners installation, `actions:write`)
+4. Register runner via `Infrastructure-GitHubRunners`
+   `register-runners.ps1`, passing the token
+5. Assert runner service is active on the VM via SSH:
    `systemctl is-active actions.runner.*`
-4. Assert runner appears online via GitHub API:
+6. Assert runner appears online via GitHub API:
    `GET /repos/{owner}/{repo}/actions/runners` via `Invoke-GitHubApi`
-5. Deregister runner via `Infrastructure-GitHubRunners`
-   `deregister-runners.ps1`
-6. Destroy VM via the users layer teardown phase (in `finally` block)
+7. In `finally`: deregister runner via `deregister-runners.ps1`, call
+   `Invoke-VmUsersTeardown` (destroys VM, removes `VmProvisionerConfig`
+   and `VmUsersConfig`), then remove `GitHubRunnersConfig` - runs
+   regardless of test outcome
 
 **Prerequisite:** `Infrastructure-GitHubRunners` runner scripts accept
 `-Token` after step 5 - no further change needed here.
@@ -558,6 +662,9 @@ and verification. This is the script the polling agent calls.
 runner-specific setup, assertions, and teardown are new here. The full
 stack always runs since a broken VM or missing user will break runner
 registration regardless of which repo triggered the test.
+`GitHubRunnersConfig` is written at runtime for the same reason as the
+lower-layer vault entries. The runner registration token is fetched
+from GitHub at runtime and never stored.
 
 **Tests:** None - the script is thin orchestration; correctness is
 verified by running it.
@@ -569,18 +676,20 @@ test; add the full end-to-end flow diagram.
 sequenceDiagram
     participant AG as Start-E2EAgent.ps1
     participant T as Invoke-RunnerLifecycleTest.ps1
-    participant VU as Invoke-VmUsersTest.ps1
+    participant RV as GitHubRunners vault
+    participant VU as Invoke-VmUsersSetup/Teardown
     participant RUN as Infrastructure-GitHubRunners
     participant VM as Ubuntu VM
     participant GH as GitHub API
 
     AG->>T: invoke (config)
+    T->>RV: Set-Secret GitHubRunnersConfig (test entry)
+    T->>VU: Invoke-VmUsersSetup
+    VU-->>T: vmDef (IP + creds)
     T->>GH: Get-GitHubAppToken (GitHubRunners installation)
     GH-->>T: token
-    T->>VU: provision VM + users (setup phase)
-    VU-->>T: VM IP
 
-    T->>RUN: register-runners (VM IP, token)
+    T->>RUN: register-runners.ps1 (reads vault + token)
     RUN->>GH: get registration token
     GH-->>RUN: token
     RUN->>VM: SSH - install + configure + start runner
@@ -589,18 +698,19 @@ sequenceDiagram
     T->>VM: SSH - systemctl is-active actions.runner.*
     VM-->>T: active
 
-    T->>GH: Invoke-GitHubApi GET /actions/runners - assert runner listed
+    T->>GH: GET /actions/runners - assert runner listed
     GH-->>T: runner found
 
     note over T: finally block - always runs
-    T->>RUN: deregister-runners
-    T->>VU: destroy VM (teardown phase)
+    T->>RUN: deregister-runners.ps1
+    T->>VU: Invoke-VmUsersTeardown
+    T->>RV: Remove-Secret GitHubRunnersConfig
     T-->>AG: success / throw
 ```
 
 ---
 
-## Step 11 - Cross-repo trigger workflows
+## Step 12 - Cross-repo trigger workflows
 
 **What:** Identical `.github/workflows/trigger-e2e.yml` added to each
 of the three upstream repos, triggered on push to master **only when
