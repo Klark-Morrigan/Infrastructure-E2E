@@ -9,6 +9,7 @@
 - [Prerequisites](#prerequisites)
 - [GitHub App setup](#github-app-setup)
 - [How to run the polling agent](#how-to-run-the-polling-agent)
+- [How to trigger](#how-to-trigger)
 - [Repo structure](#repo-structure)
 
 ---
@@ -136,6 +137,43 @@ The agent exits cleanly when the timeout is reached with no deployment:
 ```
 Agent timed out after 60 minutes - no deployment found.
 ```
+
+---
+
+## How to trigger
+
+Always start the polling agent on the workstation **before** triggering
+a run - the agent must be running when the workflow creates the
+deployment.
+
+### Manual
+
+From the GitHub UI: go to **Actions > E2E > Run workflow**.
+
+From the command line:
+
+```bash
+gh workflow run e2e.yml --repo <owner>/Infrastructure-E2E
+```
+
+### Automatic (push to upstream repos)
+
+Any push to `master` in `Infrastructure-Vm-Provisioner`,
+`Infrastructure-Vm-Users`, or `Infrastructure-GitHubRunners` fires a
+`repository_dispatch` event that triggers this workflow automatically
+(added in step 11).
+
+### Reading results
+
+Results appear in two places:
+
+- **Actions tab** - the workflow run shows pass/fail and the poll log
+  with per-tick state transitions.
+- **Deployments UI** (`github.com/<owner>/Infrastructure-E2E/deployments`) -
+  shows the `e2e-workstation` environment with the status posted by the
+  polling agent (`in_progress`, `success`, or `failure`) and any
+  description attached by the agent (e.g. the exception message on
+  failure).
 
 ---
 
