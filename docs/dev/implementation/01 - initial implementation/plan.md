@@ -387,9 +387,8 @@ sequenceDiagram
 
 ## Step 7 - GitHub Actions workflow
 
-**What:** `.github/workflows/e2e.yml` with three triggers:
-`workflow_dispatch` (manual), `schedule` (nightly,
-`cron: '0 2 * * *'`), and `repository_dispatch` with event type
+**What:** `.github/workflows/e2e.yml` with two triggers:
+`workflow_dispatch` (manual) and `repository_dispatch` with event type
 `trigger-e2e` (fired by all three upstream repos on push to master).
 
 Steps:
@@ -405,8 +404,8 @@ Steps:
 (own repo only - sufficient, no cross-repo access needed here).
 
 **Why:** `workflow_dispatch` lets the operator trigger on demand.
-The schedule provides nightly regression coverage. `repository_dispatch`
-enables automatic triggering from any upstream repo on push - the full
+`repository_dispatch` enables automatic triggering from any upstream
+repo on push - the full
 E2E test always runs regardless of which repo changed, since a broken
 VM or missing user will break runner registration just as much as a
 broken runner script. `GITHUB_TOKEN` is sufficient because the
