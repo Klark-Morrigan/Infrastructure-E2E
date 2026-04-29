@@ -65,6 +65,18 @@ function Invoke-E2EAgentLoop {
         [Parameter(Mandatory)]
         [string] $PrivateKeyPath,
 
+        # Absolute path to the Infrastructure-Vm-Provisioner repo root on
+        # the workstation. Passed to the lifecycle test so it can call
+        # provision.ps1 and deprovision.ps1.
+        [Parameter(Mandatory)]
+        [string] $ProvisionerPath,
+
+        # Operator-specific VM config for the E2E test VM. Contains the
+        # workstation-specific values (IP, gateway, paths) that cannot be
+        # hardcoded. Written to the VmProvisioner vault at test startup.
+        [Parameter(Mandatory)]
+        [PSCustomObject] $TestVm,
+
         # GitHub organisation or user that owns the E2E repo.
         [Parameter(Mandatory)]
         [string] $Owner,
@@ -97,9 +109,13 @@ function Invoke-E2EAgentLoop {
         $Deadline = [DateTime]::UtcNow.AddMinutes($TimeoutMinutes)
     }
 
+    # Derive display value from the resolved Deadline so injected deadlines
+    # (e.g. in tests) show accurate output rather than the TimeoutMinutes param.
+    $totalMinutes = [int]($Deadline - [DateTime]::UtcNow).TotalMinutes
+
     Write-Host "E2E agent started. Polling '$Environment' in $Owner/$Repo." `
         -ForegroundColor Cyan
-    Write-Host "Poll interval: ${PollIntervalSeconds}s   Timeout: ${TimeoutMinutes}min" `
+    Write-Host "Poll interval: ${PollIntervalSeconds}s   Timeout: ${totalMinutes}min" `
         -ForegroundColor Cyan
 
     # Acquire the initial deployment token. The token lasts 1 hour; the
@@ -145,6 +161,8 @@ function Invoke-E2EAgentLoop {
                     AppId                 = $AppId
                     RunnersInstallationId = $RunnersInstallationId
                     PrivateKeyPath        = $PrivateKeyPath
+                    ProvisionerPath       = $ProvisionerPath
+                    TestVm                = $TestVm
                 })
 
                 Set-DeploymentStatus `
@@ -182,7 +200,7 @@ function Invoke-E2EAgentLoop {
         Start-Sleep -Seconds $PollIntervalSeconds
     }
 
-    Write-Host "Agent timed out after $TimeoutMinutes minutes - no deployment found." `
+    Write-Host "Agent timed out after $totalMinutes minutes - no deployment found." `
         -ForegroundColor Yellow
 }
 
@@ -194,20 +212,7 @@ function Invoke-E2EAgentLoop {
 
 if ($MyInvocation.InvocationName -ne '.') {
 
-    # Bootstrap Infrastructure.Common - the only install that cannot use
-    # Invoke-ModuleInstall because it IS Invoke-ModuleInstall's module.
-    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 `
-        -Scope CurrentUser -Force -ForceBootstrap | Out-Null
-    $_common = Get-Module -ListAvailable -Name Infrastructure.Common |
-        Sort-Object Version -Descending | Select-Object -First 1
-    if (-not $_common -or $_common.Version -lt [Version]'1.3.3') {
-        Install-Module Infrastructure.Common -Scope CurrentUser -Force
-    }
-    Import-Module Infrastructure.Common -Force -ErrorAction Stop
-
-    Invoke-ModuleInstall -ModuleName 'Infrastructure.Secrets' -MinimumVersion '2.1.0'
-
-    Use-MicrosoftPowerShellSecretStoreProvider
+    . "$PSScriptRoot\Initialize-E2EEnvironment.ps1"
 
     # Dot-source the lifecycle test so Invoke-RunnerLifecycleTest is available
     # to the loop function above. This must happen after Infrastructure.Common
@@ -227,7 +232,17 @@ if ($MyInvocation.InvocationName -ne '.') {
     #   "Repo":                  "Infrastructure-E2E",
     #   "Environment":           "e2e-workstation",
     #   "PollIntervalSeconds":   30,
-    #   "TimeoutMinutes":        60
+    #   "TimeoutMinutes":        60,
+    #   "ProvisionerPath":       "C:\\a_Code\\Infrastructure-Vm-Provisioner",
+    #   "TestVm": {
+    #     "ubuntuVersion": "24.04",
+    #     "ipAddress":     "192.168.100.200",
+    #     "subnetMask":    24,
+    #     "gateway":       "192.168.100.1",
+    #     "dns":           "8.8.8.8",
+    #     "vmConfigPath":  "E:\\a_VMs\\Hyper-V\\Config",
+    #     "vhdPath":       "E:\\a_VMs\\Hyper-V\\Disks"
+    #   }
     # }
     # ---------------------------------------------------------------------------
 
@@ -241,6 +256,8 @@ if ($MyInvocation.InvocationName -ne '.') {
         -E2EInstallationId     $config.E2EInstallationId `
         -RunnersInstallationId $config.RunnersInstallationId `
         -PrivateKeyPath        $config.PrivateKeyPath `
+        -ProvisionerPath       $config.ProvisionerPath `
+        -TestVm                $config.TestVm `
         -Owner                 $config.Owner `
         -Repo                  $config.Repo `
         -Environment           $config.Environment `
