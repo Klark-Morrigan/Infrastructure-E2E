@@ -404,12 +404,11 @@ Steps:
 (own repo only - sufficient, no cross-repo access needed here).
 
 **Why:** `workflow_dispatch` lets the operator trigger on demand.
-`repository_dispatch` enables automatic triggering from any upstream
-repo on push - the full
-E2E test always runs regardless of which repo changed, since a broken
-VM or missing user will break runner registration just as much as a
-broken runner script. `GITHUB_TOKEN` is sufficient because the
-deployment lives in the same repo as the workflow.
+`repository_dispatch` receives automatic triggers from upstream repos
+when production code changes (docs-only pushes are filtered at source
+in step 11 - `repository_dispatch` carries no path information so the
+filter cannot be applied here). `GITHUB_TOKEN` is sufficient because
+the deployment lives in the same repo as the workflow.
 
 **Tests:** No unit tests for the workflow YAML itself. Verified
 end-to-end in steps 8-10 by running the workflow manually with the
@@ -604,11 +603,22 @@ sequenceDiagram
 ## Step 11 - Cross-repo trigger workflows
 
 **What:** Identical `.github/workflows/trigger-e2e.yml` added to each
-of the three upstream repos, triggered on push to master:
+of the three upstream repos, triggered on push to master **only when
+production code changes**:
 
 - `Infrastructure-Vm-Provisioner`
 - `Infrastructure-Vm-Users`
 - `Infrastructure-GitHubRunners`
+
+The `push` trigger must use a `paths` filter so that doc-only changes
+(README, `docs/**`, `*.md`) do not fire an expensive E2E run. Only
+changes to files that could affect runtime behaviour should trigger:
+
+| Repo | `paths` include |
+|---|---|
+| Infrastructure-Vm-Provisioner | `hyper-v/**`, `*.ps1`, `*.psm1`, `*.psd1` |
+| Infrastructure-Vm-Users | `hyper-v/**`, `*.ps1`, `*.psm1`, `*.psd1` |
+| Infrastructure-GitHubRunners | `hyper-v/**`, `Tests/**`, `*.ps1`, `*.psm1`, `*.psd1` |
 
 Each workflow:
 1. Uses `GH_APP_ID`, `GH_APP_PRIVATE_KEY`, and
@@ -617,12 +627,12 @@ Each workflow:
 2. `POST /repos/{owner}/Infrastructure-E2E/dispatches` with event type
    `trigger-e2e` and the App token as Bearer
 
-**Why:** Any push to any layer of the provisioning pipeline runs the
-full E2E test automatically. A broken VM, missing user, or broken
-runner script all produce a failed runner - testing the full stack on
-every change catches regressions at source. The `repository_dispatch`
-mechanism keeps the upstream repos decoupled from `Infrastructure-E2E`
-internals.
+**Why:** Only production code changes can break the provisioning
+pipeline - docs, comments, and plan files cannot. Firing E2E on every
+merge regardless would waste workstation time and obscure signal. The
+`paths` filter is the only mechanism available in GitHub Actions to
+make this distinction at the trigger level; it must be set here, not in
+`e2e.yml`, because `repository_dispatch` carries no path information.
 
 **Tests:** No unit tests for the workflow YAML itself. Verified by
 pushing to each upstream repo's master and confirming the E2E workflow
