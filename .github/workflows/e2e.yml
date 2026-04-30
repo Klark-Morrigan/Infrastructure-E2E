@@ -47,15 +47,15 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
-          # ref: use the current branch when triggered from within this repo
-          # (pull_request, workflow_dispatch) so the deployment records the
-          # branch under test. Use master when called via workflow_call from an
-          # upstream repo - github.ref_name is the caller's branch in that case,
+          # workflow_call: use master - github.ref_name is the caller's branch,
           # which is not a valid ref in this repo.
+          # pull_request: use github.head_ref (the source branch) - github.ref_name
+          # resolves to the synthetic merge ref (e.g. 6/merge) which does not exist.
+          # workflow_dispatch: use github.ref_name (the selected branch).
           # auto_merge:false - no branch merge is relevant here.
           # required_contexts:[] - bypasses commit-status checks that would
           # otherwise block deployment creation on a repo with branch protection.
-          ref=${{ github.event_name == 'workflow_call' && 'master' || github.ref_name }}
+          ref=${{ github.event_name == 'workflow_call' && 'master' || github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
           payload="{\"ref\":\"$ref\",\"environment\":\"e2e-workstation\",\"auto_merge\":false,\"required_contexts\":[]}"
           deployment_id=$(echo "$payload" | gh api \
             --method POST \
