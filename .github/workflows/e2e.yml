@@ -39,7 +39,7 @@ jobs:
           # required_contexts:[] - bypasses commit-status checks that would
           # otherwise block deployment creation on a repo with branch
           # protection rules.
-          payload='{"environment":"e2e-workstation","auto_merge":false,"required_contexts":[]}'
+          payload='{"ref":"${{ github.ref_name }}","environment":"e2e-workstation","auto_merge":false,"required_contexts":[]}'
           deployment_id=$(echo "$payload" | gh api \
             --method POST \
             "repos/${{ github.repository }}/deployments" \
