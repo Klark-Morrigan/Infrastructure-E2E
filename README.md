@@ -65,45 +65,90 @@ One-time manual steps required before any E2E test can run.
 
 ### 1. Create the GitHub App
 
-Go to `github.com/settings/apps/new` and configure:
+Go to `github.com/settings/apps/new` and fill in:
 
-| Permission | Repo | Purpose |
-|---|---|---|
-| `deployments: write` | Infrastructure-E2E | Agent lists pending deployments and posts status |
-| `contents: write` | Infrastructure-E2E | Upstream trigger workflows fire `repository_dispatch` |
-| `actions: write` | Infrastructure-GitHubRunners | Agent obtains runner registration tokens and manages runners |
+| Field | Value |
+|---|---|
+| GitHub App name | Any unique name (e.g. `my-org-e2e-agent`) |
+| Homepage URL | Any URL (e.g. your org URL) - required by GitHub, not used |
+| Callback URL | Leave blank - only needed for user OAuth flows; this app uses installation tokens |
+| Webhook | **Uncheck** "Active" - the app does not receive webhooks |
 
-Generate and download the private key (`.pem`).
+Under **Repository permissions**, set:
+
+| Permission | Level | Repo | Purpose |
+|---|---|---|---|
+| Deployments | Read & write | Infrastructure-E2E | Agent polls pending deployments and posts status |
+| Contents | Read & write | Infrastructure-E2E | Upstream trigger workflows fire `repository_dispatch` |
+| Actions | Read & write | Infrastructure-GitHubRunners | Agent obtains runner registration tokens and manages runners |
+
+Leave all other permissions at **No access**.
+
+Under **Where can this GitHub App be installed?**, select **Only on this account**.
+
+Click **Create GitHub App**. Note the **App ID** shown on the next page.
+
+Scroll to **Private keys** and click **Generate a private key**. Save the
+downloaded `.pem` file to a stable local path (e.g.
+`C:\private\e2e-agent.pem`) - this path goes into the vault in step 3.
 
 ### 2. Install the app
 
-Install the app on all four repos and note the installation ID for
-each:
+A GitHub App is a registered identity. An **installation** is a grant of
+that identity's permissions to a specific account or repo. Each installation
+gets its own ID and its own scoped access token - so a token minted for the
+`Infrastructure-E2E` installation can only touch `Infrastructure-E2E`, even
+though the app has permissions declared for other repos too.
 
-- `Infrastructure-E2E`
-- `Infrastructure-Vm-Provisioner`
-- `Infrastructure-Vm-Users`
-- `Infrastructure-GitHubRunners`
+Install the app on all four repos:
+
+1. Go to the app's settings page:
+   `github.com/settings/apps/<app-name>/installations`
+2. Click **Install** and select your account
+3. Choose **Only select repositories**, tick all four repos, and confirm:
+   - `Infrastructure-E2E`
+   - `Infrastructure-Vm-Provisioner`
+   - `Infrastructure-Vm-Users`
+   - `Infrastructure-GitHubRunners`
+
+After installing, GitHub redirects to the installation page. The installation
+ID is the number at the end of that URL:
+`github.com/settings/installations/`**`22222222`**
+
+The polling agent uses two installation IDs:
+- **E2E** (`e2eInstallationId`) - to get a `deployments: write` token for
+  polling and posting deployment status on `Infrastructure-E2E`
+- **GitHubRunners** (`githubRunnersInstallationId`) - to get an
+  `actions: write` token for managing runners on `Infrastructure-GitHubRunners`
+
+The other two repos (`Infrastructure-Vm-Provisioner`,
+`Infrastructure-Vm-Users`) are installed so the app can receive
+`repository_dispatch` trigger calls from their CI workflows - their
+installation IDs are not needed in the vault.
 
 ### 3. Configure the E2EConfig vault
 
 Run `agent\setup-secrets.ps1` (added in step 9) to store the
 following in the `E2EConfig` vault:
 
-| Field | Description |
-|---|---|
-| App ID | Shown on the app's settings page |
-| Private key path | Local path to the downloaded `.pem` file |
-| E2E installation ID | Installation ID for `Infrastructure-E2E` |
-| GitHubRunners installation ID | Installation ID for `Infrastructure-GitHubRunners` |
-| Provisioner path | Absolute path to `Infrastructure-Vm-Provisioner` on the workstation |
-| TestVm.ubuntuVersion | Ubuntu version to provision (e.g. `24.04`) |
-| TestVm.ipAddress | IP to assign to the test VM (must be free on VmLAN) |
-| TestVm.subnetMask | VmLAN CIDR prefix length (e.g. `24`) |
-| TestVm.gateway | VmLAN gateway IP |
-| TestVm.dns | DNS server for the test VM |
-| TestVm.vmConfigPath | Workstation path for Hyper-V VM config files |
-| TestVm.vhdPath | Workstation path for the test VM's VHDX |
+```jsonc
+{
+  "appId":                    123456,
+  "privateKeyPath":           "C:\\private\\e2e-agent.pem",
+  "e2eInstallationId":        11111111,   // installation ID for Infrastructure-E2E
+  "githubRunnersInstallationId": 22222222, // installation ID for Infrastructure-GitHubRunners
+  "provisionerPath":          "C:\\a_Code\\Infrastructure-Vm-Provisioner",
+  "testVm": {
+    "ubuntuVersion":  "24.04",
+    "ipAddress":      "192.168.101.10",
+    "subnetMask":     24,
+    "gateway":        "192.168.101.1",
+    "dns":            "8.8.8.8",
+    "vmConfigPath":   "E:\\a_VMs\\Hyper-V\\Config",
+    "vhdPath":        "E:\\a_VMs\\Hyper-V\\Disks"
+  }
+}
+```
 
 ### 4. Store Actions secrets in upstream repos
 
