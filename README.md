@@ -253,12 +253,12 @@ From the command line:
 gh workflow run e2e.yml --repo <owner>/Infrastructure-E2E
 ```
 
-### Automatic (push to upstream repos)
+### Automatic (PR check in upstream repos)
 
-Any push to `master` in `Infrastructure-Vm-Provisioner`,
-`Infrastructure-Vm-Users`, or `Infrastructure-GitHubRunners` fires a
-`repository_dispatch` event that triggers this workflow automatically
-(added in step 11).
+Pull requests in `Infrastructure-Vm-Provisioner`, `Infrastructure-Vm-Users`,
+and `Infrastructure-GitHubRunners` call this workflow via `workflow_call`
+as a required status check. The full lifecycle layer always runs regardless
+of which upstream repo the PR is in.
 
 ### Reading results
 
