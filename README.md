@@ -87,7 +87,7 @@ each:
 
 ### 3. Configure the E2EConfig vault
 
-Run `agent\setup-secrets.ps1` (added in a later step) to store the
+Run `agent\setup-secrets.ps1` (added in step 9) to store the
 following in the `E2EConfig` vault:
 
 | Field | Description |

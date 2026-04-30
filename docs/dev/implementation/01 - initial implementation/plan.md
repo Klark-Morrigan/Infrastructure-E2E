@@ -529,6 +529,11 @@ graph TD
 **What:** `agent/e2e/vm-provisioning/Invoke-VmProvisioningTest.ps1` -
 the first and lowest layer of E2E coverage.
 
+Also in this step: `agent/setup-secrets.ps1` - stores the `E2EConfig`
+vault entry (app ID, private key path, installation IDs, test VM
+config) required by all E2E scripts. This is the first step that needs
+the vault, so it is the right place to introduce it.
+
 1. Generate a random VM admin password at runtime
 2. Write a test-scoped `VmProvisionerConfig` to the `VmProvisioner` vault
    (fixed test values for vmName, IP, CPU/RAM/disk; random password)
@@ -543,7 +548,10 @@ provisioning failures are immediately identifiable without runner or
 user concerns in the stack trace. Generating the VM password at runtime
 and writing it to the vault keeps secrets out of source code and git
 history; the vault entry is removed in `finally` so no credentials
-outlive the test regardless of outcome.
+outlive the test regardless of outcome. `setup-secrets.ps1` belongs
+here rather than step 1 because step 1 has no runnable code - it is
+purely structural and manual. The vault must exist before the first
+test runs, and step 9 is that first test.
 
 **Tests:** None - the script is thin orchestration; correctness is
 verified by running it.
