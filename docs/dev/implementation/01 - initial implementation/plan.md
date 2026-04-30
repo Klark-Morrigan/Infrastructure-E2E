@@ -70,12 +70,11 @@ live in `Infrastructure-Common` (steps 2, 3, 4).
      `deployments: write` token for deployment polling)
    - Installation ID for `Infrastructure-GitHubRunners` (used to get
      an `actions: write` token for runner management)
-6. Store `GH_APP_ID`, `GH_APP_PRIVATE_KEY`, and
-   `GH_E2E_INSTALLATION_ID` as Actions secrets in each of the three
-   trigger repos (`Infrastructure-Vm-Provisioner`,
+6. Store `GH_APP_ID` and `GH_APP_PRIVATE_KEY` as Actions secrets in
+   each of the three trigger repos (`Infrastructure-Vm-Provisioner`,
    `Infrastructure-Vm-Users`, `Infrastructure-GitHubRunners`) - read
-   by their trigger workflows to obtain a `contents: write` token
-   scoped to `Infrastructure-E2E`
+   by their trigger workflows; the installation is resolved automatically
+   by `actions/create-github-app-token` from `owner` + `repositories`
 
 **README update:** Add repo overview, prerequisites, and GitHub App
 setup instructions.
@@ -801,7 +800,7 @@ sequenceDiagram
     DEV->>UP: open pull request
     UP->>PRE: pull_request trigger
     PRE->>E2E: workflow_call (secrets: inherit)
-    E2E->>GH: obtain App token\n(GH_APP_ID + GH_APP_PRIVATE_KEY + GH_E2E_INSTALLATION_ID)
+    E2E->>GH: obtain App token\n(GH_APP_ID + GH_APP_PRIVATE_KEY, owner+repo resolve installation)
     GH-->>E2E: token (deployments:write on E2E)
     E2E->>GH: POST /deployments (environment: e2e-workstation)
     GH-->>E2E: deployment id

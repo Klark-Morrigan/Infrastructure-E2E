@@ -165,7 +165,6 @@ following GitHub Actions secrets:
 |---|---|
 | `GH_APP_ID` | App ID |
 | `GH_APP_PRIVATE_KEY` | Contents of the `.pem` file |
-| `GH_E2E_INSTALLATION_ID` | Installation ID for `Infrastructure-E2E` |
 
 ---
 

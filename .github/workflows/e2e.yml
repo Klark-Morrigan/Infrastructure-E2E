@@ -25,8 +25,6 @@ on:
         required: true
       GH_APP_PRIVATE_KEY:
         required: true
-      GH_E2E_INSTALLATION_ID:
-        required: true
 
 jobs:
   e2e:
@@ -41,7 +39,8 @@ jobs:
         with:
           app-id: ${{ secrets.GH_APP_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          installation-id: ${{ secrets.GH_E2E_INSTALLATION_ID }}
+          owner: VitaliiAndreev
+          repositories: Infrastructure-E2E
 
       - name: Create deployment
         id: create-deployment
