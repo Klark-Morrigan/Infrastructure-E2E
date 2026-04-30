@@ -129,7 +129,10 @@ function Invoke-E2EAgentLoop {
         # Refresh the deployment token if fewer than 5 minutes remain.
         # GitHub rejects tokens past their expiry, so proactive refresh
         # prevents a mid-poll authentication failure.
-        $expiry = [DateTimeOffset]::Parse($tokenResult.ExpiresAt)
+        # ExpiresAt may be a DateTime (ConvertFrom-Json auto-converts ISO 8601)
+        # or a string. A direct cast handles both; Parse with the default
+        # culture fails when DateTime.ToString() uses locale-specific format.
+        $expiry = [DateTimeOffset] $tokenResult.ExpiresAt
         if ($expiry.UtcDateTime -lt [DateTime]::UtcNow.AddMinutes(5)) {
             Write-Host 'Token nearing expiry - refreshing ...' -ForegroundColor Yellow
             $tokenResult = Get-GitHubAppToken `
