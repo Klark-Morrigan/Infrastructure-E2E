@@ -70,12 +70,11 @@ live in `Infrastructure-Common` (steps 2, 3, 4).
      `deployments: write` token for deployment polling)
    - Installation ID for `Infrastructure-GitHubRunners` (used to get
      an `actions: write` token for runner management)
-6. Store `GH_APP_ID`, `GH_APP_PRIVATE_KEY`, and
-   `GH_E2E_INSTALLATION_ID` as Actions secrets in each of the three
-   trigger repos (`Infrastructure-Vm-Provisioner`,
+6. Store `GH_APP_ID` and `GH_APP_PRIVATE_KEY` as Actions secrets in
+   each of the three trigger repos (`Infrastructure-Vm-Provisioner`,
    `Infrastructure-Vm-Users`, `Infrastructure-GitHubRunners`) - read
-   by their trigger workflows to obtain a `contents: write` token
-   scoped to `Infrastructure-E2E`
+   by their trigger workflows; the installation is resolved automatically
+   by `actions/create-github-app-token` from `owner` + `repositories`
 
 **README update:** Add repo overview, prerequisites, and GitHub App
 setup instructions.
@@ -720,58 +719,95 @@ sequenceDiagram
 
 ## Step 12 - Cross-repo trigger workflows
 
-**What:** Identical `.github/workflows/trigger-e2e.yml` added to each
-of the three upstream repos, triggered on push to master **only when
-production code changes**:
+**What:** `e2e.yml` added to each of the three upstream repos,
+calling `e2e.yml` via `workflow_call` as a required PR status check:
 
 - `Infrastructure-Vm-Provisioner`
 - `Infrastructure-Vm-Users`
 - `Infrastructure-GitHubRunners`
 
-The `push` trigger must use a `paths` filter so that doc-only changes
-(README, `docs/**`, `*.md`) do not fire an expensive E2E run. Only
-changes to files that could affect runtime behaviour should trigger:
+No push-to-master trigger is needed — every merge has already passed
+the PR check, so re-running E2E on master would duplicate work without
+adding signal.
 
-| Repo | `paths` include |
+The agent maps `testLayer` to the corresponding function:
+
+| `testLayer` | Function called |
 |---|---|
-| Infrastructure-Vm-Provisioner | `hyper-v/**`, `*.ps1`, `*.psm1`, `*.psd1` |
-| Infrastructure-Vm-Users | `hyper-v/**`, `*.ps1`, `*.psm1`, `*.psd1` |
-| Infrastructure-GitHubRunners | `hyper-v/**`, `Tests/**`, `*.ps1`, `*.psm1`, `*.psd1` |
+| `provisioning` | `Invoke-VmProvisioningTest` |
+| `users` | `Invoke-VmUsersTest` |
+| `lifecycle` | `Invoke-RunnerLifecycleTest` |
 
-Each workflow:
-1. Uses `GH_APP_ID`, `GH_APP_PRIVATE_KEY`, and
-   `GH_E2E_INSTALLATION_ID` Actions secrets to obtain a GitHub App
-   token scoped to `Infrastructure-E2E` (`contents: write`)
-2. `POST /repos/{owner}/Infrastructure-E2E/dispatches` with event type
-   `trigger-e2e` and the App token as Bearer
+**Trigger → layer mapping:**
 
-**Why:** Only production code changes can break the provisioning
-pipeline - docs, comments, and plan files cannot. Firing E2E on every
-merge regardless would waste workstation time and obscure signal. The
-`paths` filter is the only mechanism available in GitHub Actions to
-make this distinction at the trigger level; it must be set here, not in
-`e2e.yml`, because `repository_dispatch` carries no path information.
+| Trigger | Source | `testLayer` |
+|---|---|---|
+| `workflow_call` (PR check) | any upstream repo | `lifecycle` — always full stack on PRs |
+| `workflow_dispatch` (manual) | GitHub UI / CLI | selectable, default `lifecycle` |
+| `Start-VmProvisioningTest.ps1` (local) | workstation | `provisioning` (no agent/workflow) |
+| `Start-E2EAgent.ps1` (local) | workstation | reads from deployment payload |
+
+PRs always run the full lifecycle layer regardless of which upstream
+repo the PR is in — a provisioner change could still break runner
+registration through the shared VM.
+
+`e2e.yml` changes:
+- Add `workflow_call` trigger with no inputs — layer is always
+  `lifecycle` when called as a PR check; switch deployment creation
+  from `github.token` to the GitHub App token so the deployment is
+  created in `Infrastructure-E2E` regardless of which repo calls the
+  workflow
+- Add `testLayer` `workflow_dispatch` input (default: `lifecycle`)
+- Read `client_payload.testLayer` from `repository_dispatch`
+- Pass `testLayer` in the deployment payload
+
+Each upstream repo adds `.github/workflows/e2e.yml`: calls
+`Infrastructure-E2E/e2e.yml` via `workflow_call` on pull request;
+used as a required PR status check.
+
+`Start-E2EAgent.ps1` changes:
+- Read `testLayer` from the deployment payload
+- Dot-source all three test files
+- Invoke the function corresponding to `testLayer`
+
+`E2EConfig` vault: no change — `testLayer` comes from the deployment
+payload so it varies per trigger without reconfiguring the agent.
+
+**Why:** PRs always run the full stack because any layer can be broken
+by a change in a layer below it. No post-merge trigger is needed —
+every merge has already passed the PR check, so re-running on master
+would duplicate work without adding signal. Manual and local triggers
+are fully flexible for debugging. The layer travels in the deployment
+payload rather than the vault so the agent requires no reconfiguration
+between runs.
 
 **Tests:** No unit tests for the workflow YAML itself. Verified by
-pushing to each upstream repo's master and confirming the E2E workflow
-is triggered.
+opening a PR in each upstream repo and confirming the lifecycle check
+appears and blocks merge until the agent posts a terminal status.
 
-**README update:** Add "Automated triggers" section listing which
-upstream repos fire E2E tests and when.
+**README update:** Add "Automated triggers" section documenting all
+trigger paths, their layers, and the reasoning.
 
 ```mermaid
 sequenceDiagram
     participant DEV as Developer
     participant UP as upstream repo\n(Provisioner / Users / GitHubRunners)
-    participant TRG as trigger-e2e.yml
+    participant PRE as e2e.yml (upstream)
+    participant E2E as Infrastructure-E2E/e2e.yml
+    participant AG as Start-E2EAgent.ps1 (workstation)
     participant GH as GitHub API
-    participant E2E as Infrastructure-E2E
 
-    DEV->>UP: push to master
-    UP->>TRG: trigger workflow
-    TRG->>GH: POST /app/installations/{E2E id}/access_tokens\n(GH_APP_ID + GH_APP_PRIVATE_KEY)
-    GH-->>TRG: token (contents:write on E2E)
-    TRG->>E2E: POST /dispatches (event: trigger-e2e)
-    E2E-->>TRG: 204 accepted
-    note over E2E: e2e.yml picks up repository_dispatch and runs
+    DEV->>UP: open pull request
+    UP->>PRE: pull_request trigger
+    PRE->>E2E: workflow_call (secrets: inherit)
+    E2E->>GH: obtain App token\n(GH_APP_ID + GH_APP_PRIVATE_KEY, owner+repo resolve installation)
+    GH-->>E2E: token (deployments:write on E2E)
+    E2E->>GH: POST /deployments (environment: e2e-workstation)
+    GH-->>E2E: deployment id
+    note over AG: operator has started agent before PR was opened
+    AG->>GH: polls - picks up deployment - runs tests - posts status
+    E2E->>GH: polls /deployments/{id}/statuses until terminal
+    GH-->>E2E: success / failure
+    E2E-->>PRE: pass / fail
+    PRE-->>UP: PR check result
 ```

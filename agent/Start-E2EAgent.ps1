@@ -179,16 +179,25 @@ function Invoke-E2EAgentLoop {
                 Write-Host 'E2E tests passed.' -ForegroundColor Green
             }
             catch {
-                Set-DeploymentStatus `
-                    -Token        $tokenResult.Token `
-                    -Owner        $Owner `
-                    -Repo         $Repo `
-                    -DeploymentId $deployment.id `
-                    -State        'failure' `
-                    -Description  $_.Exception.Message
+                # GitHub caps deployment status descriptions at 140 characters.
+                $msg = $_.Exception.Message
+                $description = if ($msg.Length -gt 140) { $msg.Substring(0, 137) + '...' } else { $msg }
 
-                Write-Host "E2E tests failed: $($_.Exception.Message)" `
-                    -ForegroundColor Red
+                try {
+                    Set-DeploymentStatus `
+                        -Token        $tokenResult.Token `
+                        -Owner        $Owner `
+                        -Repo         $Repo `
+                        -DeploymentId $deployment.id `
+                        -State        'failure' `
+                        -Description  $description
+                }
+                catch {
+                    Write-Host "Warning: failed to post failure status to GitHub: $($_.Exception.Message)" `
+                        -ForegroundColor Yellow
+                }
+
+                Write-Host "E2E tests failed: $msg" -ForegroundColor Red
                 throw
             }
 
