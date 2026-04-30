@@ -1,27 +1,32 @@
 # E2E test workflow.
 #
 # Triggers:
-#   - workflow_dispatch:             manual run from the GitHub UI or gh CLI
-#   - repository_dispatch(trigger-e2e): automatic on push to master in any
-#     upstream provisioning repo (Infrastructure-Vm-Provisioner,
-#     Infrastructure-Vm-Users, Infrastructure-GitHubRunners)
+#   - workflow_dispatch: manual run from the GitHub UI or gh CLI
+#   - workflow_call:     called by upstream repos as a required PR check
 #
-# The workflow only creates a GitHub Deployment and waits for the polling
-# agent (agent/Start-E2EAgent.ps1) to post a terminal status. The actual
-# provisioning and test logic runs on the workstation via the agent - this
-# is the only way to access Hyper-V from a workflow.
+# The workflow creates a GitHub Deployment in Infrastructure-E2E and waits
+# for the polling agent (agent/Start-E2EAgent.ps1) to post a terminal status.
+# The actual test logic runs on the workstation - the only way to access Hyper-V.
+#
+# Authentication: github.token is scoped to the repo that triggered the workflow.
+# When called via workflow_call from an upstream repo it cannot create deployments
+# in Infrastructure-E2E. The GitHub App token is used instead - it has
+# deployments:write on Infrastructure-E2E regardless of the calling context.
 
 name: E2E
 
 on:
+  pull_request:
+    branches: [ master ]
   workflow_dispatch:
-  repository_dispatch:
-    types: [trigger-e2e]
-
-permissions:
-  # GITHUB_TOKEN only needs deployments:write for its own repo. The polling
-  # agent authenticates separately via the GitHub App installation token.
-  deployments: write
+  workflow_call:
+    secrets:
+      GH_APP_ID:
+        required: true
+      GH_APP_PRIVATE_KEY:
+        required: true
+      GH_E2E_INSTALLATION_ID:
+        required: true
 
 jobs:
   e2e:
@@ -30,19 +35,32 @@ jobs:
     timeout-minutes: 35
 
     steps:
+      - name: Obtain GitHub App token (Infrastructure-E2E)
+        id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          installation-id: ${{ secrets.GH_E2E_INSTALLATION_ID }}
+
       - name: Create deployment
         id: create-deployment
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
+          # ref: use the current branch when triggered from within this repo
+          # (pull_request, workflow_dispatch) so the deployment records the
+          # branch under test. Use master when called via workflow_call from an
+          # upstream repo - github.ref_name is the caller's branch in that case,
+          # which is not a valid ref in this repo.
           # auto_merge:false - no branch merge is relevant here.
           # required_contexts:[] - bypasses commit-status checks that would
-          # otherwise block deployment creation on a repo with branch
-          # protection rules.
-          payload='{"ref":"${{ github.ref_name }}","environment":"e2e-workstation","auto_merge":false,"required_contexts":[]}'
+          # otherwise block deployment creation on a repo with branch protection.
+          ref=${{ github.event_name == 'workflow_call' && 'master' || github.ref_name }}
+          payload="{\"ref\":\"$ref\",\"environment\":\"e2e-workstation\",\"auto_merge\":false,\"required_contexts\":[]}"
           deployment_id=$(echo "$payload" | gh api \
             --method POST \
-            "repos/${{ github.repository }}/deployments" \
+            "repos/VitaliiAndreev/Infrastructure-E2E/deployments" \
             --input - \
             --jq '.id')
           echo "deployment-id=$deployment_id" >> "$GITHUB_OUTPUT"
@@ -50,7 +68,7 @@ jobs:
 
       - name: Wait for terminal status
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           DEPLOYMENT_ID: ${{ steps.create-deployment.outputs.deployment-id }}
         run: |
           # Poll every 30 seconds for up to 30 minutes (60 attempts).
@@ -62,7 +80,7 @@ jobs:
 
           for i in $(seq 1 $max_polls); do
             state=$(gh api \
-              "repos/${{ github.repository }}/deployments/$DEPLOYMENT_ID/statuses" \
+              "repos/VitaliiAndreev/Infrastructure-E2E/deployments/$DEPLOYMENT_ID/statuses" \
               --jq '.[0].state // empty')
 
             echo "Poll $i/$max_polls: state=${state:-(none)}"
