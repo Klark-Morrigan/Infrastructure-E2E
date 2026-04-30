@@ -133,12 +133,17 @@ following in the `E2EConfig` vault:
 
 ```jsonc
 {
-  "appId":                    123456,
-  "privateKeyPath":           "C:\\private\\e2e-agent.pem",
-  "e2eInstallationId":        11111111,   // installation ID for Infrastructure-E2E
-  "githubRunnersInstallationId": 22222222, // installation ID for Infrastructure-GitHubRunners
-  "provisionerPath":          "C:\\a_Code\\Infrastructure-Vm-Provisioner",
-  "testVm": {
+  "AppId":                123456,
+  "PrivateKeyPath":       "C:\\private\\e2e-agent.pem",
+  "E2EInstallationId":    11111111,  // installation ID for Infrastructure-E2E
+  "RunnersInstallationId": 22222222, // installation ID for Infrastructure-GitHubRunners
+  "Owner":                "my-org",
+  "Repo":                 "Infrastructure-E2E",
+  "Environment":          "e2e-workstation",
+  "PollIntervalSeconds":  30,
+  "TimeoutMinutes":       60,
+  "ProvisionerPath":      "C:\\a_Code\\Infrastructure-Vm-Provisioner",
+  "TestVm": {
     "ubuntuVersion":  "24.04",
     "ipAddress":      "192.168.101.10",
     "subnetMask":     24,
