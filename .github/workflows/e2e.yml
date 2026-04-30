@@ -1,0 +1,93 @@
+# E2E test workflow.
+#
+# Triggers:
+#   - workflow_dispatch:             manual run from the GitHub UI or gh CLI
+#   - repository_dispatch(trigger-e2e): automatic on push to master in any
+#     upstream provisioning repo (Infrastructure-Vm-Provisioner,
+#     Infrastructure-Vm-Users, Infrastructure-GitHubRunners)
+#
+# The workflow only creates a GitHub Deployment and waits for the polling
+# agent (agent/Start-E2EAgent.ps1) to post a terminal status. The actual
+# provisioning and test logic runs on the workstation via the agent - this
+# is the only way to access Hyper-V from a workflow.
+
+name: E2E
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [trigger-e2e]
+
+permissions:
+  # GITHUB_TOKEN only needs deployments:write for its own repo. The polling
+  # agent authenticates separately via the GitHub App installation token.
+  deployments: write
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    # 35 minutes: covers the 30-minute poll window plus startup slack.
+    timeout-minutes: 35
+
+    steps:
+      - name: Create deployment
+        id: create-deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # auto_merge:false - no branch merge is relevant here.
+          # required_contexts:[] - bypasses commit-status checks that would
+          # otherwise block deployment creation on a repo with branch
+          # protection rules.
+          payload='{"environment":"e2e-workstation","auto_merge":false,"required_contexts":[]}'
+          deployment_id=$(echo "$payload" | gh api \
+            --method POST \
+            "repos/${{ github.repository }}/deployments" \
+            --input - \
+            --jq '.id')
+          echo "deployment-id=$deployment_id" >> "$GITHUB_OUTPUT"
+          echo "Created deployment $deployment_id"
+
+      - name: Wait for terminal status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOYMENT_ID: ${{ steps.create-deployment.outputs.deployment-id }}
+        run: |
+          # Poll every 30 seconds for up to 30 minutes (60 attempts).
+          # The polling agent on the workstation picks up the deployment,
+          # runs the full test suite, then posts success or failure here.
+          # GitHub returns statuses newest-first, so .[0] is the latest.
+          max_polls=60
+          timed_out=true
+
+          for i in $(seq 1 $max_polls); do
+            state=$(gh api \
+              "repos/${{ github.repository }}/deployments/$DEPLOYMENT_ID/statuses" \
+              --jq '.[0].state // empty')
+
+            echo "Poll $i/$max_polls: state=${state:-(none)}"
+
+            case "$state" in
+              success|failure|error|inactive)
+                timed_out=false
+                break
+                ;;
+            esac
+
+            [ "$i" -lt "$max_polls" ] && sleep 30
+          done
+
+          if [ "$timed_out" = "true" ]; then
+            echo "::error::Timed out after 30 minutes - polling agent did not post a terminal status."
+            exit 1
+          fi
+
+          case "$state" in
+            success)
+              echo "E2E tests passed."
+              ;;
+            failure|error|inactive)
+              echo "::error::E2E tests ended with status: $state"
+              exit 1
+              ;;
+          esac
