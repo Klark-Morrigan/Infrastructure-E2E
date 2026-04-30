@@ -6,10 +6,13 @@
 
 - [Overview](#overview)
 - [What this repo does not do](#what-this-repo-does-not-do)
+- [Requirements](#requirements)
 - [Prerequisites](#prerequisites)
 - [GitHub App setup](#github-app-setup)
 - [How to run the polling agent](#how-to-run-the-polling-agent)
+- [How to run individual tests](#how-to-run-individual-tests)
 - [How to trigger](#how-to-trigger)
+- [Test coverage](#test-coverage)
 - [Repo structure](#repo-structure)
 
 ---
@@ -33,6 +36,12 @@ polling agent that receives signals from GitHub Actions workflows.
 
 ---
 
+## Requirements
+
+PowerShell 7+ (`pwsh`).
+
+---
+
 ## Prerequisites
 
 - Windows 11 with Hyper-V enabled
@@ -46,7 +55,7 @@ polling agent that receives signals from GitHub Actions workflows.
   - `VmUsers` (owned by `Infrastructure-Vm-Users`)
   - `GitHubRunners` (owned by `Infrastructure-GitHubRunners`)
   - `E2EConfig` (owned by this repo - see [GitHub App setup](#github-app-setup))
-- `Infrastructure.Common` >= `1.3.3` installed from PSGallery
+- `Infrastructure.Common` >= `2.0.0` installed from PSGallery
 
 ---
 
@@ -87,6 +96,14 @@ following in the `E2EConfig` vault:
 | Private key path | Local path to the downloaded `.pem` file |
 | E2E installation ID | Installation ID for `Infrastructure-E2E` |
 | GitHubRunners installation ID | Installation ID for `Infrastructure-GitHubRunners` |
+| Provisioner path | Absolute path to `Infrastructure-Vm-Provisioner` on the workstation |
+| TestVm.ubuntuVersion | Ubuntu version to provision (e.g. `24.04`) |
+| TestVm.ipAddress | IP to assign to the test VM (must be free on VmLAN) |
+| TestVm.subnetMask | VmLAN CIDR prefix length (e.g. `24`) |
+| TestVm.gateway | VmLAN gateway IP |
+| TestVm.dns | DNS server for the test VM |
+| TestVm.vmConfigPath | Workstation path for Hyper-V VM config files |
+| TestVm.vhdPath | Workstation path for the test VM's VHDX |
 
 ### 4. Store Actions secrets in upstream repos
 
@@ -140,6 +157,36 @@ Agent timed out after 60 minutes - no deployment found.
 
 ---
 
+## How to run individual tests
+
+Use these scripts to run a single test layer on demand - no GitHub
+deployment signal or polling agent required. Useful for local debugging
+and first-time verification after setup.
+
+Run from an elevated PowerShell session on the workstation.
+
+### VM provisioning test
+
+Provisions the test VM, verifies SSH reachability, then tears down.
+
+```powershell
+# Standard VmLAN setup - no arguments needed:
+.\agent\e2e\vm-provisioning\Start-VmProvisioningTest.ps1
+
+# Override the VM IP if the default (192.168.100.10) is already in use:
+.\agent\e2e\vm-provisioning\Start-VmProvisioningTest.ps1 -IpAddress 192.168.100.11
+```
+
+No vault setup is required before running this script. `VmProvisionerConfig`
+is written to the vault at runtime by the test and removed in its `finally`
+block regardless of outcome.
+
+Default values assume a standard VmLAN setup (`192.168.100.0/24`, gateway
+`192.168.100.1`) and `C:\a_VMs\Hyper-V\` for VM storage. All defaults can
+be overridden via parameters.
+
+---
+
 ## How to trigger
 
 Always start the polling agent on the workstation **before** triggering
@@ -177,6 +224,24 @@ Results appear in two places:
 
 ---
 
+## Test coverage
+
+The E2E tests are layered - each layer reuses the layer below it and adds
+its own assertions on top.
+
+| Layer | Script | Asserts |
+|---|---|---|
+| VM provisioning | `agent/e2e/vm-provisioning/Invoke-VmProvisioningTest.ps1` | VM is reachable via SSH (`hostname` exits 0) |
+| VM users | `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` | Expected OS users and groups exist on the VM (step 9) |
+| Runner lifecycle | `agent/e2e/runner-lifecycle/Invoke-RunnerLifecycleTest.ps1` | Runner service is active; runner appears online in GitHub API (step 10) |
+
+The polling agent (`Start-E2EAgent.ps1`) always runs the full runner
+lifecycle test, which transitively exercises all three layers. The
+lower-layer scripts exist so a provisioning or users failure produces a
+focused stack trace rather than a runner error.
+
+---
+
 ## Repo structure
 
 ```
@@ -187,10 +252,12 @@ agent/
   e2e/
     vm-provisioning/
       Invoke-VmProvisioningTest.ps1  - VM provisioning E2E test (step 8)
+      Start-VmProvisioningTest.ps1   - Manual runner for the provisioning test
     vm-users/
       Invoke-VmUsersTest.ps1         - VM users E2E test (step 9)
     runner-lifecycle/
       Invoke-RunnerLifecycleTest.ps1 - Full runner lifecycle E2E test (step 10)
+  Initialize-E2EEnvironment.ps1    - Shared module bootstrap (dot-sourced by entry points)
   Start-E2EAgent.ps1               - Polling agent (run manually on workstation)
 Tests/
   Invoke-E2EAgentLoop.Tests.ps1    - Unit tests for the polling loop

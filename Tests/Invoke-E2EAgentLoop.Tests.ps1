@@ -21,6 +21,16 @@ Describe 'Invoke-E2EAgentLoop' {
             E2EInstallationId     = 10
             RunnersInstallationId = 20
             PrivateKeyPath        = 'C:\test.pem'
+            ProvisionerPath       = 'C:\test\provisioner'
+            TestVm                = [PSCustomObject]@{
+                ubuntuVersion = '24.04'
+                ipAddress     = '192.168.100.200'
+                subnetMask    = 24
+                gateway       = '192.168.100.1'
+                dns           = '8.8.8.8'
+                vmConfigPath  = 'E:\a_VMs\Hyper-V\Config'
+                vhdPath       = 'E:\a_VMs\Hyper-V\Disks'
+            }
             Owner                 = 'org'
             Repo                  = 'repo'
             Environment           = 'e2e-workstation'
@@ -97,15 +107,17 @@ Describe 'Invoke-E2EAgentLoop' {
             $inProgressIdx | Should -BeLessThan $lifecycleIdx
         }
 
-        It 'calls the lifecycle test with app credentials' {
+        It 'calls the lifecycle test with app credentials, repo paths, and VM config' {
             $Script:_config = $null
             Mock Invoke-RunnerLifecycleTest { $Script:_config = $Config }
 
             Invoke-E2EAgentLoop @Script:BaseParams
 
-            $Script:_config.AppId                 | Should -Be 1
-            $Script:_config.RunnersInstallationId | Should -Be 20
-            $Script:_config.PrivateKeyPath        | Should -Be 'C:\test.pem'
+            $Script:_config.AppId                   | Should -Be 1
+            $Script:_config.RunnersInstallationId   | Should -Be 20
+            $Script:_config.PrivateKeyPath          | Should -Be 'C:\test.pem'
+            $Script:_config.ProvisionerPath         | Should -Be 'C:\test\provisioner'
+            $Script:_config.TestVm.ipAddress        | Should -Be '192.168.100.200'
         }
 
         It 'posts success after the lifecycle test passes' {
