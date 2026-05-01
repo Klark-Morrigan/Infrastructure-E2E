@@ -42,20 +42,34 @@ jobs:
           owner: VitaliiAndreev
           repositories: Infrastructure-E2E
 
+      - name: Resolve deployment ref
+        id: resolve-ref
+        run: |
+          # workflow_call: always deploy against master - github.ref_name carries
+          # the caller's branch, which is not a valid ref in this repo.
+          # pull_request: use the source branch - github.ref_name resolves to the
+          # synthetic merge ref (e.g. 6/merge) which does not exist as a real ref.
+          # workflow_dispatch: use the branch selected in the GitHub UI.
+          event="${{ github.event_name }}"
+          if [ "$event" = "workflow_call" ]; then
+            ref="master"
+          elif [ "$event" = "pull_request" ]; then
+            ref="${{ github.head_ref }}"
+          else
+            ref="${{ github.ref_name }}"
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Deployment ref: $ref"
+
       - name: Create deployment
         id: create-deployment
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
-          # workflow_call: use master - github.ref_name is the caller's branch,
-          # which is not a valid ref in this repo.
-          # pull_request: use github.head_ref (the source branch) - github.ref_name
-          # resolves to the synthetic merge ref (e.g. 6/merge) which does not exist.
-          # workflow_dispatch: use github.ref_name (the selected branch).
           # auto_merge:false - no branch merge is relevant here.
           # required_contexts:[] - bypasses commit-status checks that would
           # otherwise block deployment creation on a repo with branch protection.
-          ref=${{ github.event_name == 'workflow_call' && 'master' || github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
+          ref=${{ steps.resolve-ref.outputs.ref }}
           payload="{\"ref\":\"$ref\",\"environment\":\"e2e-workstation\",\"auto_merge\":false,\"required_contexts\":[]}"
           deployment_id=$(echo "$payload" | gh api \
             --method POST \
