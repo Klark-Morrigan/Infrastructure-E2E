@@ -45,13 +45,17 @@ jobs:
       - name: Resolve deployment ref
         id: resolve-ref
         run: |
-          # workflow_call: always deploy against master - github.ref_name carries
-          # the caller's branch, which is not a valid ref in this repo.
-          # pull_request: use the source branch - github.ref_name resolves to the
-          # synthetic merge ref (e.g. 6/merge) which does not exist as a real ref.
+          # Cross-repo call: always deploy against master - the caller's branch
+          # does not exist in this repo (detected via github.repository).
+          # pull_request (own repo): use the source branch - github.ref_name
+          # resolves to the synthetic merge ref (e.g. 6/merge) which is not real.
           # workflow_dispatch: use the branch selected in the GitHub UI.
           event="${{ github.event_name }}"
-          if [ "$event" = "workflow_call" ]; then
+          # When called from another repo via workflow_call, the github context
+          # is inherited from the caller: event_name stays "pull_request" and
+          # head_ref carries the caller's branch, which does not exist here.
+          # Detect that case by checking the repository and fall back to master.
+          if [ "${{ github.repository }}" != "VitaliiAndreev/Infrastructure-E2E" ]; then
             ref="master"
           elif [ "$event" = "pull_request" ]; then
             ref="${{ github.head_ref }}"
