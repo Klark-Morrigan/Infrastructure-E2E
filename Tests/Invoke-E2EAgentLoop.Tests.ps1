@@ -12,10 +12,10 @@ BeforeAll {
 Describe 'Invoke-E2EAgentLoop' {
 
     BeforeAll {
-        # Shared parameters. Deadline is set well in the future so tests that
-        # exit via a found deployment are unambiguous. PollIntervalSeconds=0
-        # removes Start-Sleep latency. Tests controlling timeout inject their
-        # own Deadline via Clone() + override.
+        # Shared parameters. PollIntervalSeconds=0 removes Start-Sleep latency.
+        # Deadline is intentionally absent here - set fresh each test by the
+        # BeforeEach below so the loop does not spin for hours once the
+        # deployment mock starts returning $null.
         $Script:BaseParams = @{
             AppId                 = 1
             E2EInstallationId     = 10
@@ -36,7 +36,6 @@ Describe 'Invoke-E2EAgentLoop' {
             Environment           = 'e2e-workstation'
             PollIntervalSeconds   = 0
             TimeoutMinutes        = 60
-            Deadline              = [DateTime]::UtcNow.AddMinutes(60)
         }
 
         # Token with expiry safely in the future - used wherever the refresh
@@ -47,15 +46,29 @@ Describe 'Invoke-E2EAgentLoop' {
         }
     }
 
+    BeforeEach {
+        # Refresh the deadline for every test. Without this, after a deployment
+        # is processed and the mock starts returning $null, the loop would spin
+        # until the far-future deadline set in BeforeAll - effectively hanging.
+        # 500ms is long enough for one synchronous processing cycle and short
+        # enough that null-spinning does not meaningfully slow the test suite.
+        $Script:BaseParams['Deadline'] = [DateTime]::UtcNow.AddMilliseconds(500)
+    }
+
     # ------------------------------------------------------------------
     Context 'token acquisition' {
     # ------------------------------------------------------------------
 
         BeforeEach {
+            $script:_taCount = 0
             Mock Get-GitHubAppToken { $Script:FreshToken }
-            # Return a deployment so the loop exits after one tick; this
-            # context only cares that the startup token fetch happened.
-            Mock Get-PendingDeployment  { [PSCustomObject]@{ id = 1 } }
+            # Return a deployment on the first poll so the token-acquisition
+            # assertion is reachable, then null so the loop exits at deadline.
+            Mock Get-PendingDeployment {
+                $script:_taCount++
+                if ($script:_taCount -eq 1) { return [PSCustomObject]@{ id = 1 } }
+                return $null
+            }
             Mock Set-DeploymentStatus   {}
             Mock Invoke-RunnerLifecycleTest {}
         }
@@ -76,8 +89,14 @@ Describe 'Invoke-E2EAgentLoop' {
     # ------------------------------------------------------------------
 
         BeforeEach {
-            Mock Get-GitHubAppToken     { $Script:FreshToken }
-            Mock Get-PendingDeployment  { [PSCustomObject]@{ id = 42 } }
+            $script:_dfpCount = 0
+            Mock Get-GitHubAppToken { $Script:FreshToken }
+            # Return the deployment once, then null so the loop exits at deadline.
+            Mock Get-PendingDeployment {
+                $script:_dfpCount++
+                if ($script:_dfpCount -eq 1) { return [PSCustomObject]@{ id = 42 } }
+                return $null
+            }
             Mock Set-DeploymentStatus   {}
             Mock Invoke-RunnerLifecycleTest {}
         }
@@ -183,7 +202,8 @@ Describe 'Invoke-E2EAgentLoop' {
             Mock Get-GitHubAppToken { $Script:FreshToken }
             Mock Get-PendingDeployment {
                 $script:_pollCount++
-                if ($script:_pollCount -ge 3) { return [PSCustomObject]@{ id = 7 } }
+                # Return the deployment exactly on call 3, null for all others.
+                if ($script:_pollCount -eq 3) { return [PSCustomObject]@{ id = 7 } }
                 return $null
             }
             Mock Set-DeploymentStatus {}
@@ -210,14 +230,19 @@ Describe 'Invoke-E2EAgentLoop' {
     # ------------------------------------------------------------------
 
         BeforeEach {
+            $script:_lfCount = 0
             Mock Get-GitHubAppToken { $Script:FreshToken }
-            Mock Get-PendingDeployment { [PSCustomObject]@{ id = 5 } }
+            Mock Get-PendingDeployment {
+                $script:_lfCount++
+                if ($script:_lfCount -eq 1) { return [PSCustomObject]@{ id = 5 } }
+                return $null
+            }
             Mock Set-DeploymentStatus {}
             Mock Invoke-RunnerLifecycleTest { throw 'runner service failed to start' }
         }
 
         It 'posts failure status when the lifecycle test throws' {
-            { Invoke-E2EAgentLoop @Script:BaseParams } | Should -Throw
+            Invoke-E2EAgentLoop @Script:BaseParams
 
             Should -Invoke Set-DeploymentStatus -ParameterFilter {
                 $DeploymentId -eq 5 -and $State -eq 'failure'
@@ -228,19 +253,93 @@ Describe 'Invoke-E2EAgentLoop' {
             $Script:_desc = $null
             Mock Set-DeploymentStatus { if ($State -eq 'failure') { $Script:_desc = $Description } }
 
-            { Invoke-E2EAgentLoop @Script:BaseParams } | Should -Throw
+            Invoke-E2EAgentLoop @Script:BaseParams
 
             $Script:_desc | Should -Be 'runner service failed to start'
         }
 
-        It 'rethrows the exception after posting failure' {
-            { Invoke-E2EAgentLoop @Script:BaseParams } | Should -Throw 'runner service failed to start'
-        }
-
         It 'does not post success when the lifecycle test throws' {
-            { Invoke-E2EAgentLoop @Script:BaseParams } | Should -Throw
+            Invoke-E2EAgentLoop @Script:BaseParams
 
             Should -Invoke Set-DeploymentStatus -Times 0 -ParameterFilter { $State -eq 'success' }
+        }
+
+        It 'does not throw and continues polling after a lifecycle test failure' {
+            # The operator sees the failure via the GitHub deployment status.
+            # The agent must not crash - it continues to drain any queued
+            # deployments and picks up new ones after the failure.
+            { Invoke-E2EAgentLoop @Script:BaseParams } | Should -Not -Throw
+        }
+    }
+
+    # ------------------------------------------------------------------
+    Context 'queue drain - multiple pending deployments' {
+    # ------------------------------------------------------------------
+
+        It 'processes a second deployment after the first succeeds' {
+            $script:_qdCount = 0
+            Mock Get-GitHubAppToken { $Script:FreshToken }
+            Mock Get-PendingDeployment {
+                $script:_qdCount++
+                if ($script:_qdCount -eq 1) { return [PSCustomObject]@{ id = 10 } }
+                if ($script:_qdCount -eq 2) { return [PSCustomObject]@{ id = 11 } }
+                return $null
+            }
+            Mock Set-DeploymentStatus {}
+            Mock Invoke-RunnerLifecycleTest {}
+
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            Should -Invoke Set-DeploymentStatus -ParameterFilter {
+                $DeploymentId -eq 10 -and $State -eq 'success'
+            }
+            Should -Invoke Set-DeploymentStatus -ParameterFilter {
+                $DeploymentId -eq 11 -and $State -eq 'success'
+            }
+        }
+
+        It 'processes a second deployment after the first fails' {
+            $script:_qdCount2 = 0
+            $script:_qdLifecycle = 0
+            Mock Get-GitHubAppToken { $Script:FreshToken }
+            Mock Get-PendingDeployment {
+                $script:_qdCount2++
+                if ($script:_qdCount2 -eq 1) { return [PSCustomObject]@{ id = 20 } }
+                if ($script:_qdCount2 -eq 2) { return [PSCustomObject]@{ id = 21 } }
+                return $null
+            }
+            Mock Set-DeploymentStatus {}
+            Mock Invoke-RunnerLifecycleTest {
+                $script:_qdLifecycle++
+                if ($script:_qdLifecycle -eq 1) { throw 'first test failed' }
+            }
+
+            { Invoke-E2EAgentLoop @Script:BaseParams } | Should -Not -Throw
+
+            Should -Invoke Set-DeploymentStatus -ParameterFilter {
+                $DeploymentId -eq 20 -and $State -eq 'failure'
+            }
+            Should -Invoke Set-DeploymentStatus -ParameterFilter {
+                $DeploymentId -eq 21 -and $State -eq 'success'
+            }
+        }
+
+        It 'continues polling after processing a deployment instead of exiting' {
+            $script:_qdCount3 = 0
+            Mock Get-GitHubAppToken { $Script:FreshToken }
+            Mock Get-PendingDeployment {
+                $script:_qdCount3++
+                if ($script:_qdCount3 -eq 1) { return [PSCustomObject]@{ id = 30 } }
+                return $null
+            }
+            Mock Set-DeploymentStatus {}
+            Mock Invoke-RunnerLifecycleTest {}
+
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            # More than one call means the loop re-polled after the deployment
+            # was processed rather than returning immediately.
+            $script:_qdCount3 | Should -BeGreaterThan 1
         }
     }
 
@@ -303,7 +402,12 @@ Describe 'Invoke-E2EAgentLoop' {
                 if ($script:_tokenCallCount -eq 1) { return $expiringToken }
                 return $refreshedToken
             }
-            Mock Get-PendingDeployment  { [PSCustomObject]@{ id = 1 } }
+            $script:_trCount = 0
+            Mock Get-PendingDeployment {
+                $script:_trCount++
+                if ($script:_trCount -eq 1) { return [PSCustomObject]@{ id = 1 } }
+                return $null
+            }
             Mock Set-DeploymentStatus   {}
             Mock Invoke-RunnerLifecycleTest {}
 
@@ -323,14 +427,6 @@ Describe 'Invoke-E2EAgentLoop' {
             }
 
             $script:_installationIds = [System.Collections.Generic.List[int]]::new()
-            Mock Get-GitHubAppToken {
-                $script:_installationIds.Add($InstallationId)
-                [PSCustomObject]@{
-                    Token     = 'tok'
-                    ExpiresAt = [DateTimeOffset]::UtcNow.AddMinutes(55).ToString('o')
-                }
-            }
-            # Override: first call returns expiring token to trigger a refresh
             $script:_tokenCallCount2 = 0
             Mock Get-GitHubAppToken {
                 $script:_tokenCallCount2++
@@ -338,7 +434,12 @@ Describe 'Invoke-E2EAgentLoop' {
                 if ($script:_tokenCallCount2 -eq 1) { return $expiringToken }
                 return [PSCustomObject]@{ Token = 'tok'; ExpiresAt = [DateTimeOffset]::UtcNow.AddMinutes(55).ToString('o') }
             }
-            Mock Get-PendingDeployment  { [PSCustomObject]@{ id = 1 } }
+            $script:_trCount2 = 0
+            Mock Get-PendingDeployment {
+                $script:_trCount2++
+                if ($script:_trCount2 -eq 1) { return [PSCustomObject]@{ id = 1 } }
+                return $null
+            }
             Mock Set-DeploymentStatus   {}
             Mock Invoke-RunnerLifecycleTest {}
 
@@ -367,7 +468,12 @@ Describe 'Invoke-E2EAgentLoop' {
                 if ($script:_callCount -eq 1) { return $expiringToken }
                 return $refreshedToken
             }
-            Mock Get-PendingDeployment  { [PSCustomObject]@{ id = 1 } }
+            $script:_trCount3 = 0
+            Mock Get-PendingDeployment {
+                $script:_trCount3++
+                if ($script:_trCount3 -eq 1) { return [PSCustomObject]@{ id = 1 } }
+                return $null
+            }
             Mock Set-DeploymentStatus   {}
             Mock Invoke-RunnerLifecycleTest {}
 
@@ -377,8 +483,13 @@ Describe 'Invoke-E2EAgentLoop' {
         }
 
         It 'does not refresh the token when ExpiresAt is more than 5 minutes away' {
+            $script:_trCount4 = 0
             Mock Get-GitHubAppToken     { $Script:FreshToken }  # ExpiresAt = +55min
-            Mock Get-PendingDeployment  { [PSCustomObject]@{ id = 1 } }
+            Mock Get-PendingDeployment  {
+                $script:_trCount4++
+                if ($script:_trCount4 -eq 1) { return [PSCustomObject]@{ id = 1 } }
+                return $null
+            }
             Mock Set-DeploymentStatus   {}
             Mock Invoke-RunnerLifecycleTest {}
 

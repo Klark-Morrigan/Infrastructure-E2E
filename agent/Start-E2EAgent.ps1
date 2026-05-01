@@ -1,6 +1,12 @@
 <#
 .SYNOPSIS
-    Polls GitHub for a pending E2E deployment and runs the full test suite.
+    Polls GitHub for pending E2E deployments and runs the full test suite.
+
+.PARAMETER RuntimeHours
+    Total number of hours the agent will run before terminating cleanly.
+    Defaults to 1. The agent may overshoot by up to TimeoutMinutes (the
+    per-session polling window) because the check only fires at session
+    boundaries.
 
 .DESCRIPTION
     Reads configuration from the E2EConfig vault, acquires a short-lived
@@ -12,6 +18,12 @@
       2. Runs Invoke-RunnerLifecycleTest (provisions VM, sets up users, registers
          and verifies the GitHub Actions runner, tears everything down).
       3. Posts 'success' or 'failure' depending on the outcome.
+      4. Immediately re-polls so any queued pending deployments are drained
+         before sleeping again.
+
+    The agent runs indefinitely - use Ctrl+C to stop it. If a structural error
+    occurs (vault unreachable, GitHub API failure), the loop restarts after a
+    60-second pause so transient failures do not require operator intervention.
 
     The token is refreshed automatically when it is within 5 minutes of expiry
     so a long poll wait does not produce a stale-token failure mid-test.
@@ -26,20 +38,29 @@
 #>
 
 [CmdletBinding()]
-param()
+param(
+    [Parameter()]
+    [int] $RuntimeHours = 1
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ---------------------------------------------------------------------------
 # Invoke-E2EAgentLoop
-#   Core polling logic. Isolated from the vault-reading bootstrap so it
-#   can be unit-tested without a real vault.
+#   Core polling loop. Runs until $Deadline, processing every pending
+#   deployment in the order returned by Get-PendingDeployment (oldest
+#   first). After each deployment (pass or fail) the loop re-polls
+#   immediately to drain the queue before sleeping again.
 #
-#   $Deadline is injectable for unit tests; production code always passes
-#   [DateTime]::MinValue and lets the function compute it from $TimeoutMinutes.
-#   This avoids real-clock dependency in tests without adding a test-only
-#   abstraction layer to the function signature.
+#   Lifecycle test failures do not propagate - the deployment is marked
+#   'failure' on GitHub and polling resumes. Structural errors (token
+#   refresh, GitHub API) propagate to the caller for restart handling.
+#
+#   Isolated from the vault-reading bootstrap so it can be unit-tested
+#   without a real vault. $Deadline is injectable for tests; production
+#   code passes [DateTime]::MinValue and lets the function compute it
+#   from $TimeoutMinutes.
 # ---------------------------------------------------------------------------
 
 function Invoke-E2EAgentLoop {
@@ -198,10 +219,10 @@ function Invoke-E2EAgentLoop {
                 }
 
                 Write-Host "E2E tests failed: $msg" -ForegroundColor Red
-                throw
+                continue
             }
 
-            return
+            continue
         }
 
         $remaining = [Math]::Max(0, [int]($Deadline - [DateTime]::UtcNow).TotalMinutes)
@@ -244,7 +265,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     #   "Repo":                  "Infrastructure-E2E",
     #   "Environment":           "e2e-workstation",
     #   "PollIntervalSeconds":   30,
-    #   "TimeoutMinutes":        60,
+    #   "TimeoutMinutes":        10,
     #   "ProvisionerPath":       "C:\\a_Code\\Infrastructure-Vm-Provisioner",
     #   "TestVm": {
     #     "ubuntuVersion": "24.04",
@@ -263,16 +284,39 @@ if ($MyInvocation.InvocationName -ne '.') {
     $configJson = Get-InfrastructureSecret -VaultName 'E2EConfig' -SecretName 'E2EConfig'
     $config     = $configJson | ConvertFrom-Json
 
-    Invoke-E2EAgentLoop `
-        -AppId                 $config.AppId `
-        -E2EInstallationId     $config.E2EInstallationId `
-        -RunnersInstallationId $config.RunnersInstallationId `
-        -PrivateKeyPath        $config.PrivateKeyPath `
-        -ProvisionerPath       $config.ProvisionerPath `
-        -TestVm                $config.TestVm `
-        -Owner                 $config.Owner `
-        -Repo                  $config.Repo `
-        -Environment           $config.Environment `
-        -PollIntervalSeconds   $config.PollIntervalSeconds `
-        -TimeoutMinutes        $config.TimeoutMinutes
+    $globalDeadline = [DateTime]::UtcNow.AddHours($RuntimeHours)
+    Write-Host ("Agent will terminate after $RuntimeHours hour(s) " +
+        "at $($globalDeadline.ToString('HH:mm:ss')) UTC.") -ForegroundColor Cyan
+
+    # Each iteration is one polling session (TimeoutMinutes long). The global
+    # deadline is checked at session boundaries so the agent stops without
+    # operator intervention. PipelineStoppedException (Ctrl+C) is re-thrown
+    # so the operator can also stop it early.
+    while ([DateTime]::UtcNow -lt $globalDeadline) {
+        try {
+            Invoke-E2EAgentLoop `
+                -AppId                 $config.AppId `
+                -E2EInstallationId     $config.E2EInstallationId `
+                -RunnersInstallationId $config.RunnersInstallationId `
+                -PrivateKeyPath        $config.PrivateKeyPath `
+                -ProvisionerPath       $config.ProvisionerPath `
+                -TestVm                $config.TestVm `
+                -Owner                 $config.Owner `
+                -Repo                  $config.Repo `
+                -Environment           $config.Environment `
+                -PollIntervalSeconds   $config.PollIntervalSeconds `
+                -TimeoutMinutes        $config.TimeoutMinutes
+        }
+        catch [System.Management.Automation.PipelineStoppedException] {
+            throw
+        }
+        catch {
+            Write-Host "Agent crashed: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host 'Restarting in 60 seconds ...' -ForegroundColor Yellow
+            Start-Sleep -Seconds 60
+        }
+    }
+
+    Write-Host "Global runtime of $RuntimeHours hour(s) elapsed. Agent stopping." `
+        -ForegroundColor Yellow
 }
