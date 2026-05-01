@@ -22,6 +22,7 @@ Describe 'Invoke-E2EAgentLoop' {
             RunnersInstallationId = 20
             PrivateKeyPath        = 'C:\test.pem'
             ProvisionerPath       = 'C:\test\provisioner'
+            UsersPath             = 'C:\test\users'
             TestVm                = [PSCustomObject]@{
                 ubuntuVersion = '24.04'
                 ipAddress     = '192.168.100.200'
@@ -136,6 +137,7 @@ Describe 'Invoke-E2EAgentLoop' {
             $Script:_config.RunnersInstallationId   | Should -Be 20
             $Script:_config.PrivateKeyPath          | Should -Be 'C:\test.pem'
             $Script:_config.ProvisionerPath         | Should -Be 'C:\test\provisioner'
+            $Script:_config.UsersPath               | Should -Be 'C:\test\users'
             $Script:_config.TestVm.ipAddress        | Should -Be '192.168.100.200'
         }
 
