@@ -73,6 +73,35 @@ function Invoke-VmUsersSetup {
     Write-Host 'Reconciling users ...' -ForegroundColor Cyan
     & "$($Config.UsersPath)\hyper-v\ubuntu\create-users.ps1"
 
+    # Verify SSH is reachable after create-users.ps1 returns. create-users.ps1
+    # pings the VM and silently skips it with Write-Warning when ping fails -
+    # it exits 0 regardless. Without this check, a skipped VM produces
+    # misleading "user not found" errors in the assertion phase rather than
+    # a clear setup failure here.
+    Write-Host "Verifying SSH reachable after user reconciliation: $($vmDef.ipAddress) ..." `
+        -ForegroundColor Cyan
+    $auth     = [Renci.SshNet.PasswordAuthenticationMethod]::new(
+                    $vmDef.username, $vmDef.password)
+    $connInfo = [Renci.SshNet.ConnectionInfo]::new(
+                    $vmDef.ipAddress, $vmDef.username, @($auth))
+    $setupSshClient = $null
+    try {
+        $setupSshClient = [Renci.SshNet.SshClient]::new($connInfo)
+        $setupSshClient.Connect()
+        Write-Host '  [OK] VM reachable via SSH after user reconciliation.' `
+            -ForegroundColor Green
+    }
+    catch {
+        throw "VM at $($vmDef.ipAddress) unreachable via SSH after create-users.ps1 - " +
+            "users may not have been reconciled. Inner: $($_.Exception.Message)"
+    }
+    finally {
+        if ($null -ne $setupSshClient) {
+            if ($setupSshClient.IsConnected) { $setupSshClient.Disconnect() }
+            $setupSshClient.Dispose()
+        }
+    }
+
     return $vmDef
 }
 
@@ -196,6 +225,18 @@ function Invoke-VmUsersTest {
                             -ForegroundColor Green
                     }
                 }
+
+                # Home directory must exist. useradd -m creates it; a missing
+                # directory means cloud-init or useradd did not run correctly.
+                $result = Invoke-SshClientCommand `
+                    -SshClient $sshClient `
+                    -Command   "test -d '$($user.homeDir)' && echo exists || echo absent"
+                if (($result.Output -join '').Trim() -ne 'exists') {
+                    throw "Home directory '$($user.homeDir)' for '$username' " +
+                        "not found on $($vmDef.vmName)."
+                }
+                Write-Host "  [OK] user '$username' home dir: $($user.homeDir)" `
+                    -ForegroundColor Green
 
                 # Sudoers file must exist when rules are declared. Checking for
                 # file presence is sufficient - syntax is validated by
