@@ -24,6 +24,12 @@
 # ---------------------------------------------------------------------------
 
 function Get-E2ERunnerUsersEntry {
+    # SSH.NET PasswordAuthenticationMethod and the VmUsersConfig JSON schema
+    # both require plain strings. The password is generated once per test
+    # run, never written to source or disk, and discarded when the VM is
+    # destroyed.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingPlainTextForPassword', 'DeployPassword')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
@@ -132,16 +138,18 @@ function Invoke-RunnerLifecycleSetup {
     # minted for RunnersInstallationId (actions:write) - not the E2E token
     # (deployments:write). Passing it as -Token avoids the interactive prompt
     # in register-runners.ps1.
+    #
+    # The token is returned to the caller rather than used here so that the
+    # test function holds it before registration starts. If register-runners.ps1
+    # fails part-way (e.g. config.sh succeeds, svc.sh fails), the test's
+    # best-effort cleanup block still has the token and can call
+    # deregister-runners.ps1 to remove any partial GitHub registration.
     Write-Host 'Acquiring GitHub App token for runner registration ...' `
         -ForegroundColor Cyan
     $tokenResult = Get-GitHubAppToken `
         -AppId          $Config.AppId `
         -InstallationId $Config.RunnersInstallationId `
         -PrivateKeyPath $Config.PrivateKeyPath
-
-    Write-Host 'Registering runners ...' -ForegroundColor Cyan
-    & "$($Config.RunnersPath)\hyper-v\ubuntu\register-runners.ps1" `
-        -Token $tokenResult.Token
 
     return [PSCustomObject]@{
         VmDef        = $vmDef
@@ -300,6 +308,13 @@ function Invoke-RunnerLifecycleTest {
         $vmDef        = $setup.VmDef
         $runnersToken = $setup.RunnersToken
         $entry        = $setup.Entry
+
+        # Registration starts here - $runnersToken is already assigned so the
+        # finally block can call deregister-runners.ps1 even if this fails
+        # mid-way (e.g. config.sh succeeds but svc.sh fails).
+        Write-Host 'Registering runners ...' -ForegroundColor Cyan
+        & "$($Config.RunnersPath)\hyper-v\ubuntu\register-runners.ps1" `
+            -Token $runnersToken
 
         $configEntry = Get-E2ERunnersConfigEntry -Config $Config
         $runnerName  = $configEntry[0].runnerName
