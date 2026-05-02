@@ -80,7 +80,6 @@ Under **Repository permissions**, set:
 |---|---|---|---|
 | Deployments | Read & write | Infrastructure-E2E | Agent polls pending deployments and posts status |
 | Contents | Read & write | Infrastructure-E2E | Upstream trigger workflows fire `repository_dispatch` |
-| Actions | Read & write | Infrastructure-GitHubRunners | Agent obtains runner registration tokens and manages runners |
 
 Leave all other permissions at **No access**.
 
@@ -116,15 +115,19 @@ ID is the number at the end of that URL:
 `github.com/settings/installations/`**`22222222`**
 
 The polling agent uses two installation IDs:
-- **E2E** (`e2eInstallationId`) - to get a `deployments: write` token for
+- **E2E** (`E2EInstallationId`) - to get a `deployments: write` token for
   polling and posting deployment status on `Infrastructure-E2E`
-- **GitHubRunners** (`githubRunnersInstallationId`) - to get an
-  `actions: write` token for managing runners on `Infrastructure-GitHubRunners`
+- **GitHubRunners** (`RunnersInstallationId`) - to mint a token scoped to
+  `Infrastructure-GitHubRunners` with `administration: write` only, used
+  for runner registration and deregistration
+
+Scoping the runners token to one repo and one permission at mint time means
+`Administration` access is never granted to the other repos in the installation.
 
 The other two repos (`Infrastructure-Vm-Provisioner`,
 `Infrastructure-Vm-Users`) are installed so the app can receive
-`repository_dispatch` trigger calls from their CI workflows - their
-installation IDs are not needed in the vault.
+`workflow_call` triggers from their CI workflows - their installation IDs
+are not needed in the vault.
 
 ### 3. Configure the E2EConfig vault
 
@@ -133,18 +136,18 @@ following in the `E2EConfig` vault:
 
 ```jsonc
 {
-  "AppId":                123456,
-  "PrivateKeyPath":       "C:\\private\\e2e-agent.pem",
+  "AppId":               123456,
+  "PrivateKeyPath":      "C:\\private\\e2e-agent.pem",
   "E2EInstallationId":    11111111,  // installation ID for Infrastructure-E2E
   "RunnersInstallationId": 22222222, // installation ID for Infrastructure-GitHubRunners
-  "Owner":                "my-org",
-  "Repo":                 "Infrastructure-E2E",
-  "Environment":          "e2e-workstation",
-  "PollIntervalSeconds":  30,
-  "TimeoutMinutes":       60,
-  "ProvisionerPath":      "C:\\a_Code\\Infrastructure-Vm-Provisioner",
-  "UsersPath":            "C:\\a_Code\\Infrastructure-Vm-Users",
-  "RunnersPath":          "C:\\a_Code\\Infrastructure-GitHubRunners",
+  "Owner":               "my-org",
+  "Repo":                "Infrastructure-E2E",
+  "Environment":         "e2e-workstation",
+  "PollIntervalSeconds": 30,
+  "TimeoutMinutes":      60,
+  "ProvisionerPath":     "C:\\a_Code\\Infrastructure-Vm-Provisioner",
+  "UsersPath":           "C:\\a_Code\\Infrastructure-Vm-Users",
+  "RunnersPath":         "C:\\a_Code\\Infrastructure-GitHubRunners",
   "TestVm": {
     "ubuntuVersion":  "24.04",
     "ipAddress":      "192.168.101.10",
