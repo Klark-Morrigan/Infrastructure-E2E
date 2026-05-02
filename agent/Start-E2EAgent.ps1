@@ -92,6 +92,12 @@ function Invoke-E2EAgentLoop {
         [Parameter(Mandatory)]
         [string] $ProvisionerPath,
 
+        # Absolute path to the Infrastructure-Vm-Users repo root on the
+        # workstation. Passed to the lifecycle test so it can call
+        # create-users.ps1.
+        [Parameter(Mandatory)]
+        [string] $UsersPath,
+
         # Operator-specific VM config for the E2E test VM. Contains the
         # workstation-specific values (IP, gateway, paths) that cannot be
         # hardcoded. Written to the VmProvisioner vault at test startup.
@@ -186,6 +192,7 @@ function Invoke-E2EAgentLoop {
                     RunnersInstallationId = $RunnersInstallationId
                     PrivateKeyPath        = $PrivateKeyPath
                     ProvisionerPath       = $ProvisionerPath
+                    UsersPath             = $UsersPath
                     TestVm                = $TestVm
                 })
 
@@ -300,6 +307,7 @@ if ($MyInvocation.InvocationName -ne '.') {
                 -RunnersInstallationId $config.RunnersInstallationId `
                 -PrivateKeyPath        $config.PrivateKeyPath `
                 -ProvisionerPath       $config.ProvisionerPath `
+                -UsersPath             $config.UsersPath `
                 -TestVm                $config.TestVm `
                 -Owner                 $config.Owner `
                 -Repo                  $config.Repo `

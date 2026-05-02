@@ -143,6 +143,7 @@ following in the `E2EConfig` vault:
   "PollIntervalSeconds":  30,
   "TimeoutMinutes":       60,
   "ProvisionerPath":      "C:\\a_Code\\Infrastructure-Vm-Provisioner",
+  "UsersPath":            "C:\\a_Code\\Infrastructure-Vm-Users",
   "TestVm": {
     "ubuntuVersion":  "24.04",
     "ipAddress":      "192.168.101.10",
@@ -280,9 +281,9 @@ its own assertions on top.
 
 | Layer | Script | Asserts |
 |---|---|---|
-| VM provisioning | `agent/e2e/vm-provisioning/Invoke-VmProvisioningTest.ps1` | VM is reachable via SSH (`hostname` exits 0) |
-| VM users | `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` | Expected OS users and groups exist on the VM (step 9) |
-| Runner lifecycle | `agent/e2e/runner-lifecycle/Invoke-RunnerLifecycleTest.ps1` | Runner service is active; runner appears online in GitHub API (step 10) |
+| VM provisioning | `agent/e2e/vm-provisioning/Invoke-VmProvisioningTest.ps1` | VM is reachable via SSH (`hostname` exits 0); cloud-init completed; root filesystem not full |
+| VM users | `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` | Expected OS groups exist; expected users exist with correct shell and group membership; sudoers files are in place |
+| Runner lifecycle | `agent/e2e/runner-lifecycle/Invoke-RunnerLifecycleTest.ps1` | Runner service is active; runner appears online in GitHub API (step 11) |
 
 The polling agent (`Start-E2EAgent.ps1`) always runs the full runner
 lifecycle test, which transitively exercises all three layers. The
