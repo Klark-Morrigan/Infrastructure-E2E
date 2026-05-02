@@ -43,6 +43,7 @@ Initialize-MicrosoftPowerShellSecretStoreVault `
             'TimeoutMinutes',
             'ProvisionerPath',
             'UsersPath',
+            'RunnersPath',
             'TestVm'
         ) -Context 'E2EConfig'
 

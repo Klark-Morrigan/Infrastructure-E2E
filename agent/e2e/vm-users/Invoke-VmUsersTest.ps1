@@ -57,8 +57,19 @@ function Invoke-VmUsersSetup {
         # Config object from Start-E2EAgent.ps1.
         # Must include ProvisionerPath, UsersPath, and TestVm.
         [Parameter(Mandatory)]
-        [PSCustomObject] $Config
+        [PSCustomObject] $Config,
+
+        # Optional VmUsersConfig entry override. Defaults to
+        # Get-E2EUsersTestEntry when not provided. Higher-layer tests
+        # (e.g. runner lifecycle) pass an extended entry that adds
+        # deploy and runner service users on top of the base set.
+        [Parameter()]
+        [object] $Entry = $null
     )
+
+    if ($null -eq $Entry) {
+        $Entry = Get-E2EUsersTestEntry
+    }
 
     # VmUsersConfig must be a JSON array - ConvertFrom-VmUsersConfigJson
     # rejects a bare object.
@@ -66,7 +77,7 @@ function Invoke-VmUsersSetup {
     Set-Secret `
         -Vault  VmUsers `
         -Name   VmUsersConfig `
-        -Secret (ConvertTo-Json @(Get-E2EUsersTestEntry) -Depth 5 -Compress)
+        -Secret (ConvertTo-Json @($Entry) -Depth 5 -Compress)
 
     $vmDef = Invoke-VmProvisioningSetup -Config $Config
 
@@ -130,8 +141,18 @@ function Invoke-VmUsersTeardown {
         # SSH credentials for the VM - needed to assert OS state after
         # remove-users.ps1 runs, while the VM is still alive.
         [Parameter(Mandatory)]
-        [PSCustomObject] $VmDef
+        [PSCustomObject] $VmDef,
+
+        # Optional VmUsersConfig entry override used to determine which
+        # users and groups to assert are gone. Defaults to
+        # Get-E2EUsersTestEntry when not provided.
+        [Parameter()]
+        [object] $Entry = $null
     )
+
+    if ($null -eq $Entry) {
+        $Entry = Get-E2EUsersTestEntry
+    }
 
     Write-Host 'Removing users ...' -ForegroundColor Cyan
     & "$($Config.UsersPath)\hyper-v\ubuntu\remove-users.ps1"
@@ -152,9 +173,7 @@ function Invoke-VmUsersTeardown {
         $sshClient = [Renci.SshNet.SshClient]::new($connInfo)
         $sshClient.Connect()
 
-        $entry = Get-E2EUsersTestEntry
-
-        foreach ($user in $entry.users) {
+        foreach ($user in $Entry.users) {
             $username = $user.username
 
             # User account must be gone. userdel removes the account and, on
@@ -195,7 +214,7 @@ function Invoke-VmUsersTeardown {
 
         # Declared groups must be gone. groupdel runs after all users are
         # removed so no members block deletion.
-        foreach ($group in $entry.groups) {
+        foreach ($group in $Entry.groups) {
             $groupName = $group.groupName
             $result    = Invoke-SshClientCommand `
                 -SshClient $sshClient `

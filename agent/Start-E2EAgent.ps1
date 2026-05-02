@@ -98,6 +98,12 @@ function Invoke-E2EAgentLoop {
         [Parameter(Mandatory)]
         [string] $UsersPath,
 
+        # Absolute path to the Infrastructure-GitHubRunners repo root on
+        # the workstation. Passed to the lifecycle test so it can call
+        # register-runners.ps1 and deregister-runners.ps1.
+        [Parameter(Mandatory)]
+        [string] $RunnersPath,
+
         # Operator-specific VM config for the E2E test VM. Contains the
         # workstation-specific values (IP, gateway, paths) that cannot be
         # hardcoded. Written to the VmProvisioner vault at test startup.
@@ -193,6 +199,8 @@ function Invoke-E2EAgentLoop {
                     PrivateKeyPath        = $PrivateKeyPath
                     ProvisionerPath       = $ProvisionerPath
                     UsersPath             = $UsersPath
+                    RunnersPath           = $RunnersPath
+                    Owner                 = $Owner
                     TestVm                = $TestVm
                 })
 
@@ -308,6 +316,7 @@ if ($MyInvocation.InvocationName -ne '.') {
                 -PrivateKeyPath        $config.PrivateKeyPath `
                 -ProvisionerPath       $config.ProvisionerPath `
                 -UsersPath             $config.UsersPath `
+                -RunnersPath           $config.RunnersPath `
                 -TestVm                $config.TestVm `
                 -Owner                 $config.Owner `
                 -Repo                  $config.Repo `
