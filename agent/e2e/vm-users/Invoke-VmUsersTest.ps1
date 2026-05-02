@@ -107,27 +107,116 @@ function Invoke-VmUsersSetup {
 
 # ---------------------------------------------------------------------------
 # Invoke-VmUsersTeardown
-#   Destroys the test VM via Invoke-VmProvisioningTeardown, then removes
-#   VmUsersConfig from the VmUsers vault. Always called from a finally block
-#   so cleanup runs regardless of test outcome.
+#   Removes OS users via remove-users.ps1, asserts removal on the VM via
+#   SSH, removes VmUsersConfig from the vault, then destroys the VM via
+#   Invoke-VmProvisioningTeardown. Always called from a finally block so
+#   cleanup runs regardless of test outcome.
 #
-#   Provisioner teardown runs first to destroy the VM; VmUsersConfig is
-#   removed last so the vault stays consistent if teardown is retried
-#   (create-users.ps1 reads VmUsersConfig - keeping it present during VM
-#   removal avoids a reference to a missing entry on a re-run attempt).
+#   Order rationale:
+#     1. remove-users.ps1 runs first - VM must be alive and both vaults
+#        must still contain their entries (the script reads both).
+#     2. SSH assertions run next - VM is still alive, OS state is checkable.
+#     3. VmUsersConfig is removed from the vault - script no longer needed.
+#     4. Invoke-VmProvisioningTeardown destroys the VM and removes
+#        VmProvisionerConfig. Network teardown also happens here.
 # ---------------------------------------------------------------------------
 
 function Invoke-VmUsersTeardown {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [PSCustomObject] $Config
+        [PSCustomObject] $Config,
+
+        # SSH credentials for the VM - needed to assert OS state after
+        # remove-users.ps1 runs, while the VM is still alive.
+        [Parameter(Mandatory)]
+        [PSCustomObject] $VmDef
     )
 
-    Invoke-VmProvisioningTeardown -Config $Config
+    Write-Host 'Removing users ...' -ForegroundColor Cyan
+    & "$($Config.UsersPath)\hyper-v\ubuntu\remove-users.ps1"
+
+    # Assert users, home directories, sudoers files, and declared groups are
+    # gone - while the VM is still alive. This must run before
+    # Invoke-VmProvisioningTeardown destroys the VM.
+    Write-Host "Verifying user removal: $($VmDef.vmName) at $($VmDef.ipAddress) ..." `
+        -ForegroundColor Cyan
+
+    $auth      = [Renci.SshNet.PasswordAuthenticationMethod]::new(
+                     $VmDef.username, $VmDef.password)
+    $connInfo  = [Renci.SshNet.ConnectionInfo]::new(
+                     $VmDef.ipAddress, $VmDef.username, @($auth))
+    $sshClient = $null
+
+    try {
+        $sshClient = [Renci.SshNet.SshClient]::new($connInfo)
+        $sshClient.Connect()
+
+        $entry = Get-E2EUsersTestEntry
+
+        foreach ($user in $entry.users) {
+            $username = $user.username
+
+            # User account must be gone. userdel removes the account and, on
+            # Ubuntu, the primary group named after the user automatically.
+            $result = Invoke-SshClientCommand `
+                -SshClient $sshClient `
+                -Command   "id '$username'"
+            if ($result.ExitStatus -eq 0) {
+                throw "Teardown incomplete: user '$username' still exists on $($VmDef.vmName)."
+            }
+            Write-Host "  [OK] user '$username' removed." -ForegroundColor Green
+
+            # Home directory must be gone. userdel -r removes it along with
+            # the account; a surviving directory means -r was not applied.
+            $result = Invoke-SshClientCommand `
+                -SshClient $sshClient `
+                -Command   "test -d '$($user.homeDir)' && echo exists || echo absent"
+            if (($result.Output -join '').Trim() -ne 'absent') {
+                throw "Teardown incomplete: home dir '$($user.homeDir)' " +
+                    "still exists on $($VmDef.vmName)."
+            }
+            Write-Host "  [OK] home dir '$($user.homeDir)' removed." -ForegroundColor Green
+
+            # Sudoers file must be gone when rules were declared.
+            $sudoersRules = @($user.sudoersRules)
+            if ($sudoersRules.Count -gt 0) {
+                $sudoersPath  = "/etc/sudoers.d/$username"
+                $result       = Invoke-SshClientCommand `
+                    -SshClient $sshClient `
+                    -Command   "sudo test -f '$sudoersPath' && echo exists || echo absent"
+                if (($result.Output -join '').Trim() -ne 'absent') {
+                    throw "Teardown incomplete: sudoers file '$sudoersPath' " +
+                        "still exists on $($VmDef.vmName)."
+                }
+                Write-Host "  [OK] sudoers file for '$username' removed." -ForegroundColor Green
+            }
+        }
+
+        # Declared groups must be gone. groupdel runs after all users are
+        # removed so no members block deletion.
+        foreach ($group in $entry.groups) {
+            $groupName = $group.groupName
+            $result    = Invoke-SshClientCommand `
+                -SshClient $sshClient `
+                -Command   "getent group '$groupName'"
+            if ($result.ExitStatus -eq 0) {
+                throw "Teardown incomplete: group '$groupName' still exists on $($VmDef.vmName)."
+            }
+            Write-Host "  [OK] group '$groupName' removed." -ForegroundColor Green
+        }
+    }
+    finally {
+        if ($null -ne $sshClient) {
+            if ($sshClient.IsConnected) { $sshClient.Disconnect() }
+            $sshClient.Dispose()
+        }
+    }
 
     Write-Host 'Removing test VmUsersConfig from vault ...' -ForegroundColor Cyan
     Remove-Secret -Vault VmUsers -Name VmUsersConfig
+
+    Invoke-VmProvisioningTeardown -Config $Config
 }
 
 # ---------------------------------------------------------------------------
@@ -263,7 +352,7 @@ function Invoke-VmUsersTest {
         }
     }
     finally {
-        Invoke-VmUsersTeardown -Config $Config
+        Invoke-VmUsersTeardown -Config $Config -VmDef $vmDef
 
         Write-Host 'Verifying teardown ...' -ForegroundColor Cyan
 
