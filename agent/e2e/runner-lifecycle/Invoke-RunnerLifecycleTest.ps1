@@ -134,22 +134,19 @@ function Invoke-RunnerLifecycleSetup {
     # Provision VM, create all users (base + e2edeploy + e2erunner).
     $vmDef = Invoke-VmUsersSetup -Config $Config -Entry $entry
 
-    # Acquire a short-lived token for runner registration. This token is
-    # minted for RunnersInstallationId (actions:write) - not the E2E token
-    # (deployments:write). Passing it as -Token avoids the interactive prompt
-    # in register-runners.ps1.
-    #
-    # The token is returned to the caller rather than used here so that the
-    # test function holds it before registration starts. If register-runners.ps1
-    # fails part-way (e.g. config.sh succeeds, svc.sh fails), the test's
-    # best-effort cleanup block still has the token and can call
-    # deregister-runners.ps1 to remove any partial GitHub registration.
+    # Mint a token scoped to Infrastructure-GitHubRunners with administration:write
+    # only. Scoping to one repo and one permission prevents the token from
+    # touching the other repos the installation covers, even if the app declares
+    # broader permissions.
     Write-Host 'Acquiring GitHub App token for runner registration ...' `
         -ForegroundColor Cyan
+    $runnersRepo = Split-Path $Config.RunnersPath -Leaf
     $tokenResult = Get-GitHubAppToken `
         -AppId          $Config.AppId `
         -InstallationId $Config.RunnersInstallationId `
-        -PrivateKeyPath $Config.PrivateKeyPath
+        -PrivateKeyPath $Config.PrivateKeyPath `
+        -Repositories   @($runnersRepo) `
+        -Permissions    @{ administration = 'write' }
 
     return [PSCustomObject]@{
         VmDef        = $vmDef
