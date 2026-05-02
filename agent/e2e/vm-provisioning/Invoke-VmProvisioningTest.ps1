@@ -35,6 +35,11 @@ function Invoke-VmProvisioningSetup {
         [PSCustomObject] $Config
     )
 
+    # Hyper-V module is not auto-imported in the agent session - provision.ps1
+    # loads it only inside its own child process. Import it explicitly so
+    # Get-VM below is available.
+    Import-Module Hyper-V -ErrorAction Stop
+
     # Fail before writing anything if a leftover VM exists. provision.ps1
     # silently skips existing VMs, so without this guard the fresh password
     # written below would not match the old VM's credentials and every
