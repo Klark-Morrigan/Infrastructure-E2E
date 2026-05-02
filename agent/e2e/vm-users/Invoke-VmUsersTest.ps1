@@ -253,9 +253,12 @@ function Invoke-VmUsersTest {
         [PSCustomObject] $Config
     )
 
-    $vmDef = Invoke-VmUsersSetup -Config $Config
+    $vmDef     = $null
+    $succeeded = $false
 
     try {
+        $vmDef = Invoke-VmUsersSetup -Config $Config
+
         Write-Host "Verifying users: $($vmDef.vmName) at $($vmDef.ipAddress) ..." `
             -ForegroundColor Cyan
 
@@ -369,39 +372,60 @@ function Invoke-VmUsersTest {
                 $sshClient.Dispose()
             }
         }
+
+        $succeeded = $true
     }
     finally {
-        Invoke-VmUsersTeardown -Config $Config -VmDef $vmDef
+        if ($succeeded) {
+            Invoke-VmUsersTeardown -Config $Config -VmDef $vmDef
 
-        Write-Host 'Verifying teardown ...' -ForegroundColor Cyan
+            Write-Host 'Verifying teardown ...' -ForegroundColor Cyan
 
-        # Assert VM was removed from Hyper-V.
-        if ($null -ne (Get-VM -Name $vmDef.vmName -ErrorAction SilentlyContinue)) {
-            throw "Teardown incomplete: VM '$($vmDef.vmName)' still exists in Hyper-V."
-        }
-        Write-Host '  [OK] VM removed from Hyper-V.' -ForegroundColor Green
+            # Assert VM was removed from Hyper-V.
+            if ($null -ne (Get-VM -Name $vmDef.vmName -ErrorAction SilentlyContinue)) {
+                throw "Teardown incomplete: VM '$($vmDef.vmName)' still exists in Hyper-V."
+            }
+            Write-Host '  [OK] VM removed from Hyper-V.' -ForegroundColor Green
 
-        # Assert VmProvisionerConfig vault entry was removed.
-        if ($null -ne (Get-SecretInfo -Vault VmProvisioner -Name VmProvisionerConfig `
-                -ErrorAction SilentlyContinue)) {
-            throw "Teardown incomplete: VmProvisionerConfig still present in vault."
-        }
-        Write-Host '  [OK] VmProvisionerConfig removed from vault.' -ForegroundColor Green
+            # Assert VmProvisionerConfig vault entry was removed.
+            if ($null -ne (Get-SecretInfo -Vault VmProvisioner -Name VmProvisionerConfig `
+                    -ErrorAction SilentlyContinue)) {
+                throw "Teardown incomplete: VmProvisionerConfig still present in vault."
+            }
+            Write-Host '  [OK] VmProvisionerConfig removed from vault.' -ForegroundColor Green
 
-        # Assert VmUsersConfig vault entry was removed.
-        if ($null -ne (Get-SecretInfo -Vault VmUsers -Name VmUsersConfig `
-                -ErrorAction SilentlyContinue)) {
-            throw "Teardown incomplete: VmUsersConfig still present in vault."
-        }
-        Write-Host '  [OK] VmUsersConfig removed from vault.' -ForegroundColor Green
+            # Assert VmUsersConfig vault entry was removed.
+            if ($null -ne (Get-SecretInfo -Vault VmUsers -Name VmUsersConfig `
+                    -ErrorAction SilentlyContinue)) {
+                throw "Teardown incomplete: VmUsersConfig still present in vault."
+            }
+            Write-Host '  [OK] VmUsersConfig removed from vault.' -ForegroundColor Green
 
-        # Assert E2E-VmLAN switch and NAT are removed.
-        if ($null -ne (Get-VMSwitch -Name 'E2E-VmLAN' -ErrorAction SilentlyContinue)) {
-            throw "Teardown incomplete: E2E-VmLAN switch still exists."
+            # Assert E2E-VmLAN switch and NAT are removed.
+            if ($null -ne (Get-VMSwitch -Name 'E2E-VmLAN' -ErrorAction SilentlyContinue)) {
+                throw "Teardown incomplete: E2E-VmLAN switch still exists."
+            }
+            if ($null -ne (Get-NetNat -Name 'E2E-VmLAN-NAT' -ErrorAction SilentlyContinue)) {
+                throw "Teardown incomplete: E2E-VmLAN-NAT rule still exists."
+            }
+            Write-Host '  [OK] E2E-VmLAN switch and NAT removed.' -ForegroundColor Green
         }
-        if ($null -ne (Get-NetNat -Name 'E2E-VmLAN-NAT' -ErrorAction SilentlyContinue)) {
-            throw "Teardown incomplete: E2E-VmLAN-NAT rule still exists."
+        else {
+            # Best-effort deprovisioning when setup or assertions failed.
+            # Wrapped in try/catch so cleanup errors do not mask the original
+            # test failure.
+            Write-Host 'Test did not complete - running best-effort deprovisioning ...' `
+                -ForegroundColor Yellow
+            try {
+                Invoke-VmProvisioningTeardown -Config $Config
+            }
+            catch {
+                Write-Warning "Deprovisioning after failure: $($_.Exception.Message)"
+            }
+            try {
+                Remove-Secret -Vault VmUsers -Name VmUsersConfig -ErrorAction SilentlyContinue
+            }
+            catch {}
         }
-        Write-Host '  [OK] E2E-VmLAN switch and NAT removed.' -ForegroundColor Green
     }
 }

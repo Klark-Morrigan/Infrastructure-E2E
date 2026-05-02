@@ -290,12 +290,17 @@ function Invoke-RunnerLifecycleTest {
         [PSCustomObject] $Config
     )
 
-    $setup        = Invoke-RunnerLifecycleSetup -Config $Config
-    $vmDef        = $setup.VmDef
-    $runnersToken = $setup.RunnersToken
-    $entry        = $setup.Entry
+    $vmDef        = $null
+    $runnersToken = $null
+    $entry        = $null
+    $succeeded    = $false
 
     try {
+        $setup        = Invoke-RunnerLifecycleSetup -Config $Config
+        $vmDef        = $setup.VmDef
+        $runnersToken = $setup.RunnersToken
+        $entry        = $setup.Entry
+
         $configEntry = Get-E2ERunnersConfigEntry -Config $Config
         $runnerName  = $configEntry[0].runnerName
 
@@ -373,50 +378,80 @@ function Invoke-RunnerLifecycleTest {
                 "expected 'online'.")
         }
         Write-Host "  [OK] runner '$runnerName' online in GitHub." -ForegroundColor Green
+
+        $succeeded = $true
     }
     finally {
-        Invoke-RunnerLifecycleTeardown `
-            -Config       $Config `
-            -VmDef        $vmDef `
-            -RunnersToken $runnersToken `
-            -Entry        $entry
+        if ($succeeded) {
+            Invoke-RunnerLifecycleTeardown `
+                -Config       $Config `
+                -VmDef        $vmDef `
+                -RunnersToken $runnersToken `
+                -Entry        $entry
 
-        Write-Host 'Verifying teardown ...' -ForegroundColor Cyan
+            Write-Host 'Verifying teardown ...' -ForegroundColor Cyan
 
-        # Assert VM was removed from Hyper-V.
-        if ($null -ne (Get-VM -Name $vmDef.vmName -ErrorAction SilentlyContinue)) {
-            throw "Teardown incomplete: VM '$($vmDef.vmName)' still exists in Hyper-V."
-        }
-        Write-Host '  [OK] VM removed from Hyper-V.' -ForegroundColor Green
+            # Assert VM was removed from Hyper-V.
+            if ($null -ne (Get-VM -Name $vmDef.vmName -ErrorAction SilentlyContinue)) {
+                throw "Teardown incomplete: VM '$($vmDef.vmName)' still exists in Hyper-V."
+            }
+            Write-Host '  [OK] VM removed from Hyper-V.' -ForegroundColor Green
 
-        # Assert VmProvisionerConfig vault entry was removed.
-        if ($null -ne (Get-SecretInfo -Vault VmProvisioner -Name VmProvisionerConfig `
-                -ErrorAction SilentlyContinue)) {
-            throw "Teardown incomplete: VmProvisionerConfig still present in vault."
-        }
-        Write-Host '  [OK] VmProvisionerConfig removed from vault.' -ForegroundColor Green
+            # Assert VmProvisionerConfig vault entry was removed.
+            if ($null -ne (Get-SecretInfo -Vault VmProvisioner -Name VmProvisionerConfig `
+                    -ErrorAction SilentlyContinue)) {
+                throw "Teardown incomplete: VmProvisionerConfig still present in vault."
+            }
+            Write-Host '  [OK] VmProvisionerConfig removed from vault.' -ForegroundColor Green
 
-        # Assert VmUsersConfig vault entry was removed.
-        if ($null -ne (Get-SecretInfo -Vault VmUsers -Name VmUsersConfig `
-                -ErrorAction SilentlyContinue)) {
-            throw "Teardown incomplete: VmUsersConfig still present in vault."
-        }
-        Write-Host '  [OK] VmUsersConfig removed from vault.' -ForegroundColor Green
+            # Assert VmUsersConfig vault entry was removed.
+            if ($null -ne (Get-SecretInfo -Vault VmUsers -Name VmUsersConfig `
+                    -ErrorAction SilentlyContinue)) {
+                throw "Teardown incomplete: VmUsersConfig still present in vault."
+            }
+            Write-Host '  [OK] VmUsersConfig removed from vault.' -ForegroundColor Green
 
-        # Assert GitHubRunnersConfig vault entry was removed.
-        if ($null -ne (Get-SecretInfo -Vault GitHubRunners -Name GitHubRunnersConfig `
-                -ErrorAction SilentlyContinue)) {
-            throw "Teardown incomplete: GitHubRunnersConfig still present in vault."
-        }
-        Write-Host '  [OK] GitHubRunnersConfig removed from vault.' -ForegroundColor Green
+            # Assert GitHubRunnersConfig vault entry was removed.
+            if ($null -ne (Get-SecretInfo -Vault GitHubRunners -Name GitHubRunnersConfig `
+                    -ErrorAction SilentlyContinue)) {
+                throw "Teardown incomplete: GitHubRunnersConfig still present in vault."
+            }
+            Write-Host '  [OK] GitHubRunnersConfig removed from vault.' -ForegroundColor Green
 
-        # Assert E2E-VmLAN switch and NAT are removed.
-        if ($null -ne (Get-VMSwitch -Name 'E2E-VmLAN' -ErrorAction SilentlyContinue)) {
-            throw "Teardown incomplete: E2E-VmLAN switch still exists."
+            # Assert E2E-VmLAN switch and NAT are removed.
+            if ($null -ne (Get-VMSwitch -Name 'E2E-VmLAN' -ErrorAction SilentlyContinue)) {
+                throw "Teardown incomplete: E2E-VmLAN switch still exists."
+            }
+            if ($null -ne (Get-NetNat -Name 'E2E-VmLAN-NAT' -ErrorAction SilentlyContinue)) {
+                throw "Teardown incomplete: E2E-VmLAN-NAT rule still exists."
+            }
+            Write-Host '  [OK] E2E-VmLAN switch and NAT removed.' -ForegroundColor Green
         }
-        if ($null -ne (Get-NetNat -Name 'E2E-VmLAN-NAT' -ErrorAction SilentlyContinue)) {
-            throw "Teardown incomplete: E2E-VmLAN-NAT rule still exists."
+        else {
+            Write-Host 'Test did not complete - running best-effort cleanup ...' `
+                -ForegroundColor Yellow
+
+            # Deregister first if we got a token - removes GitHub registration
+            # and runner files while the VM may still be alive.
+            if ($runnersToken) {
+                try {
+                    & "$($Config.RunnersPath)\hyper-v\ubuntu\deregister-runners.ps1" `
+                        -Token $runnersToken `
+                        -Force
+                }
+                catch {
+                    Write-Warning "Best-effort deregistration failed: $($_.Exception.Message)"
+                }
+            }
+
+            try { Invoke-VmProvisioningTeardown -Config $Config }
+            catch { Write-Warning "Best-effort deprovisioning failed: $($_.Exception.Message)" }
+
+            try { Remove-Secret -Vault VmUsers -Name VmUsersConfig -ErrorAction SilentlyContinue }
+            catch {}
+
+            try { Remove-Secret -Vault GitHubRunners -Name GitHubRunnersConfig -ErrorAction SilentlyContinue }
+            catch {}
         }
-        Write-Host '  [OK] E2E-VmLAN switch and NAT removed.' -ForegroundColor Green
     }
 }
