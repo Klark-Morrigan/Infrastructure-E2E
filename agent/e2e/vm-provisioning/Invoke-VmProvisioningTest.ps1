@@ -35,6 +35,17 @@ function Invoke-VmProvisioningSetup {
         [PSCustomObject] $Config
     )
 
+    # Fail before writing anything if a leftover VM exists. provision.ps1
+    # silently skips existing VMs, so without this guard the fresh password
+    # written below would not match the old VM's credentials and every
+    # subsequent SSH call (create-users.ps1, assertions) would get
+    # "Permission denied (password)".
+    if ($null -ne (Get-VM -Name 'e2e-test' -ErrorAction SilentlyContinue)) {
+        throw ("Leftover VM 'e2e-test' found in Hyper-V. A previous test " +
+            "run did not complete teardown. Remove it manually " +
+            "(deprovision.ps1) before retrying.")
+    }
+
     # 18 random bytes -> 24-character base64 string. Strong enough for an
     # ephemeral test VM; never stored anywhere except the vault below.
     $password = [Convert]::ToBase64String(
