@@ -82,7 +82,12 @@ function Get-E2ERunnersConfigEntry {
 
     $runnersRepo = Split-Path $Config.RunnersPath -Leaf
 
-    return @(
+    # The leading comma wraps the array in a second array so PowerShell's
+    # automatic pipeline unwrapping strips only the outer layer on
+    # assignment. Without it, a single-element @([ordered]@{}) unwraps to
+    # the OrderedDictionary itself and $result[0] returns the first value
+    # rather than the first element.
+    return , @(
         [ordered]@{
             vmName         = 'e2e-test'
             ipAddress      = $Config.TestVm.ipAddress
