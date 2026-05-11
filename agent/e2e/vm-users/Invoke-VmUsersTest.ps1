@@ -174,88 +174,96 @@ function Invoke-VmUsersTeardown {
         $Entry = Get-E2EUsersTestEntry
     }
 
-    Write-Host 'Removing users ...' -ForegroundColor Cyan
-    & "$($Config.UsersPath)\hyper-v\ubuntu\remove-users.ps1"
-
-    # Assert users, home directories, sudoers files, and declared groups are
-    # gone - while the VM is still alive. This must run before
-    # Invoke-VmProvisioningTeardown destroys the VM.
-    Write-Host "Verifying user removal: $($VmDef.vmName) at $($VmDef.ipAddress) ..." `
-        -ForegroundColor Cyan
-
-    $auth      = [Renci.SshNet.PasswordAuthenticationMethod]::new(
-                     $VmDef.username, $VmDef.password)
-    $connInfo  = [Renci.SshNet.ConnectionInfo]::new(
-                     $VmDef.ipAddress, $VmDef.username, @($auth))
-    $sshClient = $null
-
     try {
-        $sshClient = [Renci.SshNet.SshClient]::new($connInfo)
-        $sshClient.Connect()
+        Write-Host 'Removing users ...' -ForegroundColor Magenta
+        & "$($Config.UsersPath)\hyper-v\ubuntu\remove-users.ps1"
 
-        foreach ($user in $Entry.users) {
-            $username = $user.username
+        # Assert users, home directories, sudoers files, and declared groups are
+        # gone - while the VM is still alive. This must run before
+        # Invoke-VmProvisioningTeardown destroys the VM.
+        Write-Host "Verifying user removal: $($VmDef.vmName) at $($VmDef.ipAddress) ..." `
+            -ForegroundColor Magenta
 
-            # User account must be gone. userdel removes the account and, on
-            # Ubuntu, the primary group named after the user automatically.
-            $result = Invoke-SshClientCommand `
-                -SshClient $sshClient `
-                -Command   "id '$username'"
-            if ($result.ExitStatus -eq 0) {
-                throw "Teardown incomplete: user '$username' still exists on $($VmDef.vmName)."
-            }
-            Write-Host "  [OK] user '$username' removed." -ForegroundColor Green
+        $sshClient = $null
 
-            # Home directory must be gone. userdel -r removes it along with
-            # the account; a surviving directory means -r was not applied.
-            $result = Invoke-SshClientCommand `
-                -SshClient $sshClient `
-                -Command   "test -d '$($user.homeDir)' && echo exists || echo absent"
-            if (($result.Output -join '').Trim() -ne 'absent') {
-                throw "Teardown incomplete: home dir '$($user.homeDir)' " +
-                    "still exists on $($VmDef.vmName)."
-            }
-            Write-Host "  [OK] home dir '$($user.homeDir)' removed." -ForegroundColor Green
+        try {
+            $sshClient = New-VmSshClient `
+                             -IpAddress $VmDef.ipAddress `
+                             -Username  $VmDef.username `
+                             -Password  $VmDef.password
 
-            # Sudoers file must be gone when rules were declared.
-            $sudoersRules = @($user.sudoersRules)
-            if ($sudoersRules.Count -gt 0) {
-                $sudoersPath  = "/etc/sudoers.d/$username"
-                $result       = Invoke-SshClientCommand `
+            foreach ($user in $Entry.users) {
+                $username = $user.username
+
+                # User account must be gone. userdel removes the account and, on
+                # Ubuntu, the primary group named after the user automatically.
+                $result = Invoke-SshClientCommand `
                     -SshClient $sshClient `
-                    -Command   "sudo test -f '$sudoersPath' && echo exists || echo absent"
+                    -Command   "id '$username'"
+                if ($result.ExitStatus -eq 0) {
+                    throw "Teardown incomplete: user '$username' still exists on $($VmDef.vmName)."
+                }
+                Write-Host "  [OK] user '$username' removed." -ForegroundColor Green
+
+                # Home directory must be gone. userdel -r removes it along with
+                # the account; a surviving directory means -r was not applied.
+                $result = Invoke-SshClientCommand `
+                    -SshClient $sshClient `
+                    -Command   "test -d '$($user.homeDir)' && echo exists || echo absent"
                 if (($result.Output -join '').Trim() -ne 'absent') {
-                    throw "Teardown incomplete: sudoers file '$sudoersPath' " +
+                    throw "Teardown incomplete: home dir '$($user.homeDir)' " +
                         "still exists on $($VmDef.vmName)."
                 }
-                Write-Host "  [OK] sudoers file for '$username' removed." -ForegroundColor Green
+                Write-Host "  [OK] home dir '$($user.homeDir)' removed." -ForegroundColor Green
+
+                # Sudoers file must be gone when rules were declared.
+                # sudoersRules is optional in the config schema; guard the
+                # property access to avoid strict-mode errors when absent.
+                # @() in an if-expression yields $null - initialise separately.
+                $rawRules     = $user.PSObject.Properties['sudoersRules']
+                $sudoersRules = @()
+                if ($null -ne $rawRules) { $sudoersRules = @($rawRules.Value) }
+                if ($sudoersRules.Count -gt 0) {
+                    $sudoersPath  = "/etc/sudoers.d/$username"
+                    $result       = Invoke-SshClientCommand `
+                        -SshClient $sshClient `
+                        -Command   "sudo test -f '$sudoersPath' && echo exists || echo absent"
+                    if (($result.Output -join '').Trim() -ne 'absent') {
+                        throw "Teardown incomplete: sudoers file '$sudoersPath' " +
+                            "still exists on $($VmDef.vmName)."
+                    }
+                    Write-Host "  [OK] sudoers file for '$username' removed." -ForegroundColor Green
+                }
+            }
+
+            # Declared groups must be gone. groupdel runs after all users are
+            # removed so no members block deletion.
+            foreach ($group in $Entry.groups) {
+                $groupName = $group.groupName
+                $result    = Invoke-SshClientCommand `
+                    -SshClient $sshClient `
+                    -Command   "getent group '$groupName'"
+                if ($result.ExitStatus -eq 0) {
+                    throw "Teardown incomplete: group '$groupName' still exists on $($VmDef.vmName)."
+                }
+                Write-Host "  [OK] group '$groupName' removed." -ForegroundColor Green
+            }
+        }
+        finally {
+            if ($null -ne $sshClient) {
+                if ($sshClient.IsConnected) { $sshClient.Disconnect() }
+                $sshClient.Dispose()
             }
         }
 
-        # Declared groups must be gone. groupdel runs after all users are
-        # removed so no members block deletion.
-        foreach ($group in $Entry.groups) {
-            $groupName = $group.groupName
-            $result    = Invoke-SshClientCommand `
-                -SshClient $sshClient `
-                -Command   "getent group '$groupName'"
-            if ($result.ExitStatus -eq 0) {
-                throw "Teardown incomplete: group '$groupName' still exists on $($VmDef.vmName)."
-            }
-            Write-Host "  [OK] group '$groupName' removed." -ForegroundColor Green
-        }
+        Write-Host 'Removing test VmUsersConfig from vault ...' -ForegroundColor Magenta
+        Remove-Secret -Vault VmUsers -Name VmUsersConfig
     }
     finally {
-        if ($null -ne $sshClient) {
-            if ($sshClient.IsConnected) { $sshClient.Disconnect() }
-            $sshClient.Dispose()
-        }
+        # Always deprovision the VM even if user removal or assertions failed.
+        # A failed userdel must not leave a live VM behind.
+        Invoke-VmProvisioningTeardown -Config $Config
     }
-
-    Write-Host 'Removing test VmUsersConfig from vault ...' -ForegroundColor Cyan
-    Remove-Secret -Vault VmUsers -Name VmUsersConfig
-
-    Invoke-VmProvisioningTeardown -Config $Config
 }
 
 # ---------------------------------------------------------------------------
