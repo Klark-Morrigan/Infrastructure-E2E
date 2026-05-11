@@ -395,6 +395,10 @@ function Invoke-RunnerLifecycleTest {
 
         $succeeded = $true
     }
+    catch {
+        Write-Host "E2E test error: $($_.Exception.Message)" -ForegroundColor Red
+        throw
+    }
     finally {
         if ($succeeded) {
             Invoke-RunnerLifecycleTeardown `

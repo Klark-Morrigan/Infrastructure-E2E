@@ -192,6 +192,10 @@ function Invoke-VmProvisioningTest {
             }
         }
     }
+    catch {
+        Write-Host "E2E test error: $($_.Exception.Message)" -ForegroundColor Red
+        throw
+    }
     finally {
         Invoke-VmProvisioningTeardown -Config $Config
 
