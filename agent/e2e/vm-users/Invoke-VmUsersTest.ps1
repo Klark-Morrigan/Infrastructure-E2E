@@ -100,6 +100,22 @@ function Invoke-VmUsersSetup {
                               -Password  $vmDef.password
         Write-Host '  [OK] VM reachable via SSH after user reconciliation.' `
             -ForegroundColor Green
+
+        # systemd-resolved can lag behind SSH availability on freshly
+        # provisioned VMs. Poll until github.com resolves before returning
+        # so downstream steps (curl download) do not hit a DNS failure.
+        Write-Host '  Waiting for DNS ...' -ForegroundColor Magenta
+        for ($attempt = 1; $attempt -le 12; $attempt++) {
+            $r = Invoke-SshClientCommand `
+                -SshClient   $setupSshClient `
+                -Command     'getent hosts github.com' `
+                -ErrorAction Stop
+            if ($r.ExitStatus -eq 0) { $dnsReady = $true; break }
+            Start-Sleep -Seconds 5
+        }
+        if ($dnsReady) {
+            Write-Host '  [OK] DNS ready.' -ForegroundColor Green
+        }
     }
     catch {
         throw "VM at $($vmDef.ipAddress) unreachable via SSH after create-users.ps1 - " +
@@ -110,6 +126,11 @@ function Invoke-VmUsersSetup {
             if ($setupSshClient.IsConnected) { $setupSshClient.Disconnect() }
             $setupSshClient.Dispose()
         }
+    }
+
+    if (-not $dnsReady) {
+        throw ("VM at $($vmDef.ipAddress): DNS not ready after 60 seconds - " +
+            "github.com unresolvable.")
     }
 
     return $vmDef
