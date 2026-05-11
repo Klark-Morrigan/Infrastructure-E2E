@@ -375,7 +375,11 @@ function Invoke-VmUsersTest {
                 # Sudoers file must exist when rules are declared. Checking for
                 # file presence is sufficient - syntax is validated by
                 # Invoke-SudoersReconciliation via visudo before writing.
-                $sudoersRules = @($user.sudoersRules)
+                # sudoersRules is optional; guard the access under strict mode.
+                # @() in an if-expression yields $null - initialise separately.
+                $rawRules     = $user.PSObject.Properties['sudoersRules']
+                $sudoersRules = @()
+                if ($null -ne $rawRules) { $sudoersRules = @($rawRules.Value) }
                 if ($sudoersRules.Count -gt 0) {
                     $sudoersPath  = "/etc/sudoers.d/$username"
                     $existsResult = Invoke-SshClientCommand `
