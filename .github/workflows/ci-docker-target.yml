@@ -1,0 +1,15 @@
+name: CI (Docker target)
+
+# Delegates to the shared Docker target CI workflow in Infrastructure-Common.
+# Tests run on the hosted runner and connect via SSH to a Docker container
+# (the target). Kept as a local file so pull_request triggers work for this
+# repo, and so other workflows can call it via workflow_call.
+on:
+  pull_request:
+    branches: [ main, master ]
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  ci-docker-target:
+    uses: VitaliiAndreev/Infrastructure-Common/.github/workflows/ci-powershell-docker-target.yml@master
