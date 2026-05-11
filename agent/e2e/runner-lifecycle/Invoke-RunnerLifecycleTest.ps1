@@ -243,7 +243,7 @@ function Invoke-RunnerLifecycleTeardown {
 
         # Runner directory must be gone. deregister-runners.ps1 removes
         # files via Remove-RunnerFiles after config.sh remove.
-        $runnerDir   = "/home/e2erunner/runners/$runnerName"
+        $runnerDir   = "/opt/runners/$runnerName"
         $dirResult   = Invoke-SshClientCommand `
             -SshClient $sshClient `
             -Command   "test -d '$runnerDir' && echo exists || echo absent"

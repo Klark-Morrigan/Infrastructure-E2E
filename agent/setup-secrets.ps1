@@ -44,6 +44,7 @@ Initialize-MicrosoftPowerShellSecretStoreVault `
             'ProvisionerPath',
             'UsersPath',
             'RunnersPath',
+            'HostTarballCachePath',
             'TestVm'
         ) -Context 'E2EConfig'
 

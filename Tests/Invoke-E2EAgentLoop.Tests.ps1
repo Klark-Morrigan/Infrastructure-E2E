@@ -24,6 +24,7 @@ Describe 'Invoke-E2EAgentLoop' {
             ProvisionerPath       = 'C:\test\provisioner'
             UsersPath             = 'C:\test\users'
             RunnersPath           = 'C:\test\runners'
+            HostTarballCachePath  = 'C:\test\tarball-cache'
             TestVm                = [PSCustomObject]@{
                 ubuntuVersion = '24.04'
                 ipAddress     = '192.168.100.200'
@@ -138,8 +139,9 @@ Describe 'Invoke-E2EAgentLoop' {
             $Script:_config.RunnersInstallationId   | Should -Be 20
             $Script:_config.PrivateKeyPath          | Should -Be 'C:\test.pem'
             $Script:_config.ProvisionerPath         | Should -Be 'C:\test\provisioner'
-            $Script:_config.UsersPath        | Should -Be 'C:\test\users'
-            $Script:_config.RunnersPath      | Should -Be 'C:\test\runners'
+            $Script:_config.UsersPath               | Should -Be 'C:\test\users'
+            $Script:_config.RunnersPath             | Should -Be 'C:\test\runners'
+            $Script:_config.HostTarballCachePath    | Should -Be 'C:\test\tarball-cache'
             $Script:_config.Owner            | Should -Be 'org'
             $Script:_config.TestVm.ipAddress | Should -Be '192.168.100.200'
         }

@@ -105,6 +105,12 @@ function Invoke-E2EAgentLoop {
         [Parameter(Mandatory)]
         [string] $RunnersPath,
 
+        # Local directory on the workstation where the actions/runner tarball
+        # is cached between test runs. Passed to the lifecycle test so it can
+        # pre-seed the VM cache without downloading through the Hyper-V NAT.
+        [Parameter(Mandatory)]
+        [string] $HostTarballCachePath,
+
         # Operator-specific VM config for the E2E test VM. Contains the
         # workstation-specific values (IP, gateway, paths) that cannot be
         # hardcoded. Written to the VmProvisioner vault at test startup.
@@ -201,6 +207,7 @@ function Invoke-E2EAgentLoop {
                     ProvisionerPath       = $ProvisionerPath
                     UsersPath             = $UsersPath
                     RunnersPath           = $RunnersPath
+                    HostTarballCachePath  = $HostTarballCachePath
                     Owner                 = $Owner
                     TestVm                = $TestVm
                 })
@@ -285,6 +292,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     #   "ProvisionerPath":     "C:\\a_Code\\Infrastructure-Vm-Provisioner",
     #   "UsersPath":           "C:\\a_Code\\Infrastructure-Vm-Users",
     #   "RunnersPath":         "C:\\a_Code\\Infrastructure-GitHubRunners",
+    #   "HostTarballCachePath": "C:\\cache\\github-runners",
     #   "TestVm": {
     #     "ubuntuVersion": "24.04",
     #     "ipAddress":     "192.168.100.200",
@@ -317,10 +325,11 @@ if ($MyInvocation.InvocationName -ne '.') {
                 -E2EInstallationId     $config.E2EInstallationId `
                 -RunnersInstallationId $config.RunnersInstallationId `
                 -PrivateKeyPath        $config.PrivateKeyPath `
-                -ProvisionerPath     $config.ProvisionerPath `
-                -UsersPath           $config.UsersPath `
-                -RunnersPath         $config.RunnersPath `
-                -TestVm              $config.TestVm `
+                -ProvisionerPath       $config.ProvisionerPath `
+                -UsersPath             $config.UsersPath `
+                -RunnersPath           $config.RunnersPath `
+                -HostTarballCachePath  $config.HostTarballCachePath `
+                -TestVm                $config.TestVm `
                 -Owner               $config.Owner `
                 -Repo                $config.Repo `
                 -Environment         $config.Environment `
