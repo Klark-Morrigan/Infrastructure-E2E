@@ -135,20 +135,15 @@ function Invoke-VmProvisioningTest {
 
     try {
         Write-Host "Verifying SSH: $($vmDef.vmName) at $($vmDef.ipAddress) ..." `
-            -ForegroundColor Cyan
+            -ForegroundColor Magenta
 
-        # Security note: SSH.NET accepts any host key by default. This is
-        # acceptable on a private Hyper-V network with statically provisioned
-        # IPs. Do NOT use on untrusted networks.
-        $auth     = [Renci.SshNet.PasswordAuthenticationMethod]::new(
-                        $vmDef.username, $vmDef.password)
-        $connInfo = [Renci.SshNet.ConnectionInfo]::new(
-                        $vmDef.ipAddress, $vmDef.username, @($auth))
         $sshClient = $null
 
         try {
-            $sshClient = [Renci.SshNet.SshClient]::new($connInfo)
-            $sshClient.Connect()
+            $sshClient = New-VmSshClient `
+                             -IpAddress $vmDef.ipAddress `
+                             -Username  $vmDef.username `
+                             -Password  $vmDef.password
 
             # Assert hostname matches vmName - confirms cloud-init applied the
             # correct system identity, not just that SSH opened.

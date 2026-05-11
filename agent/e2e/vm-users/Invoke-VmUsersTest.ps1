@@ -90,15 +90,14 @@ function Invoke-VmUsersSetup {
     # misleading "user not found" errors in the assertion phase rather than
     # a clear setup failure here.
     Write-Host "Verifying SSH reachable after user reconciliation: $($vmDef.ipAddress) ..." `
-        -ForegroundColor Cyan
-    $auth     = [Renci.SshNet.PasswordAuthenticationMethod]::new(
-                    $vmDef.username, $vmDef.password)
-    $connInfo = [Renci.SshNet.ConnectionInfo]::new(
-                    $vmDef.ipAddress, $vmDef.username, @($auth))
+        -ForegroundColor Magenta
     $setupSshClient = $null
+    $dnsReady       = $false
     try {
-        $setupSshClient = [Renci.SshNet.SshClient]::new($connInfo)
-        $setupSshClient.Connect()
+        $setupSshClient = New-VmSshClient `
+                              -IpAddress $vmDef.ipAddress `
+                              -Username  $vmDef.username `
+                              -Password  $vmDef.password
         Write-Host '  [OK] VM reachable via SSH after user reconciliation.' `
             -ForegroundColor Green
     }
@@ -260,20 +259,15 @@ function Invoke-VmUsersTest {
         $vmDef = Invoke-VmUsersSetup -Config $Config
 
         Write-Host "Verifying users: $($vmDef.vmName) at $($vmDef.ipAddress) ..." `
-            -ForegroundColor Cyan
+            -ForegroundColor Magenta
 
-        # Security note: SSH.NET accepts any host key by default. This is
-        # acceptable on a private Hyper-V network with statically provisioned
-        # IPs. Do NOT use on untrusted networks.
-        $auth      = [Renci.SshNet.PasswordAuthenticationMethod]::new(
-                         $vmDef.username, $vmDef.password)
-        $connInfo  = [Renci.SshNet.ConnectionInfo]::new(
-                         $vmDef.ipAddress, $vmDef.username, @($auth))
         $sshClient = $null
 
         try {
-            $sshClient = [Renci.SshNet.SshClient]::new($connInfo)
-            $sshClient.Connect()
+            $sshClient = New-VmSshClient `
+                             -IpAddress $vmDef.ipAddress `
+                             -Username  $vmDef.username `
+                             -Password  $vmDef.password
 
             $entry = Get-E2EUsersTestEntry
 

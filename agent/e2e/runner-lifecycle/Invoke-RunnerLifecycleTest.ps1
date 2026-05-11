@@ -102,16 +102,20 @@ function Get-E2ERunnersConfigEntry {
 
 # ---------------------------------------------------------------------------
 # Invoke-RunnerLifecycleSetup
-#   Brings up the full lifecycle stack:
+#   Brings up the pre-registration stack:
 #     1. Generate a throw-away deploy password (never stored in source).
 #     2. Write GitHubRunnersConfig to the GitHubRunners vault.
 #     3. Provision the VM and create users via Invoke-VmUsersSetup (extended
 #        entry includes e2edeploy and e2erunner on top of the base users).
 #     4. Acquire a short-lived GitHub App token for the runners installation.
-#     5. Call register-runners.ps1 with the non-interactive -Token flag.
+#
+#   Tarball prefetch, VM-side caching, runner registration, and service start
+#   are all handled by register-runners.ps1 (the production script), which the
+#   caller invokes immediately after this function returns.
 #
 #   Returns a PSCustomObject with VmDef, RunnersToken, and Entry so the
-#   caller can open SSH sessions for assertions and pass state to teardown.
+#   caller can pass the token to register-runners.ps1 and supply state to
+#   teardown.
 #
 #   Teardown counterpart: Invoke-RunnerLifecycleTeardown.
 # ---------------------------------------------------------------------------
@@ -214,15 +218,13 @@ function Invoke-RunnerLifecycleTeardown {
     Write-Host "Verifying runner deregistration: $($VmDef.vmName) at $($VmDef.ipAddress) ..." `
         -ForegroundColor Magenta
 
-    $auth      = [Renci.SshNet.PasswordAuthenticationMethod]::new(
-                     $VmDef.username, $VmDef.password)
-    $connInfo  = [Renci.SshNet.ConnectionInfo]::new(
-                     $VmDef.ipAddress, $VmDef.username, @($auth))
     $sshClient = $null
 
     try {
-        $sshClient = [Renci.SshNet.SshClient]::new($connInfo)
-        $sshClient.Connect()
+        $sshClient = New-VmSshClient `
+                         -IpAddress $VmDef.ipAddress `
+                         -Username  $VmDef.username `
+                         -Password  $VmDef.password
 
         # Runner service unit must be gone. deregister-runners.ps1 runs
         # svc.sh uninstall which removes the unit file.
@@ -322,20 +324,15 @@ function Invoke-RunnerLifecycleTest {
         $runnerName  = $configEntry[0].runnerName
 
         Write-Host "Verifying runner service: $($vmDef.vmName) at $($vmDef.ipAddress) ..." `
-            -ForegroundColor Cyan
+            -ForegroundColor Magenta
 
-        # Security note: SSH.NET accepts any host key by default. This is
-        # acceptable on a private Hyper-V network with statically provisioned
-        # IPs. Do NOT use on untrusted networks.
-        $auth      = [Renci.SshNet.PasswordAuthenticationMethod]::new(
-                         $vmDef.username, $vmDef.password)
-        $connInfo  = [Renci.SshNet.ConnectionInfo]::new(
-                         $vmDef.ipAddress, $vmDef.username, @($auth))
         $sshClient = $null
 
         try {
-            $sshClient = [Renci.SshNet.SshClient]::new($connInfo)
-            $sshClient.Connect()
+            $sshClient = New-VmSshClient `
+                             -IpAddress $vmDef.ipAddress `
+                             -Username  $vmDef.username `
+                             -Password  $vmDef.password
 
             # Resolve the full systemd unit name. svc.sh names it
             # 'actions.runner.{owner}-{repo}.{runnerName}.service'.
