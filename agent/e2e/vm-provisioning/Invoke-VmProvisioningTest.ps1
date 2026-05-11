@@ -35,6 +35,22 @@ function Invoke-VmProvisioningSetup {
         [PSCustomObject] $Config
     )
 
+    # Hyper-V module is not auto-imported in the agent session - provision.ps1
+    # loads it only inside its own child process. Import it explicitly so
+    # Get-VM below is available.
+    Import-Module Hyper-V -ErrorAction Stop
+
+    # Fail before writing anything if a leftover VM exists. provision.ps1
+    # silently skips existing VMs, so without this guard the fresh password
+    # written below would not match the old VM's credentials and every
+    # subsequent SSH call (create-users.ps1, assertions) would get
+    # "Permission denied (password)".
+    if ($null -ne (Get-VM -Name 'e2e-test' -ErrorAction SilentlyContinue)) {
+        throw ("Leftover VM 'e2e-test' found in Hyper-V. A previous test " +
+            "run did not complete teardown. Remove it manually " +
+            "(deprovision.ps1) before retrying.")
+    }
+
     # 18 random bytes -> 24-character base64 string. Strong enough for an
     # ephemeral test VM; never stored anywhere except the vault below.
     $password = [Convert]::ToBase64String(
@@ -63,13 +79,13 @@ function Invoke-VmProvisioningSetup {
 
     # VmProvisionerConfig must be a JSON array - ConvertFrom-VmConfigJson
     # rejects a bare object.
-    Write-Host 'Writing test VmProvisionerConfig to vault ...' -ForegroundColor Cyan
+    Write-Host 'Writing test VmProvisionerConfig to vault ...' -ForegroundColor Magenta
     Set-Secret `
         -Vault  VmProvisioner `
         -Name   VmProvisionerConfig `
         -Secret (ConvertTo-Json @($vmEntry) -Depth 5 -Compress)
 
-    Write-Host 'Provisioning VM ...' -ForegroundColor Cyan
+    Write-Host 'Provisioning VM ...' -ForegroundColor Magenta
     & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1"
 
     # Return a vmDef consistent with what ConvertFrom-VmConfigJson produces
@@ -94,10 +110,10 @@ function Invoke-VmProvisioningTeardown {
         [PSCustomObject] $Config
     )
 
-    Write-Host 'Deprovisioning VM ...' -ForegroundColor Cyan
+    Write-Host 'Deprovisioning VM ...' -ForegroundColor Magenta
     & "$($Config.ProvisionerPath)\hyper-v\ubuntu\deprovision.ps1"
 
-    Write-Host 'Removing test VmProvisionerConfig from vault ...' -ForegroundColor Cyan
+    Write-Host 'Removing test VmProvisionerConfig from vault ...' -ForegroundColor Magenta
     Remove-Secret -Vault VmProvisioner -Name VmProvisionerConfig
 }
 
@@ -119,20 +135,15 @@ function Invoke-VmProvisioningTest {
 
     try {
         Write-Host "Verifying SSH: $($vmDef.vmName) at $($vmDef.ipAddress) ..." `
-            -ForegroundColor Cyan
+            -ForegroundColor Magenta
 
-        # Security note: SSH.NET accepts any host key by default. This is
-        # acceptable on a private Hyper-V network with statically provisioned
-        # IPs. Do NOT use on untrusted networks.
-        $auth     = [Renci.SshNet.PasswordAuthenticationMethod]::new(
-                        $vmDef.username, $vmDef.password)
-        $connInfo = [Renci.SshNet.ConnectionInfo]::new(
-                        $vmDef.ipAddress, $vmDef.username, @($auth))
         $sshClient = $null
 
         try {
-            $sshClient = [Renci.SshNet.SshClient]::new($connInfo)
-            $sshClient.Connect()
+            $sshClient = New-VmSshClient `
+                             -IpAddress $vmDef.ipAddress `
+                             -Username  $vmDef.username `
+                             -Password  $vmDef.password
 
             # Assert hostname matches vmName - confirms cloud-init applied the
             # correct system identity, not just that SSH opened.
@@ -181,10 +192,14 @@ function Invoke-VmProvisioningTest {
             }
         }
     }
+    catch {
+        Write-Host "E2E test error: $($_.Exception.Message)" -ForegroundColor Red
+        throw
+    }
     finally {
         Invoke-VmProvisioningTeardown -Config $Config
 
-        Write-Host 'Verifying teardown ...' -ForegroundColor Cyan
+        Write-Host 'Verifying teardown ...' -ForegroundColor Magenta
 
         # Assert VM was removed from Hyper-V.
         if ($null -ne (Get-VM -Name $vmDef.vmName -ErrorAction SilentlyContinue)) {

@@ -55,7 +55,7 @@ PowerShell 7+ (`pwsh`).
   - `VmUsers` (owned by `Infrastructure-Vm-Users`)
   - `GitHubRunners` (owned by `Infrastructure-GitHubRunners`)
   - `E2EConfig` (owned by this repo - see [GitHub App setup](#github-app-setup))
-- `Infrastructure.Common` >= `2.0.0` installed from PSGallery
+- `Infrastructure.Common` >= `3.1.0` installed from PSGallery
 
 ---
 
@@ -80,7 +80,6 @@ Under **Repository permissions**, set:
 |---|---|---|---|
 | Deployments | Read & write | Infrastructure-E2E | Agent polls pending deployments and posts status |
 | Contents | Read & write | Infrastructure-E2E | Upstream trigger workflows fire `repository_dispatch` |
-| Actions | Read & write | Infrastructure-GitHubRunners | Agent obtains runner registration tokens and manages runners |
 
 Leave all other permissions at **No access**.
 
@@ -116,15 +115,19 @@ ID is the number at the end of that URL:
 `github.com/settings/installations/`**`22222222`**
 
 The polling agent uses two installation IDs:
-- **E2E** (`e2eInstallationId`) - to get a `deployments: write` token for
+- **E2E** (`E2EInstallationId`) - to get a `deployments: write` token for
   polling and posting deployment status on `Infrastructure-E2E`
-- **GitHubRunners** (`githubRunnersInstallationId`) - to get an
-  `actions: write` token for managing runners on `Infrastructure-GitHubRunners`
+- **GitHubRunners** (`RunnersInstallationId`) - to mint a token scoped to
+  `Infrastructure-GitHubRunners` with `administration: write` only, used
+  for runner registration and deregistration
+
+Scoping the runners token to one repo and one permission at mint time means
+`Administration` access is never granted to the other repos in the installation.
 
 The other two repos (`Infrastructure-Vm-Provisioner`,
 `Infrastructure-Vm-Users`) are installed so the app can receive
-`repository_dispatch` trigger calls from their CI workflows - their
-installation IDs are not needed in the vault.
+`workflow_call` triggers from their CI workflows - their installation IDs
+are not needed in the vault.
 
 ### 3. Configure the E2EConfig vault
 
@@ -133,17 +136,19 @@ following in the `E2EConfig` vault:
 
 ```jsonc
 {
-  "AppId":                123456,
-  "PrivateKeyPath":       "C:\\private\\e2e-agent.pem",
+  "AppId":               123456,
+  "PrivateKeyPath":      "C:\\private\\e2e-agent.pem",
   "E2EInstallationId":    11111111,  // installation ID for Infrastructure-E2E
   "RunnersInstallationId": 22222222, // installation ID for Infrastructure-GitHubRunners
-  "Owner":                "my-org",
-  "Repo":                 "Infrastructure-E2E",
-  "Environment":          "e2e-workstation",
-  "PollIntervalSeconds":  30,
-  "TimeoutMinutes":       60,
-  "ProvisionerPath":      "C:\\a_Code\\Infrastructure-Vm-Provisioner",
-  "UsersPath":            "C:\\a_Code\\Infrastructure-Vm-Users",
+  "Owner":               "my-org",
+  "Repo":                "Infrastructure-E2E",
+  "Environment":         "e2e-workstation",
+  "PollIntervalSeconds": 30,
+  "TimeoutMinutes":      60,
+  "ProvisionerPath":     "C:\\a_Code\\Infrastructure-Vm-Provisioner",
+  "UsersPath":           "C:\\a_Code\\Infrastructure-Vm-Users",
+  "RunnersPath":         "C:\\a_Code\\Infrastructure-GitHubRunners",
+  "HostTarballCachePath": "C:\\cache\\github-runners",
   "TestVm": {
     "ubuntuVersion":  "24.04",
     "ipAddress":      "192.168.101.10",
@@ -239,9 +244,10 @@ be overridden via parameters.
 
 ## How to trigger
 
-Always start the polling agent on the workstation **before** triggering
-a run - the agent must be running when the workflow creates the
-deployment.
+The polling agent must start and complete the test suite within
+**30 minutes** of the workflow creating the deployment - that is the
+workflow's polling window. Starting the agent before triggering is the
+simplest way to guarantee this.
 
 ### Manual
 
@@ -283,7 +289,7 @@ its own assertions on top.
 |---|---|---|
 | VM provisioning | `agent/e2e/vm-provisioning/Invoke-VmProvisioningTest.ps1` | VM is reachable via SSH (`hostname` exits 0); cloud-init completed; root filesystem not full |
 | VM users | `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` | Expected OS groups exist; expected users exist with correct shell and group membership; sudoers files are in place |
-| Runner lifecycle | `agent/e2e/runner-lifecycle/Invoke-RunnerLifecycleTest.ps1` | Runner service is active; runner appears online in GitHub API (step 11) |
+| Runner lifecycle | `agent/e2e/runner-lifecycle/Invoke-RunnerLifecycleTest.ps1` | Runner systemd service is active; runner appears online in the GitHub API |
 
 The polling agent (`Start-E2EAgent.ps1`) always runs the full runner
 lifecycle test, which transitively exercises all three layers. The
@@ -304,9 +310,9 @@ agent/
       Invoke-VmProvisioningTest.ps1  - VM provisioning E2E test (step 8)
       Start-VmProvisioningTest.ps1   - Manual runner for the provisioning test
     vm-users/
-      Invoke-VmUsersTest.ps1         - VM users E2E test (step 9)
+      Invoke-VmUsersTest.ps1         - VM users E2E test (step 10)
     runner-lifecycle/
-      Invoke-RunnerLifecycleTest.ps1 - Full runner lifecycle E2E test (step 10)
+      Invoke-RunnerLifecycleTest.ps1 - Full runner lifecycle E2E test (step 11)
   Initialize-E2EEnvironment.ps1    - Shared module bootstrap (dot-sourced by entry points)
   Start-E2EAgent.ps1               - Polling agent (run manually on workstation)
 Tests/

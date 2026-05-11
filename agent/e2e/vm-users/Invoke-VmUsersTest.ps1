@@ -57,20 +57,31 @@ function Invoke-VmUsersSetup {
         # Config object from Start-E2EAgent.ps1.
         # Must include ProvisionerPath, UsersPath, and TestVm.
         [Parameter(Mandatory)]
-        [PSCustomObject] $Config
+        [PSCustomObject] $Config,
+
+        # Optional VmUsersConfig entry override. Defaults to
+        # Get-E2EUsersTestEntry when not provided. Higher-layer tests
+        # (e.g. runner lifecycle) pass an extended entry that adds
+        # deploy and runner service users on top of the base set.
+        [Parameter()]
+        [object] $Entry = $null
     )
+
+    if ($null -eq $Entry) {
+        $Entry = Get-E2EUsersTestEntry
+    }
 
     # VmUsersConfig must be a JSON array - ConvertFrom-VmUsersConfigJson
     # rejects a bare object.
-    Write-Host 'Writing test VmUsersConfig to vault ...' -ForegroundColor Cyan
+    Write-Host 'Writing test VmUsersConfig to vault ...' -ForegroundColor Magenta
     Set-Secret `
         -Vault  VmUsers `
         -Name   VmUsersConfig `
-        -Secret (ConvertTo-Json @(Get-E2EUsersTestEntry) -Depth 5 -Compress)
+        -Secret (ConvertTo-Json @($Entry) -Depth 5 -Compress)
 
     $vmDef = Invoke-VmProvisioningSetup -Config $Config
 
-    Write-Host 'Reconciling users ...' -ForegroundColor Cyan
+    Write-Host 'Reconciling users ...' -ForegroundColor Magenta
     & "$($Config.UsersPath)\hyper-v\ubuntu\create-users.ps1"
 
     # Verify SSH is reachable after create-users.ps1 returns. create-users.ps1
@@ -79,17 +90,32 @@ function Invoke-VmUsersSetup {
     # misleading "user not found" errors in the assertion phase rather than
     # a clear setup failure here.
     Write-Host "Verifying SSH reachable after user reconciliation: $($vmDef.ipAddress) ..." `
-        -ForegroundColor Cyan
-    $auth     = [Renci.SshNet.PasswordAuthenticationMethod]::new(
-                    $vmDef.username, $vmDef.password)
-    $connInfo = [Renci.SshNet.ConnectionInfo]::new(
-                    $vmDef.ipAddress, $vmDef.username, @($auth))
+        -ForegroundColor Magenta
     $setupSshClient = $null
+    $dnsReady       = $false
     try {
-        $setupSshClient = [Renci.SshNet.SshClient]::new($connInfo)
-        $setupSshClient.Connect()
+        $setupSshClient = New-VmSshClient `
+                              -IpAddress $vmDef.ipAddress `
+                              -Username  $vmDef.username `
+                              -Password  $vmDef.password
         Write-Host '  [OK] VM reachable via SSH after user reconciliation.' `
             -ForegroundColor Green
+
+        # systemd-resolved can lag behind SSH availability on freshly
+        # provisioned VMs. Poll until github.com resolves before returning
+        # so downstream steps (curl download) do not hit a DNS failure.
+        Write-Host '  Waiting for DNS ...' -ForegroundColor Magenta
+        for ($attempt = 1; $attempt -le 12; $attempt++) {
+            $r = Invoke-SshClientCommand `
+                -SshClient   $setupSshClient `
+                -Command     'getent hosts github.com' `
+                -ErrorAction Stop
+            if ($r.ExitStatus -eq 0) { $dnsReady = $true; break }
+            Start-Sleep -Seconds 5
+        }
+        if ($dnsReady) {
+            Write-Host '  [OK] DNS ready.' -ForegroundColor Green
+        }
     }
     catch {
         throw "VM at $($vmDef.ipAddress) unreachable via SSH after create-users.ps1 - " +
@@ -100,6 +126,11 @@ function Invoke-VmUsersSetup {
             if ($setupSshClient.IsConnected) { $setupSshClient.Disconnect() }
             $setupSshClient.Dispose()
         }
+    }
+
+    if (-not $dnsReady) {
+        throw ("VM at $($vmDef.ipAddress): DNS not ready after 60 seconds - " +
+            "github.com unresolvable.")
     }
 
     return $vmDef
@@ -130,93 +161,109 @@ function Invoke-VmUsersTeardown {
         # SSH credentials for the VM - needed to assert OS state after
         # remove-users.ps1 runs, while the VM is still alive.
         [Parameter(Mandatory)]
-        [PSCustomObject] $VmDef
+        [PSCustomObject] $VmDef,
+
+        # Optional VmUsersConfig entry override used to determine which
+        # users and groups to assert are gone. Defaults to
+        # Get-E2EUsersTestEntry when not provided.
+        [Parameter()]
+        [object] $Entry = $null
     )
 
-    Write-Host 'Removing users ...' -ForegroundColor Cyan
-    & "$($Config.UsersPath)\hyper-v\ubuntu\remove-users.ps1"
-
-    # Assert users, home directories, sudoers files, and declared groups are
-    # gone - while the VM is still alive. This must run before
-    # Invoke-VmProvisioningTeardown destroys the VM.
-    Write-Host "Verifying user removal: $($VmDef.vmName) at $($VmDef.ipAddress) ..." `
-        -ForegroundColor Cyan
-
-    $auth      = [Renci.SshNet.PasswordAuthenticationMethod]::new(
-                     $VmDef.username, $VmDef.password)
-    $connInfo  = [Renci.SshNet.ConnectionInfo]::new(
-                     $VmDef.ipAddress, $VmDef.username, @($auth))
-    $sshClient = $null
+    if ($null -eq $Entry) {
+        $Entry = Get-E2EUsersTestEntry
+    }
 
     try {
-        $sshClient = [Renci.SshNet.SshClient]::new($connInfo)
-        $sshClient.Connect()
+        Write-Host 'Removing users ...' -ForegroundColor Magenta
+        & "$($Config.UsersPath)\hyper-v\ubuntu\remove-users.ps1"
 
-        $entry = Get-E2EUsersTestEntry
+        # Assert users, home directories, sudoers files, and declared groups are
+        # gone - while the VM is still alive. This must run before
+        # Invoke-VmProvisioningTeardown destroys the VM.
+        Write-Host "Verifying user removal: $($VmDef.vmName) at $($VmDef.ipAddress) ..." `
+            -ForegroundColor Magenta
 
-        foreach ($user in $entry.users) {
-            $username = $user.username
+        $sshClient = $null
 
-            # User account must be gone. userdel removes the account and, on
-            # Ubuntu, the primary group named after the user automatically.
-            $result = Invoke-SshClientCommand `
-                -SshClient $sshClient `
-                -Command   "id '$username'"
-            if ($result.ExitStatus -eq 0) {
-                throw "Teardown incomplete: user '$username' still exists on $($VmDef.vmName)."
-            }
-            Write-Host "  [OK] user '$username' removed." -ForegroundColor Green
+        try {
+            $sshClient = New-VmSshClient `
+                             -IpAddress $VmDef.ipAddress `
+                             -Username  $VmDef.username `
+                             -Password  $VmDef.password
 
-            # Home directory must be gone. userdel -r removes it along with
-            # the account; a surviving directory means -r was not applied.
-            $result = Invoke-SshClientCommand `
-                -SshClient $sshClient `
-                -Command   "test -d '$($user.homeDir)' && echo exists || echo absent"
-            if (($result.Output -join '').Trim() -ne 'absent') {
-                throw "Teardown incomplete: home dir '$($user.homeDir)' " +
-                    "still exists on $($VmDef.vmName)."
-            }
-            Write-Host "  [OK] home dir '$($user.homeDir)' removed." -ForegroundColor Green
+            foreach ($user in $Entry.users) {
+                $username = $user.username
 
-            # Sudoers file must be gone when rules were declared.
-            $sudoersRules = @($user.sudoersRules)
-            if ($sudoersRules.Count -gt 0) {
-                $sudoersPath  = "/etc/sudoers.d/$username"
-                $result       = Invoke-SshClientCommand `
+                # User account must be gone. userdel removes the account and, on
+                # Ubuntu, the primary group named after the user automatically.
+                $result = Invoke-SshClientCommand `
                     -SshClient $sshClient `
-                    -Command   "sudo test -f '$sudoersPath' && echo exists || echo absent"
+                    -Command   "id '$username'"
+                if ($result.ExitStatus -eq 0) {
+                    throw "Teardown incomplete: user '$username' still exists on $($VmDef.vmName)."
+                }
+                Write-Host "  [OK] user '$username' removed." -ForegroundColor Green
+
+                # Home directory must be gone. userdel -r removes it along with
+                # the account; a surviving directory means -r was not applied.
+                $result = Invoke-SshClientCommand `
+                    -SshClient $sshClient `
+                    -Command   "test -d '$($user.homeDir)' && echo exists || echo absent"
                 if (($result.Output -join '').Trim() -ne 'absent') {
-                    throw "Teardown incomplete: sudoers file '$sudoersPath' " +
+                    throw "Teardown incomplete: home dir '$($user.homeDir)' " +
                         "still exists on $($VmDef.vmName)."
                 }
-                Write-Host "  [OK] sudoers file for '$username' removed." -ForegroundColor Green
+                Write-Host "  [OK] home dir '$($user.homeDir)' removed." -ForegroundColor Green
+
+                # Sudoers file must be gone when rules were declared.
+                # sudoersRules is optional in the config schema; guard the
+                # property access to avoid strict-mode errors when absent.
+                # @() in an if-expression yields $null - initialise separately.
+                $rawRules     = $user.PSObject.Properties['sudoersRules']
+                $sudoersRules = @()
+                if ($null -ne $rawRules) { $sudoersRules = @($rawRules.Value) }
+                if ($sudoersRules.Count -gt 0) {
+                    $sudoersPath  = "/etc/sudoers.d/$username"
+                    $result       = Invoke-SshClientCommand `
+                        -SshClient $sshClient `
+                        -Command   "sudo test -f '$sudoersPath' && echo exists || echo absent"
+                    if (($result.Output -join '').Trim() -ne 'absent') {
+                        throw "Teardown incomplete: sudoers file '$sudoersPath' " +
+                            "still exists on $($VmDef.vmName)."
+                    }
+                    Write-Host "  [OK] sudoers file for '$username' removed." -ForegroundColor Green
+                }
+            }
+
+            # Declared groups must be gone. groupdel runs after all users are
+            # removed so no members block deletion.
+            foreach ($group in $Entry.groups) {
+                $groupName = $group.groupName
+                $result    = Invoke-SshClientCommand `
+                    -SshClient $sshClient `
+                    -Command   "getent group '$groupName'"
+                if ($result.ExitStatus -eq 0) {
+                    throw "Teardown incomplete: group '$groupName' still exists on $($VmDef.vmName)."
+                }
+                Write-Host "  [OK] group '$groupName' removed." -ForegroundColor Green
+            }
+        }
+        finally {
+            if ($null -ne $sshClient) {
+                if ($sshClient.IsConnected) { $sshClient.Disconnect() }
+                $sshClient.Dispose()
             }
         }
 
-        # Declared groups must be gone. groupdel runs after all users are
-        # removed so no members block deletion.
-        foreach ($group in $entry.groups) {
-            $groupName = $group.groupName
-            $result    = Invoke-SshClientCommand `
-                -SshClient $sshClient `
-                -Command   "getent group '$groupName'"
-            if ($result.ExitStatus -eq 0) {
-                throw "Teardown incomplete: group '$groupName' still exists on $($VmDef.vmName)."
-            }
-            Write-Host "  [OK] group '$groupName' removed." -ForegroundColor Green
-        }
+        Write-Host 'Removing test VmUsersConfig from vault ...' -ForegroundColor Magenta
+        Remove-Secret -Vault VmUsers -Name VmUsersConfig
     }
     finally {
-        if ($null -ne $sshClient) {
-            if ($sshClient.IsConnected) { $sshClient.Disconnect() }
-            $sshClient.Dispose()
-        }
+        # Always deprovision the VM even if user removal or assertions failed.
+        # A failed userdel must not leave a live VM behind.
+        Invoke-VmProvisioningTeardown -Config $Config
     }
-
-    Write-Host 'Removing test VmUsersConfig from vault ...' -ForegroundColor Cyan
-    Remove-Secret -Vault VmUsers -Name VmUsersConfig
-
-    Invoke-VmProvisioningTeardown -Config $Config
 }
 
 # ---------------------------------------------------------------------------
@@ -234,24 +281,22 @@ function Invoke-VmUsersTest {
         [PSCustomObject] $Config
     )
 
-    $vmDef = Invoke-VmUsersSetup -Config $Config
+    $vmDef     = $null
+    $succeeded = $false
 
     try {
-        Write-Host "Verifying users: $($vmDef.vmName) at $($vmDef.ipAddress) ..." `
-            -ForegroundColor Cyan
+        $vmDef = Invoke-VmUsersSetup -Config $Config
 
-        # Security note: SSH.NET accepts any host key by default. This is
-        # acceptable on a private Hyper-V network with statically provisioned
-        # IPs. Do NOT use on untrusted networks.
-        $auth      = [Renci.SshNet.PasswordAuthenticationMethod]::new(
-                         $vmDef.username, $vmDef.password)
-        $connInfo  = [Renci.SshNet.ConnectionInfo]::new(
-                         $vmDef.ipAddress, $vmDef.username, @($auth))
+        Write-Host "Verifying users: $($vmDef.vmName) at $($vmDef.ipAddress) ..." `
+            -ForegroundColor Magenta
+
         $sshClient = $null
 
         try {
-            $sshClient = [Renci.SshNet.SshClient]::new($connInfo)
-            $sshClient.Connect()
+            $sshClient = New-VmSshClient `
+                             -IpAddress $vmDef.ipAddress `
+                             -Username  $vmDef.username `
+                             -Password  $vmDef.password
 
             $entry = Get-E2EUsersTestEntry
 
@@ -330,7 +375,11 @@ function Invoke-VmUsersTest {
                 # Sudoers file must exist when rules are declared. Checking for
                 # file presence is sufficient - syntax is validated by
                 # Invoke-SudoersReconciliation via visudo before writing.
-                $sudoersRules = @($user.sudoersRules)
+                # sudoersRules is optional; guard the access under strict mode.
+                # @() in an if-expression yields $null - initialise separately.
+                $rawRules     = $user.PSObject.Properties['sudoersRules']
+                $sudoersRules = @()
+                if ($null -ne $rawRules) { $sudoersRules = @($rawRules.Value) }
                 if ($sudoersRules.Count -gt 0) {
                     $sudoersPath  = "/etc/sudoers.d/$username"
                     $existsResult = Invoke-SshClientCommand `
@@ -350,39 +399,64 @@ function Invoke-VmUsersTest {
                 $sshClient.Dispose()
             }
         }
+
+        $succeeded = $true
+    }
+    catch {
+        Write-Host "E2E test error: $($_.Exception.Message)" -ForegroundColor Red
+        throw
     }
     finally {
-        Invoke-VmUsersTeardown -Config $Config -VmDef $vmDef
+        if ($succeeded) {
+            Invoke-VmUsersTeardown -Config $Config -VmDef $vmDef
 
-        Write-Host 'Verifying teardown ...' -ForegroundColor Cyan
+            Write-Host 'Verifying teardown ...' -ForegroundColor Magenta
 
-        # Assert VM was removed from Hyper-V.
-        if ($null -ne (Get-VM -Name $vmDef.vmName -ErrorAction SilentlyContinue)) {
-            throw "Teardown incomplete: VM '$($vmDef.vmName)' still exists in Hyper-V."
-        }
-        Write-Host '  [OK] VM removed from Hyper-V.' -ForegroundColor Green
+            # Assert VM was removed from Hyper-V.
+            if ($null -ne (Get-VM -Name $vmDef.vmName -ErrorAction SilentlyContinue)) {
+                throw "Teardown incomplete: VM '$($vmDef.vmName)' still exists in Hyper-V."
+            }
+            Write-Host '  [OK] VM removed from Hyper-V.' -ForegroundColor Green
 
-        # Assert VmProvisionerConfig vault entry was removed.
-        if ($null -ne (Get-SecretInfo -Vault VmProvisioner -Name VmProvisionerConfig `
-                -ErrorAction SilentlyContinue)) {
-            throw "Teardown incomplete: VmProvisionerConfig still present in vault."
-        }
-        Write-Host '  [OK] VmProvisionerConfig removed from vault.' -ForegroundColor Green
+            # Assert VmProvisionerConfig vault entry was removed.
+            if ($null -ne (Get-SecretInfo -Vault VmProvisioner -Name VmProvisionerConfig `
+                    -ErrorAction SilentlyContinue)) {
+                throw "Teardown incomplete: VmProvisionerConfig still present in vault."
+            }
+            Write-Host '  [OK] VmProvisionerConfig removed from vault.' -ForegroundColor Green
 
-        # Assert VmUsersConfig vault entry was removed.
-        if ($null -ne (Get-SecretInfo -Vault VmUsers -Name VmUsersConfig `
-                -ErrorAction SilentlyContinue)) {
-            throw "Teardown incomplete: VmUsersConfig still present in vault."
-        }
-        Write-Host '  [OK] VmUsersConfig removed from vault.' -ForegroundColor Green
+            # Assert VmUsersConfig vault entry was removed.
+            if ($null -ne (Get-SecretInfo -Vault VmUsers -Name VmUsersConfig `
+                    -ErrorAction SilentlyContinue)) {
+                throw "Teardown incomplete: VmUsersConfig still present in vault."
+            }
+            Write-Host '  [OK] VmUsersConfig removed from vault.' -ForegroundColor Green
 
-        # Assert E2E-VmLAN switch and NAT are removed.
-        if ($null -ne (Get-VMSwitch -Name 'E2E-VmLAN' -ErrorAction SilentlyContinue)) {
-            throw "Teardown incomplete: E2E-VmLAN switch still exists."
+            # Assert E2E-VmLAN switch and NAT are removed.
+            if ($null -ne (Get-VMSwitch -Name 'E2E-VmLAN' -ErrorAction SilentlyContinue)) {
+                throw "Teardown incomplete: E2E-VmLAN switch still exists."
+            }
+            if ($null -ne (Get-NetNat -Name 'E2E-VmLAN-NAT' -ErrorAction SilentlyContinue)) {
+                throw "Teardown incomplete: E2E-VmLAN-NAT rule still exists."
+            }
+            Write-Host '  [OK] E2E-VmLAN switch and NAT removed.' -ForegroundColor Green
         }
-        if ($null -ne (Get-NetNat -Name 'E2E-VmLAN-NAT' -ErrorAction SilentlyContinue)) {
-            throw "Teardown incomplete: E2E-VmLAN-NAT rule still exists."
+        else {
+            # Best-effort deprovisioning when setup or assertions failed.
+            # Wrapped in try/catch so cleanup errors do not mask the original
+            # test failure.
+            Write-Host 'Test did not complete - running best-effort deprovisioning ...' `
+                -ForegroundColor Yellow
+            try {
+                Invoke-VmProvisioningTeardown -Config $Config
+            }
+            catch {
+                Write-Warning "Deprovisioning after failure: $($_.Exception.Message)"
+            }
+            try {
+                Remove-Secret -Vault VmUsers -Name VmUsersConfig -ErrorAction SilentlyContinue
+            }
+            catch {}
         }
-        Write-Host '  [OK] E2E-VmLAN switch and NAT removed.' -ForegroundColor Green
     }
 }

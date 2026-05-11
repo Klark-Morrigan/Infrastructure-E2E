@@ -23,6 +23,8 @@ Describe 'Invoke-E2EAgentLoop' {
             PrivateKeyPath        = 'C:\test.pem'
             ProvisionerPath       = 'C:\test\provisioner'
             UsersPath             = 'C:\test\users'
+            RunnersPath           = 'C:\test\runners'
+            HostTarballCachePath  = 'C:\test\tarball-cache'
             TestVm                = [PSCustomObject]@{
                 ubuntuVersion = '24.04'
                 ipAddress     = '192.168.100.200'
@@ -138,7 +140,10 @@ Describe 'Invoke-E2EAgentLoop' {
             $Script:_config.PrivateKeyPath          | Should -Be 'C:\test.pem'
             $Script:_config.ProvisionerPath         | Should -Be 'C:\test\provisioner'
             $Script:_config.UsersPath               | Should -Be 'C:\test\users'
-            $Script:_config.TestVm.ipAddress        | Should -Be '192.168.100.200'
+            $Script:_config.RunnersPath             | Should -Be 'C:\test\runners'
+            $Script:_config.HostTarballCachePath    | Should -Be 'C:\test\tarball-cache'
+            $Script:_config.Owner            | Should -Be 'org'
+            $Script:_config.TestVm.ipAddress | Should -Be '192.168.100.200'
         }
 
         It 'posts success after the lifecycle test passes' {
@@ -419,10 +424,10 @@ Describe 'Invoke-E2EAgentLoop' {
             Should -Invoke Get-GitHubAppToken -Times 2
         }
 
-        It 'refreshes using the E2E installation ID, not the runners installation ID' {
+        It 'refreshes using the E2E installation ID' {
             # The refresh must re-authenticate against the E2E installation
-            # (deployments:write) not the GitHubRunners installation (actions:write).
-            # Mixing them up returns a token with the wrong permission scope.
+            # (deployments:write). Using the wrong installation ID would return
+            # a token without deployments:write and break status posting.
             $expiringToken = [PSCustomObject]@{
                 Token     = 'expiring_tok'
                 ExpiresAt = [DateTimeOffset]::UtcNow.AddMinutes(3).ToString('o')

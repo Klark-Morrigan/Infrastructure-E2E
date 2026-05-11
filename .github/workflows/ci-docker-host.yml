@@ -1,0 +1,14 @@
+name: CI (Docker host)
+
+# Delegates to the shared Docker host CI workflow in Infrastructure-Common.
+# Kept as a local file so pull_request triggers work for this repo,
+# and so tag.yml can call it via workflow_call.
+on:
+  pull_request:
+    branches: [ main, master ]
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  ci-docker-host:
+    uses: VitaliiAndreev/Infrastructure-Common/.github/workflows/ci-powershell-docker-host.yml@master

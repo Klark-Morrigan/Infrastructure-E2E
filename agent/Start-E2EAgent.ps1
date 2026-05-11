@@ -78,7 +78,8 @@ function Invoke-E2EAgentLoop {
         [int] $E2EInstallationId,
 
         # Installation ID for the Infrastructure-GitHubRunners repo.
-        # Passed to the lifecycle test so it can acquire an actions:write token.
+        # Passed to the lifecycle test so it can mint a token scoped to
+        # administration:write on that repo only.
         [Parameter(Mandatory)]
         [int] $RunnersInstallationId,
 
@@ -97,6 +98,18 @@ function Invoke-E2EAgentLoop {
         # create-users.ps1.
         [Parameter(Mandatory)]
         [string] $UsersPath,
+
+        # Absolute path to the Infrastructure-GitHubRunners repo root on
+        # the workstation. Passed to the lifecycle test so it can call
+        # register-runners.ps1 and deregister-runners.ps1.
+        [Parameter(Mandatory)]
+        [string] $RunnersPath,
+
+        # Local directory on the workstation where the actions/runner tarball
+        # is cached between test runs. Passed to the lifecycle test so it can
+        # pre-seed the VM cache without downloading through the Hyper-V NAT.
+        [Parameter(Mandatory)]
+        [string] $HostTarballCachePath,
 
         # Operator-specific VM config for the E2E test VM. Contains the
         # workstation-specific values (IP, gateway, paths) that cannot be
@@ -193,6 +206,9 @@ function Invoke-E2EAgentLoop {
                     PrivateKeyPath        = $PrivateKeyPath
                     ProvisionerPath       = $ProvisionerPath
                     UsersPath             = $UsersPath
+                    RunnersPath           = $RunnersPath
+                    HostTarballCachePath  = $HostTarballCachePath
+                    Owner                 = $Owner
                     TestVm                = $TestVm
                 })
 
@@ -264,16 +280,19 @@ if ($MyInvocation.InvocationName -ne '.') {
     #
     # Expected JSON shape:
     # {
-    #   "AppId":                 123456,
-    #   "PrivateKeyPath":        "C:\\certs\\my-app.private-key.pem",
-    #   "E2EInstallationId":     111111,
+    #   "AppId":               123456,
+    #   "PrivateKeyPath":      "C:\\certs\\my-app.private-key.pem",
+    #   "E2EInstallationId":   111111,
     #   "RunnersInstallationId": 222222,
-    #   "Owner":                 "my-org",
-    #   "Repo":                  "Infrastructure-E2E",
-    #   "Environment":           "e2e-workstation",
-    #   "PollIntervalSeconds":   30,
-    #   "TimeoutMinutes":        10,
-    #   "ProvisionerPath":       "C:\\a_Code\\Infrastructure-Vm-Provisioner",
+    #   "Owner":               "my-org",
+    #   "Repo":                "Infrastructure-E2E",
+    #   "Environment":         "e2e-workstation",
+    #   "PollIntervalSeconds": 30,
+    #   "TimeoutMinutes":      10,
+    #   "ProvisionerPath":     "C:\\a_Code\\Infrastructure-Vm-Provisioner",
+    #   "UsersPath":           "C:\\a_Code\\Infrastructure-Vm-Users",
+    #   "RunnersPath":         "C:\\a_Code\\Infrastructure-GitHubRunners",
+    #   "HostTarballCachePath": "C:\\cache\\github-runners",
     #   "TestVm": {
     #     "ubuntuVersion": "24.04",
     #     "ipAddress":     "192.168.100.200",
@@ -308,12 +327,14 @@ if ($MyInvocation.InvocationName -ne '.') {
                 -PrivateKeyPath        $config.PrivateKeyPath `
                 -ProvisionerPath       $config.ProvisionerPath `
                 -UsersPath             $config.UsersPath `
+                -RunnersPath           $config.RunnersPath `
+                -HostTarballCachePath  $config.HostTarballCachePath `
                 -TestVm                $config.TestVm `
-                -Owner                 $config.Owner `
-                -Repo                  $config.Repo `
-                -Environment           $config.Environment `
-                -PollIntervalSeconds   $config.PollIntervalSeconds `
-                -TimeoutMinutes        $config.TimeoutMinutes
+                -Owner               $config.Owner `
+                -Repo                $config.Repo `
+                -Environment         $config.Environment `
+                -PollIntervalSeconds $config.PollIntervalSeconds `
+                -TimeoutMinutes      $config.TimeoutMinutes
         }
         catch [System.Management.Automation.PipelineStoppedException] {
             throw
