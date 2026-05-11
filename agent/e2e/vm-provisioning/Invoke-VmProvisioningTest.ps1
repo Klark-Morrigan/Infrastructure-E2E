@@ -79,13 +79,13 @@ function Invoke-VmProvisioningSetup {
 
     # VmProvisionerConfig must be a JSON array - ConvertFrom-VmConfigJson
     # rejects a bare object.
-    Write-Host 'Writing test VmProvisionerConfig to vault ...' -ForegroundColor Cyan
+    Write-Host 'Writing test VmProvisionerConfig to vault ...' -ForegroundColor Magenta
     Set-Secret `
         -Vault  VmProvisioner `
         -Name   VmProvisionerConfig `
         -Secret (ConvertTo-Json @($vmEntry) -Depth 5 -Compress)
 
-    Write-Host 'Provisioning VM ...' -ForegroundColor Cyan
+    Write-Host 'Provisioning VM ...' -ForegroundColor Magenta
     & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1"
 
     # Return a vmDef consistent with what ConvertFrom-VmConfigJson produces
@@ -110,10 +110,10 @@ function Invoke-VmProvisioningTeardown {
         [PSCustomObject] $Config
     )
 
-    Write-Host 'Deprovisioning VM ...' -ForegroundColor Cyan
+    Write-Host 'Deprovisioning VM ...' -ForegroundColor Magenta
     & "$($Config.ProvisionerPath)\hyper-v\ubuntu\deprovision.ps1"
 
-    Write-Host 'Removing test VmProvisionerConfig from vault ...' -ForegroundColor Cyan
+    Write-Host 'Removing test VmProvisionerConfig from vault ...' -ForegroundColor Magenta
     Remove-Secret -Vault VmProvisioner -Name VmProvisionerConfig
 }
 
@@ -200,7 +200,7 @@ function Invoke-VmProvisioningTest {
     finally {
         Invoke-VmProvisioningTeardown -Config $Config
 
-        Write-Host 'Verifying teardown ...' -ForegroundColor Cyan
+        Write-Host 'Verifying teardown ...' -ForegroundColor Magenta
 
         # Assert VM was removed from Hyper-V.
         if ($null -ne (Get-VM -Name $vmDef.vmName -ErrorAction SilentlyContinue)) {

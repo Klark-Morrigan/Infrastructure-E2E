@@ -124,7 +124,7 @@ function Invoke-RunnerLifecycleSetup {
     $entry          = Get-E2ERunnerUsersEntry -DeployPassword $deployPassword
 
     # Write GitHubRunnersConfig first so register-runners.ps1 finds it.
-    Write-Host 'Writing test GitHubRunnersConfig to vault ...' -ForegroundColor Cyan
+    Write-Host 'Writing test GitHubRunnersConfig to vault ...' -ForegroundColor Magenta
     $runnersEntries = Get-E2ERunnersConfigEntry -Config $Config
     Set-Secret `
         -Vault  GitHubRunners `
@@ -139,7 +139,7 @@ function Invoke-RunnerLifecycleSetup {
     # touching the other repos the installation covers, even if the app declares
     # broader permissions.
     Write-Host 'Acquiring GitHub App token for runner registration ...' `
-        -ForegroundColor Cyan
+        -ForegroundColor Magenta
     $runnersRepo = Split-Path $Config.RunnersPath -Leaf
     $tokenResult = Get-GitHubAppToken `
         -AppId          $Config.AppId `
@@ -193,7 +193,7 @@ function Invoke-RunnerLifecycleTeardown {
         [object] $Entry
     )
 
-    Write-Host 'Deregistering runners ...' -ForegroundColor Cyan
+    Write-Host 'Deregistering runners ...' -ForegroundColor Magenta
     # -Force: if the runner service crashed mid-test, -Force removes the
     # GitHub registration via the API without SSH access.
     & "$($Config.RunnersPath)\hyper-v\ubuntu\deregister-runners.ps1" `
@@ -207,7 +207,7 @@ function Invoke-RunnerLifecycleTeardown {
     # the VM is still alive so we can SSH in. Must run before
     # Invoke-VmUsersTeardown destroys the VM.
     Write-Host "Verifying runner deregistration: $($VmDef.vmName) at $($VmDef.ipAddress) ..." `
-        -ForegroundColor Cyan
+        -ForegroundColor Magenta
 
     $auth      = [Renci.SshNet.PasswordAuthenticationMethod]::new(
                      $VmDef.username, $VmDef.password)
@@ -256,7 +256,7 @@ function Invoke-RunnerLifecycleTeardown {
 
     # Assert runner is no longer registered on GitHub. This must succeed
     # whether the VM was reachable or not (-Force handles the unreachable case).
-    Write-Host 'Verifying runner deregistered from GitHub API ...' -ForegroundColor Cyan
+    Write-Host 'Verifying runner deregistered from GitHub API ...' -ForegroundColor Magenta
     $githubUrl    = $configEntry[0].githubUrl
     $parts        = $githubUrl.TrimEnd('/') -split '/'
     $apiOwner     = $parts[-2]
@@ -275,7 +275,7 @@ function Invoke-RunnerLifecycleTeardown {
 
     Invoke-VmUsersTeardown -Config $Config -VmDef $VmDef -Entry $Entry
 
-    Write-Host 'Removing test GitHubRunnersConfig from vault ...' -ForegroundColor Cyan
+    Write-Host 'Removing test GitHubRunnersConfig from vault ...' -ForegroundColor Magenta
     Remove-Secret -Vault GitHubRunners -Name GitHubRunnersConfig
 }
 
@@ -309,7 +309,7 @@ function Invoke-RunnerLifecycleTest {
         # Registration starts here - $runnersToken is already assigned so the
         # finally block can call deregister-runners.ps1 even if this fails
         # mid-way (e.g. config.sh succeeds but svc.sh fails).
-        Write-Host 'Registering runners ...' -ForegroundColor Cyan
+        Write-Host 'Registering runners ...' -ForegroundColor Magenta
         & "$($Config.RunnersPath)\hyper-v\ubuntu\register-runners.ps1" `
             -Token $runnersToken
 
@@ -401,7 +401,7 @@ function Invoke-RunnerLifecycleTest {
                 -RunnersToken $runnersToken `
                 -Entry        $entry
 
-            Write-Host 'Verifying teardown ...' -ForegroundColor Cyan
+            Write-Host 'Verifying teardown ...' -ForegroundColor Magenta
 
             # Assert VM was removed from Hyper-V.
             if ($null -ne (Get-VM -Name $vmDef.vmName -ErrorAction SilentlyContinue)) {

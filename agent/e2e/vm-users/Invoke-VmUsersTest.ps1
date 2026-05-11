@@ -73,7 +73,7 @@ function Invoke-VmUsersSetup {
 
     # VmUsersConfig must be a JSON array - ConvertFrom-VmUsersConfigJson
     # rejects a bare object.
-    Write-Host 'Writing test VmUsersConfig to vault ...' -ForegroundColor Cyan
+    Write-Host 'Writing test VmUsersConfig to vault ...' -ForegroundColor Magenta
     Set-Secret `
         -Vault  VmUsers `
         -Name   VmUsersConfig `
@@ -81,7 +81,7 @@ function Invoke-VmUsersSetup {
 
     $vmDef = Invoke-VmProvisioningSetup -Config $Config
 
-    Write-Host 'Reconciling users ...' -ForegroundColor Cyan
+    Write-Host 'Reconciling users ...' -ForegroundColor Magenta
     & "$($Config.UsersPath)\hyper-v\ubuntu\create-users.ps1"
 
     # Verify SSH is reachable after create-users.ps1 returns. create-users.ps1
@@ -379,7 +379,7 @@ function Invoke-VmUsersTest {
         if ($succeeded) {
             Invoke-VmUsersTeardown -Config $Config -VmDef $vmDef
 
-            Write-Host 'Verifying teardown ...' -ForegroundColor Cyan
+            Write-Host 'Verifying teardown ...' -ForegroundColor Magenta
 
             # Assert VM was removed from Hyper-V.
             if ($null -ne (Get-VM -Name $vmDef.vmName -ErrorAction SilentlyContinue)) {
