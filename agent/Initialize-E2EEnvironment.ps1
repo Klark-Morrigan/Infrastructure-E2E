@@ -1,21 +1,16 @@
 <#
 .NOTES
     Dot-source this file from every E2E entry-point script (Start-E2EAgent.ps1,
-    Start-*Test.ps1) to ensure a consistent module environment before any
+    Start-*Test.ps1) to ensure a consistent E2E session before any
     Infrastructure.* function is called.
 
-    Infrastructure.Common must be bootstrapped manually here because it provides
-    Invoke-ModuleInstall - the helper used for every subsequent module install.
-    It cannot install itself.
+    Concerns of this script: the runtime environment that wraps the modules
+    (SecretStore provider registration, anything else session-wide).
+
+    Module install / import is delegated to Install-ModuleDependencies.ps1
+    so the dependency list lives in one place for this repo.
 #>
 
-$_common = Get-Module -ListAvailable -Name Infrastructure.Common |
-    Sort-Object Version -Descending | Select-Object -First 1
-if (-not $_common -or $_common.Version -lt [Version]'2.1.0') {
-    Install-Module Infrastructure.Common -Scope CurrentUser -Force
-}
-Import-Module Infrastructure.Common -Force -ErrorAction Stop
-
-Invoke-ModuleInstall -ModuleName 'Infrastructure.Secrets' -MinimumVersion '3.0.0'
+. "$PSScriptRoot\Install-ModuleDependencies.ps1"
 
 Use-MicrosoftPowerShellSecretStoreProvider
