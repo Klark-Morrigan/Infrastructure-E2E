@@ -370,19 +370,38 @@ function Invoke-RunnerLifecycleTest {
         }
 
         # Assert runner online via GitHub API.
-        # Invoke-GitHubApi is provided by Infrastructure.Common.
-        Write-Host 'Verifying runner online via GitHub API ...' -ForegroundColor Cyan
+        # The runner service needs a few seconds after start to open its
+        # websocket to GitHub and appear as 'online'. Poll with backoff
+        # rather than sleeping a fixed amount - most runs will succeed on
+        # the first or second attempt.
+        Write-Host 'Verifying runner online via GitHub API ...' -ForegroundColor Magenta
         $githubUrl = $configEntry[0].githubUrl
         $parts     = $githubUrl.TrimEnd('/') -split '/'
         $apiOwner  = $parts[-2]
         $apiRepo   = $parts[-1]
 
-        $response   = Invoke-GitHubApi `
-            -Token    $runnersToken `
-            -Endpoint "repos/$apiOwner/$apiRepo/actions/runners?per_page=100"
-        $registration = @($response.runners) |
-            Where-Object { $_.name -eq $runnerName } |
-            Select-Object -First 1
+        $maxAttempts  = 10
+        $delaySeconds = 5
+        $registration = $null
+
+        for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            $response = Invoke-GitHubApi `
+                -Token    $runnersToken `
+                -Endpoint "repos/$apiOwner/$apiRepo/actions/runners?per_page=100"
+            $registration = @($response.runners) |
+                Where-Object { $_.name -eq $runnerName } |
+                Select-Object -First 1
+
+            if ($null -ne $registration -and $registration.status -eq 'online') {
+                break
+            }
+
+            $statusMsg = if ($null -eq $registration) { 'not found' }
+                         else { $registration.status }
+            Write-Host ("  [attempt $attempt/$maxAttempts] Runner status: " +
+                "$statusMsg - waiting ${delaySeconds}s ...") -ForegroundColor Yellow
+            Start-Sleep -Seconds $delaySeconds
+        }
 
         if ($null -eq $registration) {
             throw "Runner '$runnerName' not found in GitHub API for $githubUrl."
