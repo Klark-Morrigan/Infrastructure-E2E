@@ -35,9 +35,9 @@ jobs:
     steps:
       - name: Obtain GitHub App token (Infrastructure-E2E)
         id: token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.GH_APP_ID }}
+          client-id: ${{ secrets.GH_APP_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
           owner: VitaliiAndreev
           repositories: Infrastructure-E2E
