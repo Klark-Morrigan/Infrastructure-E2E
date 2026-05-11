@@ -55,7 +55,7 @@ PowerShell 7+ (`pwsh`).
   - `VmUsers` (owned by `Infrastructure-Vm-Users`)
   - `GitHubRunners` (owned by `Infrastructure-GitHubRunners`)
   - `E2EConfig` (owned by this repo - see [GitHub App setup](#github-app-setup))
-- `Infrastructure.Common` >= `2.0.0` installed from PSGallery
+- `Infrastructure.Common` >= `3.1.0` installed from PSGallery
 
 ---
 
@@ -148,6 +148,7 @@ following in the `E2EConfig` vault:
   "ProvisionerPath":     "C:\\a_Code\\Infrastructure-Vm-Provisioner",
   "UsersPath":           "C:\\a_Code\\Infrastructure-Vm-Users",
   "RunnersPath":         "C:\\a_Code\\Infrastructure-GitHubRunners",
+  "HostTarballCachePath": "C:\\cache\\github-runners",
   "TestVm": {
     "ubuntuVersion":  "24.04",
     "ipAddress":      "192.168.101.10",
@@ -243,9 +244,10 @@ be overridden via parameters.
 
 ## How to trigger
 
-Always start the polling agent on the workstation **before** triggering
-a run - the agent must be running when the workflow creates the
-deployment.
+The polling agent must start and complete the test suite within
+**30 minutes** of the workflow creating the deployment - that is the
+workflow's polling window. Starting the agent before triggering is the
+simplest way to guarantee this.
 
 ### Manual
 
