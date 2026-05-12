@@ -132,9 +132,31 @@ function Invoke-VmProvisioningSetup {
         $result = Invoke-SshClientCommand `
             -SshClient $sshClient -Command 'cloud-init status --wait'
         if ($result.ExitStatus -ne 0) {
+            # cloud-init writes its status to stdout (not stderr), and the
+            # actionable detail (which runcmd / module failed) lives in
+            # /var/log/cloud-init-output.log. Dump both before throwing so
+            # the operator does not have to SSH in to diagnose.
+            Write-Host ("  [FAIL] cloud-init exit $($result.ExitStatus) on " +
+                "$($vmDef.vmName).") -ForegroundColor Red
+            Write-Host '  --- cloud-init status (stdout) ---' -ForegroundColor Yellow
+            Write-Host $result.Output
+            if (-not [string]::IsNullOrWhiteSpace($result.Error)) {
+                Write-Host '  --- cloud-init status (stderr) ---' `
+                    -ForegroundColor Yellow
+                Write-Host $result.Error
+            }
+            $long = Invoke-SshClientCommand `
+                -SshClient $sshClient -Command 'cloud-init status --long'
+            Write-Host '  --- cloud-init status --long ---' -ForegroundColor Yellow
+            Write-Host $long.Output
+            $tail = Invoke-SshClientCommand `
+                -SshClient $sshClient `
+                -Command 'sudo tail -n 200 /var/log/cloud-init-output.log'
+            Write-Host '  --- tail -n 200 /var/log/cloud-init-output.log ---' `
+                -ForegroundColor Yellow
+            Write-Host $tail.Output
             throw "cloud-init did not complete successfully on " +
-                "$($vmDef.vmName) (exit $($result.ExitStatus)): " +
-                "$($result.Error)"
+                "$($vmDef.vmName) (exit $($result.ExitStatus)). See logs above."
         }
         Write-Host "  [OK] cloud-init: $($result.Output.Trim())" `
             -ForegroundColor Green
