@@ -11,6 +11,19 @@
 # SSH.NET is used directly via Invoke-SshClientCommand (Infrastructure.Common).
 Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 
+# JDK assertion helper. Kept in its own file so it can be unit-tested in
+# isolation and so this file stays focused on setup/teardown/orchestration.
+. "$PSScriptRoot\Invoke-JdkInstallAssertions.ps1"
+
+# JDK test pin. Hard-coded so the assertion is stable across operator
+# workstations - whatever the latest Temurin GA build of feature release 21
+# is at provision time, the prefix "21" still matches the reported version.
+# The host-side JDK cache (Step 3 of the JDK plan) amortises the Adoptium
+# download across runs once the lockfile is present.
+$script:JdkTestVendor      = 'temurin'
+$script:JdkTestVersion     = '21'
+$script:JdkInstallPrefix   = "/opt/jdk-$script:JdkTestVendor-"
+
 # ---------------------------------------------------------------------------
 # Invoke-VmProvisioningSetup
 #   Generates a random VM admin password, writes a test-scoped
@@ -75,6 +88,14 @@ function Invoke-VmProvisioningSetup {
         vhdPath       = $Config.TestVm.vhdPath
         switchName    = 'E2E-VmLAN'
         natName       = 'E2E-VmLAN-NAT'
+        # Always-on JDK install. Exercised by the assertion block in
+        # Invoke-VmProvisioningTest. Surfaced on the returned vmDef so the
+        # assertion can read $vmDef.javaDevKit.version without re-parsing
+        # the vault.
+        javaDevKit    = [ordered]@{
+            vendor  = $script:JdkTestVendor
+            version = $script:JdkTestVersion
+        }
     }
 
     # VmProvisionerConfig must be a JSON array - ConvertFrom-VmConfigJson
@@ -184,6 +205,12 @@ function Invoke-VmProvisioningTest {
                 throw "Root filesystem on $($vmDef.vmName) is ${usePct}% full."
             }
             Write-Host "  [OK] root filesystem: ${usePct}% used" -ForegroundColor Green
+
+            Invoke-JdkInstallAssertions `
+                -SshClient        $sshClient `
+                -VmName           $vmDef.vmName `
+                -RequestedVersion $vmDef.javaDevKit.version `
+                -InstallPrefix    $script:JdkInstallPrefix
         }
         finally {
             if ($null -ne $sshClient) {
