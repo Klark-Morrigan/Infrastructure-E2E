@@ -222,7 +222,12 @@ Run from an elevated PowerShell session on the workstation.
 
 ### VM provisioning test
 
-Provisions the test VM, verifies SSH reachability, then tears down.
+Provisions the test VM, verifies SSH reachability and the JDK install
+applied by the provisioner, then tears down. The vault entry written by
+the test hard-codes `javaDevKit = { vendor: temurin, version: "21" }` so
+the assertion is stable across operator workstations - whatever the
+latest GA build of Temurin 21 happens to be at provision time, the
+prefix check against the reported version still passes.
 
 ```powershell
 # Standard VmLAN setup - no arguments needed:
@@ -287,7 +292,7 @@ its own assertions on top.
 
 | Layer | Script | Asserts |
 |---|---|---|
-| VM provisioning | `agent/e2e/vm-provisioning/Invoke-VmProvisioningTest.ps1` | VM is reachable via SSH (`hostname` exits 0); cloud-init completed; root filesystem not full |
+| VM provisioning | `agent/e2e/vm-provisioning/Invoke-VmProvisioningTest.ps1` | VM is reachable via SSH (`hostname` exits 0); cloud-init completed; root filesystem not full; JDK install applied (`JAVA_HOME` under `/opt/jdk-temurin-*`, `java` on `PATH` for both login and non-login shells, `java -version` matches the requested version) |
 | VM users | `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` | Expected OS groups exist; expected users exist with correct shell and group membership; sudoers files are in place |
 | Runner lifecycle | `agent/e2e/runner-lifecycle/Invoke-RunnerLifecycleTest.ps1` | Runner systemd service is active; runner appears online in the GitHub API |
 
