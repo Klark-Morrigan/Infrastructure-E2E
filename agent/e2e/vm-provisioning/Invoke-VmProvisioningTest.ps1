@@ -15,6 +15,10 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 # isolation and so this file stays focused on setup/teardown/orchestration.
 . "$PSScriptRoot\Invoke-JdkInstallAssertions.ps1"
 
+# File-transfer assertion helper. Same rationale as the JDK helper above:
+# isolated for unit-testability and to keep this file focused.
+. "$PSScriptRoot\Invoke-FileTransferAssertions.ps1"
+
 # Fixed test VM identity. Shared between Setup (writes vault) and the
 # teardown verification (looks up the VM by name) so there is one source
 # of truth for the test VM name.
@@ -28,6 +32,13 @@ $script:TestVmName         = 'e2e-test'
 $script:JdkTestVendor      = 'temurin'
 $script:JdkTestVersion     = '21'
 $script:JdkInstallPrefix   = "/opt/jdk-$script:JdkTestVendor-"
+
+# File-transfer fixture. Resolved from $PSScriptRoot so the absolute path is
+# computed on whichever workstation runs the test rather than being hard-
+# coded. The target lives under /opt/e2e-fixtures/ so it does not collide
+# with any real provisioner-managed path.
+$script:FileTransferSource = Join-Path $PSScriptRoot 'fixtures\file-transfer-fixture.txt'
+$script:FileTransferTarget = '/opt/e2e-fixtures/file-transfer-fixture.txt'
 
 # ---------------------------------------------------------------------------
 # Invoke-VmProvisioningSetup
@@ -101,6 +112,16 @@ function Invoke-VmProvisioningSetup {
             vendor  = $script:JdkTestVendor
             version = $script:JdkTestVersion
         }
+        # Always-on file-transfer entry. Exercises the Copy-VmFiles dispatch
+        # in Invoke-VmPostProvisioning (the generic transport, separate from
+        # the JDK path). One fixture is enough - the loop, sudo, mkdir,
+        # curl, chown, chmod chain runs the same way for one entry as for N.
+        files         = @(
+            [ordered]@{
+                source = $script:FileTransferSource
+                target = $script:FileTransferTarget
+            }
+        )
     }
 
     # VmProvisionerConfig must be a JSON array - ConvertFrom-VmConfigJson
@@ -172,6 +193,12 @@ function Invoke-VmProvisioningSetup {
             -VmName           $vmDef.vmName `
             -RequestedVersion $vmDef.javaDevKit.version `
             -InstallPrefix    $script:JdkInstallPrefix
+
+        Invoke-FileTransferAssertions `
+            -SshClient  $sshClient `
+            -VmName     $vmDef.vmName `
+            -SourcePath $script:FileTransferSource `
+            -TargetPath $script:FileTransferTarget
     }
     finally {
         if ($null -ne $sshClient) {
