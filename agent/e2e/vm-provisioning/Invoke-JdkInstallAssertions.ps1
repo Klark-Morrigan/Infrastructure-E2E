@@ -77,17 +77,23 @@ function Invoke-JdkInstallAssertions {
     Write-Host "  [OK] login PATH java: $javaPathLogin" -ForegroundColor Green
 
     # 2b) 'java' on PATH for non-login shells - the case that breaks first
-    #     if jdk.sh is wired only into login shells.
+    #     if jdk.sh is wired only into login shells. The implementation may
+    #     reach non-login shells via /usr/local/bin symlinks (which is what
+    #     the provisioner does), so command -v's return value is a symlink
+    #     path. readlink -f follows it to the real install location for
+    #     the prefix check.
     $result = Invoke-SshClientCommand `
-        -SshClient $SshClient -Command 'bash -c ''command -v java'''
+        -SshClient $SshClient `
+        -Command 'bash -c ''p=$(command -v java) && readlink -f "$p"'''
     if ($result.ExitStatus -ne 0) {
         throw "command -v java (non-login shell) failed on $VmName " +
             "(exit $($result.ExitStatus)): $($result.Error)"
     }
     $javaPathNonLogin = $result.Output.Trim()
     if (-not $javaPathNonLogin.StartsWith($InstallPrefix)) {
-        throw "java on non-login PATH for $VmName resolved to " +
-            "'$javaPathNonLogin', expected a path under '$InstallPrefix'."
+        throw "java on non-login PATH for $VmName resolved (after symlink " +
+            "follow) to '$javaPathNonLogin', expected a path under " +
+            "'$InstallPrefix'."
     }
     Write-Host "  [OK] non-login PATH java: $javaPathNonLogin" `
         -ForegroundColor Green
