@@ -44,4 +44,4 @@ Import-Module Infrastructure.Common -Force -ErrorAction Stop
 # Step 3 - Everything else
 Invoke-ModuleInstall -ModuleName 'Infrastructure.Secrets' -MinimumVersion '3.0.1'
 Invoke-ModuleInstall -ModuleName 'Infrastructure.GitHub'  -MinimumVersion '0.2.0'
-Invoke-ModuleInstall -ModuleName 'Infrastructure.HyperV'  -MinimumVersion '0.2.0'
+Invoke-ModuleInstall -ModuleName 'Infrastructure.HyperV'  -MinimumVersion '0.3.0'
