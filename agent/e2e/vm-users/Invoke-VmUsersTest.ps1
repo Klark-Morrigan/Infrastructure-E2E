@@ -91,8 +91,9 @@ function Invoke-VmUsersSetup {
     # a clear setup failure here.
     Write-Host "Verifying SSH reachable after user reconciliation: $($vmDef.ipAddress) ..." `
         -ForegroundColor Magenta
-    $setupSshClient = $null
-    $dnsReady       = $false
+    $setupSshClient   = $null
+    $dnsReady         = $false
+    $dnsDiagnostics   = $null
     try {
         $setupSshClient = New-VmSshClient `
                               -IpAddress $vmDef.ipAddress `
@@ -116,6 +117,33 @@ function Invoke-VmUsersSetup {
         if ($dnsReady) {
             Write-Host '  [OK] DNS ready.' -ForegroundColor Green
         }
+        else {
+            # Capture diagnostics while the SSH session is still open so
+            # the operator can distinguish the three usual root causes
+            # without re-attaching: (a) systemd-resolved not ready,
+            # (b) upstream unreachable (NAT/gateway), (c) resolver
+            # misconfigured. One SSH round-trip; bash 'true' between
+            # commands keeps a single failing section from masking the
+            # rest. timeout caps any command that itself hangs.
+            $diagCmd = @'
+echo "--- resolvectl status ---"
+timeout 5 resolvectl status || true
+echo "--- ping 8.8.8.8 ---"
+timeout 5 ping -c 1 -W 2 8.8.8.8 || true
+echo "--- ping gateway ---"
+timeout 5 ping -c 1 -W 2 "$(ip route | awk '/default/ {print $3; exit}')" || true
+echo "--- journalctl -u systemd-resolved (last 20) ---"
+sudo journalctl -u systemd-resolved -n 20 --no-pager || true
+'@
+            # Same CRLF trap that bit Copy-VmFiles: a Windows PowerShell
+            # here-string sends \r\n line endings and remote bash treats
+            # the trailing \r as part of the token (e.g. 'true\r' is an
+            # unknown command). Normalise to LF before sending.
+            $diagCmd = $diagCmd -replace "`r`n", "`n"
+            $diagResult = Invoke-SshClientCommand `
+                -SshClient $setupSshClient -Command $diagCmd
+            $dnsDiagnostics = $diagResult.Output
+        }
     }
     catch {
         throw "VM at $($vmDef.ipAddress) unreachable via SSH after create-users.ps1 - " +
@@ -130,7 +158,7 @@ function Invoke-VmUsersSetup {
 
     if (-not $dnsReady) {
         throw ("VM at $($vmDef.ipAddress): DNS not ready after 60 seconds - " +
-            "github.com unresolvable.")
+            "github.com unresolvable.`nDiagnostics:`n$dnsDiagnostics")
     }
 
     return $vmDef

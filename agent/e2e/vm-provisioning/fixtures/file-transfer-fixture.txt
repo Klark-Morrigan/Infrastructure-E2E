@@ -1,0 +1,1 @@
+E2E file-transfer fixture. Content is asserted byte-for-byte on the VM.
