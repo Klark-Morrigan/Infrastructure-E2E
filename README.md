@@ -222,15 +222,48 @@ Run from an elevated PowerShell session on the workstation.
 
 ### VM provisioning test
 
-Provisions the test VM, verifies SSH reachability, the JDK install
-applied by the provisioner, and a generic-file transfer via the
-provisioner's `files` step, then tears down. The vault entry written by
-the test hard-codes `javaDevKit = { vendor: temurin, version: "21" }` so
-the assertion is stable across operator workstations - whatever the
-latest GA build of Temurin 21 happens to be at provision time, the
-prefix check against the reported version still passes. The file-
-transfer entry points at `agent/e2e/vm-provisioning/fixtures/` resolved
-via `$PSScriptRoot` so the absolute path is computed per workstation.
+Runs a four-phase scenario over two VMs so the install / uninstall /
+re-install / deprovision lifecycle is covered in a single test run.
+VM identities (`vmName`, `ipAddress`, credentials) are pinned across all
+phases - only VM1's `javaDevKit` block changes between phases.
+
+On the lifecycle path the JDK re-provisioning phases (2-3) run *after*
+user reconciliation and runner registration on VM1, so the test
+exercises the realistic operator flow: re-provision a machine that is
+already fully configured. Users and runner are re-asserted after each
+re-provision so a regression that disturbs them surfaces in the same
+run.
+
+1. **Install JDK 21 on VM1.** Single-VM `VmProvisionerConfig`, plus the
+   generic-file fixture so Copy-VmFiles dispatch is also exercised. Asserts
+   `JAVA_HOME`, login + non-login `java` on `PATH`, `java -version` prefix
+   matches `"21"`, and the fixture landed at the target path with matching
+   SHA-256. On the lifecycle path, users + runner are then created and
+   verified online against the JDK-21 VM before phase 2 runs.
+2. **Uninstall on VM1, add VM2 (no JDK) in the same run.** Asserts the
+   `/opt/jdk-temurin-*` install dir, `/etc/profile.d/jdk.sh`, and stale
+   `/usr/local/bin` symlinks are all gone from VM1; asserts VM2 is up
+   (hostname matches, cloud-init done) and carries no JDK artifacts. The
+   VM2 check is the "blast-radius witness" - a regression that leaked a
+   JDK step across VMs would only fire here. On layers that exist above
+   provisioning, users + runner are re-asserted intact immediately after.
+3. **Re-install JDK 17 on VM1, VM2 unchanged.** Asserts JDK 17 is the
+   active install on VM1 (`JAVA_HOME` under `/opt/jdk-temurin-17`,
+   `java -version` prefix matches `"17"`); re-runs the VM2 witness checks
+   to confirm phase 3 also did not touch VM2. Users + runner re-asserted
+   intact again on layers that have them.
+4. **Deprovision both.** Asserts both VMs are gone from Hyper-V, the
+   per-VM `.vhdx` and `-seed.iso` files are gone, and the host-side JDK
+   cache (tarball + lockfile for versions 21 and 17) is **still present** -
+   the cache is host-owned, not VM-owned, so deprovision must not touch it.
+
+Versions and vendor (`temurin`, `21`, `17`) are hard-coded so the prefix
+assertion against the reported `java -version` is stable across operator
+workstations. The file-transfer fixture lives under
+`agent/e2e/vm-provisioning/fixtures/` and is resolved via `$PSScriptRoot`
+so the absolute path is computed per workstation. VM2's IP is derived
+from VM1's by incrementing the last octet - operator config still pins a
+single IP.
 
 ```powershell
 # Standard VmLAN setup - no arguments needed:
@@ -295,7 +328,7 @@ its own assertions on top.
 
 | Layer | Script | Asserts |
 |---|---|---|
-| VM provisioning | `agent/e2e/vm-provisioning/Invoke-VmProvisioningTest.ps1` | VM is reachable via SSH (`hostname` exits 0); cloud-init completed; root filesystem not full; JDK install applied (`JAVA_HOME` under `/opt/jdk-temurin-*`, `java` on `PATH` for both login and non-login shells, `java -version` matches the requested version); generic `files` transfer landed at the requested target with matching SHA-256, owner `root:root`, mode `0644` |
+| VM provisioning | `agent/e2e/vm-provisioning/Invoke-VmProvisioningTest.ps1` | Four-phase install / uninstall / re-install / deprovision lifecycle over two VMs (see [VM provisioning test](#vm-provisioning-test)). Each phase asserts: VM is reachable via SSH; cloud-init completed; root filesystem not full. Per-phase: phase 1 - JDK 21 installed on VM1 (`JAVA_HOME`, login + non-login `PATH`, `java -version` prefix), `files` fixture landed at target (SHA-256, `root:root`, `0644`); phase 2 - VM1 JDK removed (install dir, `/etc/profile.d/jdk.sh`, stale symlinks all gone), VM2 has no JDK artifacts; phase 3 - JDK 17 active on VM1, VM2 still has no JDK artifacts; phase 4 - both VMs and their disk artifacts removed, host-side JDK cache for both versions preserved |
 | VM users | `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` | Expected OS groups exist; expected users exist with correct shell and group membership; sudoers files are in place |
 | Runner lifecycle | `agent/e2e/runner-lifecycle/Invoke-RunnerLifecycleTest.ps1` | Runner systemd service is active; runner appears online in the GitHub API |
 
@@ -315,12 +348,25 @@ focused stack trace rather than a runner error.
 agent/
   e2e/
     vm-provisioning/
-      Invoke-VmProvisioningTest.ps1  - VM provisioning E2E test (step 8)
+      Invoke-VmProvisioningTest.ps1            - Four-phase VM provisioning E2E orchestrator (Setup, Test, shared helpers)
+      Invoke-VmProvisioningPhase1.ps1          - Phase 1: install JDK 21 on VM1 + file-transfer fixture
+      Invoke-VmProvisioningPhase2.ps1          - Phase 2: uninstall on VM1 + add VM2 (no JDK)
+      Invoke-VmProvisioningPhase3.ps1          - Phase 3: re-install JDK 17 on VM1, VM2 unchanged
+      Invoke-VmProvisioningTeardown.ps1        - Deprovision + automatic Invoke-VmTeardownAssertions call
+      Invoke-VmTeardownAssertions.ps1          - Post-deprovision assertions (called from Teardown)
+      Invoke-NoLeftoverTestVmsAssertions.ps1   - Pre-flight: both test VMs absent in Hyper-V
+      Invoke-VmReadyAssertions.ps1             - Baseline cloud-init / hostname / disk checks (all VM1 phases)
+      Invoke-JdkInstallAssertions.ps1          - JDK install post-conditions (used by phases 1, 3)
+      Invoke-JdkUninstallAssertions.ps1        - JDK removal post-conditions (used by phase 2)
+      Invoke-NoJdkVmAssertions.ps1             - "VM2 untouched" witness assertions (phases 2, 3)
+      Invoke-FileTransferAssertions.ps1        - Copy-VmFiles fixture post-conditions
       Start-VmProvisioningTest.ps1   - Manual runner for the provisioning test
     vm-users/
-      Invoke-VmUsersTest.ps1         - VM users E2E test (step 10)
+      Invoke-VmUsersTest.ps1               - vm-users E2E + re-asserts after phases 2, 3
+      Invoke-VmUsersStillIntactAssertions.ps1 - "users untouched" re-verification block
     runner-lifecycle/
-      Invoke-RunnerLifecycleTest.ps1 - Full runner lifecycle E2E test (step 11)
+      Invoke-RunnerLifecycleTest.ps1            - Full lifecycle E2E + re-asserts after phases 2, 3
+      Invoke-RunnerStillOnlineAssertions.ps1    - "runner still active + online" re-verification block
   Initialize-E2EEnvironment.ps1    - Shared module bootstrap (dot-sourced by entry points)
   Start-E2EAgent.ps1               - Polling agent (run manually on workstation)
 Tests/
