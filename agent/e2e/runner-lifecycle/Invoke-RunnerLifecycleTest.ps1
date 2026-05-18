@@ -92,14 +92,34 @@ function Get-E2ERunnerUsersEntry {
         users  = @(
             # Preserve the base test user (e2euser) from the users layer.
             @($base.users)[0],
-            # Deploy user: SSH access + passwordless sudo so register-runners.ps1
-            # can run config.sh as e2erunner and svc.sh as root without a TTY.
+            # Deploy user: SSH access + the canonical narrowly-scoped
+            # NOPASSWD grants required by register-runners.ps1 /
+            # deregister-runners.ps1. Mirrors the production rules
+            # documented in Infrastructure-Vm-Users README so this E2E
+            # exercises the same sudoers surface as prod - a blanket
+            # NOPASSWD: ALL would mask missing grants that would fail in
+            # production (e.g. a new 'sudo chmod' or 'sudo rm' that has
+            # no corresponding rule).
             [ordered]@{
                 username     = 'e2edeploy'
                 shell        = '/bin/bash'
                 homeDir      = '/home/e2edeploy'
                 groups       = @()
-                sudoersRules = @('e2edeploy ALL=(ALL) NOPASSWD: ALL')
+                sudoersRules = @(
+                    'e2edeploy ALL=(e2erunner) NOPASSWD: /usr/bin/mkdir',
+                    'e2edeploy ALL=(e2erunner) NOPASSWD: /usr/bin/rm',
+                    'e2edeploy ALL=(e2erunner) NOPASSWD: /usr/bin/curl',
+                    'e2edeploy ALL=(e2erunner) NOPASSWD: /usr/bin/tar',
+                    'e2edeploy ALL=(e2erunner) NOPASSWD: /usr/bin/test',
+                    'e2edeploy ALL=(root) NOPASSWD: /usr/bin/mkdir',
+                    'e2edeploy ALL=(root) NOPASSWD: /usr/bin/chown',
+                    'e2edeploy ALL=(root) NOPASSWD: /usr/bin/rm -rf /opt/runners/*',
+                    'e2edeploy ALL=(e2erunner) NOPASSWD: /opt/runners/*/config.sh',
+                    'e2edeploy ALL=(root) NOPASSWD: /opt/runners/*/svc.sh',
+                    'e2edeploy ALL=(root) NOPASSWD: /bin/systemctl start actions.runner.*',
+                    'e2edeploy ALL=(root) NOPASSWD: /bin/systemctl stop actions.runner.*',
+                    'e2edeploy ALL=(root) NOPASSWD: /bin/systemctl is-active actions.runner.*'
+                )
                 password     = $DeployPassword
             },
             # Runner service user: owns runner files and the systemd unit.
