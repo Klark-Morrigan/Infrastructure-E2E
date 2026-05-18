@@ -16,29 +16,45 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 . "$PSScriptRoot\Invoke-NoLeftoverTestVmsAssertions.ps1"
 . "$PSScriptRoot\Invoke-VmReadyAssertions.ps1"
 . "$PSScriptRoot\Invoke-JdkInstallAssertions.ps1"
-
-# File-transfer assertion helper. Same rationale as the JDK helper above:
-# isolated for unit-testability and to keep this file focused.
+. "$PSScriptRoot\Invoke-JdkUninstallAssertions.ps1"
+. "$PSScriptRoot\Invoke-NoJdkVmAssertions.ps1"
 . "$PSScriptRoot\Invoke-FileTransferAssertions.ps1"
 
-# Fixed test VM identity. Shared between Setup (writes vault) and the
-# teardown verification (looks up the VM by name) so there is one source
-# of truth for the test VM name.
-$script:TestVmName         = 'e2e-test'
+# ---------------------------------------------------------------------------
+# Test scenario constants
+#
+# The provisioning E2E runs as a four-phase scenario over two VMs so the
+# install / uninstall / re-install / deprovision lifecycle is covered in one
+# run. VM identities are pinned for the whole scenario - only VM1's
+# javaDevKit block changes between phases. See
+# docs/dev/implementation/06 - jdk uninstall flag/plan.md (step 4) for the
+# decisions behind this shape.
+#
+# VM2 carries no javaDevKit in any phase - it is the "blast-radius witness"
+# that proves a JDK step on VM1 cannot leak to VM2 in the same provision run.
+#
+# Declared at script scope BEFORE the phase / verification files are
+# dot-sourced because those files reference these via $script:*.
+# ---------------------------------------------------------------------------
+$script:Vm1Name             = 'e2e-test-1'
+$script:Vm2Name             = 'e2e-test-2'
 
-# JDK test pin. Hard-coded so the assertion is stable across operator
-# workstations - whatever the latest Temurin GA build of feature release 21
-# is at provision time, the prefix "21" still matches the reported version.
-# The host-side JDK cache (Step 3 of the JDK plan) amortises the Adoptium
-# download across runs once the lockfile is present.
-$script:JdkTestVendor      = 'temurin'
-$script:JdkTestVersion     = '21'
-$script:JdkInstallPrefix   = "/opt/jdk-$script:JdkTestVendor-"
+# JDK pins. Two distinct major versions so phase 3 re-install on VM1 is
+# observably different from phase 1 (different /opt/jdk-temurin-* dir,
+# different java -version prefix). Phase-3 dir from phase 1 may legitimately
+# linger on disk - the install step is dir-scoped, not vendor-scoped - so
+# the assertions match by version, not by absence-of-other-version.
+$script:JdkTestVendor       = 'temurin'
+$script:JdkInitialVersion   = '21'
+$script:JdkReinstallVersion = '17'
+$script:JdkInstallPrefix    = "/opt/jdk-$script:JdkTestVendor-"
 
 # File-transfer fixture. Resolved from $PSScriptRoot so the absolute path is
 # computed on whichever workstation runs the test rather than being hard-
 # coded. The target lives under /opt/e2e-fixtures/ so it does not collide
-# with any real provisioner-managed path.
+# with any real provisioner-managed path. Exercised only in phase 1, on
+# VM1 - the goal is to prove Copy-VmFiles dispatch still works alongside
+# the JDK install path, not to re-cover it in every phase.
 $script:FileTransferSource = Join-Path $PSScriptRoot 'fixtures\file-transfer-fixture.txt'
 $script:FileTransferTarget = '/opt/e2e-fixtures/file-transfer-fixture.txt'
 
@@ -183,6 +199,15 @@ function Invoke-WithVmSshClient {
     }
 }
 
+# Phase functions. One file per phase so each is independently reviewable
+# and unit-testable. They reach back into the orchestrator helpers above
+# (New-VmEntryBase, Write-VmProvisionerConfig, Invoke-WithVmSshClient) and
+# the $script:* constants, so the dot-sources MUST come after the helper
+# and constant definitions in this file.
+. "$PSScriptRoot\Invoke-VmProvisioningPhase1.ps1"
+. "$PSScriptRoot\Invoke-VmProvisioningPhase2.ps1"
+. "$PSScriptRoot\Invoke-VmProvisioningPhase3.ps1"
+
 # Teardown assertions must be defined before Teardown, because
 # Invoke-VmProvisioningTeardown calls Invoke-VmTeardownAssertions at the
 # end of its run.
@@ -236,16 +261,16 @@ function Invoke-VmProvisioningSetup {
 
 # ---------------------------------------------------------------------------
 # Invoke-VmProvisioningTest
-#   Standalone provisioning E2E test for the manual runner
-#   (Start-VmProvisioningTest.ps1). Pairs Setup with Teardown so an operator
-#   can exercise the provisioning layer in isolation.
+#   Standalone four-phase provisioning E2E for the manual runner
+#   (Start-VmProvisioningTest.ps1). Drives the phases directly because
+#   the provisioning-only test has no users / runner layers to inject
+#   between phases.
 #
-#   This wrapper deliberately does NOT add assertions of its own - all
-#   provisioning-layer post-conditions live in Invoke-VmProvisioningSetup so
-#   the workflow path (Start-E2EAgent -> Invoke-RunnerLifecycleTest ->
-#   Invoke-VmUsersTest -> Setup) gets the same guarantees. The only
-#   wrapper-only checks are the teardown post-conditions, since the lifecycle
-#   path runs Teardown via its own outer finally and verifies it elsewhere.
+#   The lifecycle path (Start-E2EAgent -> Invoke-RunnerLifecycleTest ->
+#   Invoke-VmUsersTest) calls Invoke-VmProvisioningSetup itself, runs
+#   its users / runner setup on the freshly provisioned VM1, then drives
+#   phases 2-3 with the same helpers used here - re-asserting users +
+#   runner intact between phases.
 # ---------------------------------------------------------------------------
 
 function Invoke-VmProvisioningTest {
@@ -259,8 +284,14 @@ function Invoke-VmProvisioningTest {
     # Invoke-VmTeardownAssertions call) still runs if any phase throws
     # after a VM was created. deprovision.ps1 is idempotent so a partial
     # teardown is safe.
+    $vm1Def = $null
     try {
-        Invoke-VmProvisioningSetup -Config $Config | Out-Null
+        $vm1Def = Invoke-VmProvisioningSetup -Config $Config
+        $vm2Def = $vm1Def._SecondaryVm
+
+        Invoke-VmProvisioningPhase1 -Config $Config -Vm1Def $vm1Def
+        Invoke-VmProvisioningPhase2 -Config $Config -Vm1Def $vm1Def -Vm2Def $vm2Def
+        Invoke-VmProvisioningPhase3 -Config $Config -Vm1Def $vm1Def -Vm2Def $vm2Def
     }
     finally {
         Invoke-VmProvisioningTeardown -Config $Config
