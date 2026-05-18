@@ -14,12 +14,12 @@
 #   consistent.
 #
 #   Fixed constants only - no operator-specific values. vmName matches the
-#   test provisioner entry ('e2e-test') written by Invoke-VmProvisioningSetup.
+#   test provisioner entry ('e2e-test-1') written by Invoke-VmProvisioningSetup.
 # ---------------------------------------------------------------------------
 
 function Get-E2EUsersTestEntry {
     return [ordered]@{
-        vmName = 'e2e-test'
+        vmName = 'e2e-test-1'
         groups = @(
             @{ groupName = 'e2e-group' }
         )

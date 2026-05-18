@@ -89,7 +89,7 @@ function Get-E2ERunnersConfigEntry {
     # rather than the first element.
     return , @(
         [ordered]@{
-            vmName         = 'e2e-test'
+            vmName         = 'e2e-test-1'
             ipAddress      = $Config.TestVm.ipAddress
             deployUsername = 'e2edeploy'
             runnerUsername = 'e2erunner'
