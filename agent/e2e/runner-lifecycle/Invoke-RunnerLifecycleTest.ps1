@@ -6,6 +6,54 @@
 
 . "$PSScriptRoot\..\vm-users\Invoke-VmUsersTest.ps1"
 
+# Lightweight re-verification of the runner after a re-provision (phase 2
+# or phase 3). Confirms the systemd service is still active and the
+# runner still appears 'online' in GitHub.
+. "$PSScriptRoot\Invoke-RunnerStillOnlineAssertions.ps1"
+
+# ---------------------------------------------------------------------------
+# Assert-RunnerStillOnline
+#   Opens a fresh SSH session to the VM and re-asserts that the runner
+#   systemd service is still active and the runner is still 'online' in
+#   GitHub. Pairs with Invoke-RunnerStillOnlineAssertions; this wrapper
+#   owns the SSH connection lifecycle so callers between provisioning
+#   phases do not re-implement the connect/dispose pattern.
+# ---------------------------------------------------------------------------
+
+function Assert-RunnerStillOnline {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [PSCustomObject] $Config,
+        [Parameter(Mandatory)] [PSCustomObject] $VmDef,
+        [Parameter(Mandatory)] [string]         $RunnerName,
+        [Parameter(Mandatory)] [string]         $RunnersToken,
+        [Parameter(Mandatory)] [string]         $GithubUrl
+    )
+
+    Write-Host "Re-asserting runner on $($VmDef.vmName) ..." -ForegroundColor Magenta
+
+    $sshClient = $null
+    try {
+        $sshClient = New-VmSshClient `
+                         -IpAddress $VmDef.ipAddress `
+                         -Username  $VmDef.username `
+                         -Password  $VmDef.password
+
+        Invoke-RunnerStillOnlineAssertions `
+            -SshClient    $sshClient `
+            -VmName       $VmDef.vmName `
+            -RunnerName   $RunnerName `
+            -RunnersToken $RunnersToken `
+            -GithubUrl    $GithubUrl
+    }
+    finally {
+        if ($null -ne $sshClient) {
+            if ($sshClient.IsConnected) { $sshClient.Disconnect() }
+            $sshClient.Dispose()
+        }
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Get-E2ERunnerUsersEntry
 #   Returns the VmUsersConfig entry for the runner lifecycle test. Extends
@@ -89,7 +137,7 @@ function Get-E2ERunnersConfigEntry {
     # rather than the first element.
     return , @(
         [ordered]@{
-            vmName         = 'e2e-test'
+            vmName         = 'e2e-test-1'
             ipAddress      = $Config.TestVm.ipAddress
             deployUsername = 'e2edeploy'
             runnerUsername = 'e2erunner'
@@ -412,6 +460,29 @@ function Invoke-RunnerLifecycleTest {
         }
         Write-Host "  [OK] runner '$runnerName' online in GitHub." -ForegroundColor Green
 
+        # Re-provision phases now run against a fully configured VM
+        # (users created, runner registered + online). After each phase
+        # re-assert users + runner are still intact so a re-provision
+        # regression that disturbs either layer surfaces immediately,
+        # not after teardown when only "VMs are gone" can be observed.
+        $vm2Def    = $vmDef._SecondaryVm
+        $usersEntry = $entry   # captured from Setup; same Entry passed to Teardown
+        $githubUrl  = $configEntry[0].githubUrl
+
+        Invoke-VmProvisioningPhase2 -Config $Config -Vm1Def $vmDef -Vm2Def $vm2Def
+        Assert-VmUsersStillIntact     -Config $Config -VmDef  $vmDef -Entry  $usersEntry
+        Assert-RunnerStillOnline      -Config $Config -VmDef  $vmDef `
+                                      -RunnerName    $runnerName `
+                                      -RunnersToken  $runnersToken `
+                                      -GithubUrl     $githubUrl
+
+        Invoke-VmProvisioningPhase3 -Config $Config -Vm1Def $vmDef -Vm2Def $vm2Def
+        Assert-VmUsersStillIntact     -Config $Config -VmDef  $vmDef -Entry  $usersEntry
+        Assert-RunnerStillOnline      -Config $Config -VmDef  $vmDef `
+                                      -RunnerName    $runnerName `
+                                      -RunnersToken  $runnersToken `
+                                      -GithubUrl     $githubUrl
+
         $succeeded = $true
     }
     catch {
@@ -426,43 +497,30 @@ function Invoke-RunnerLifecycleTest {
                 -RunnersToken $runnersToken `
                 -Entry        $entry
 
-            Write-Host 'Verifying teardown ...' -ForegroundColor Magenta
+            # Provisioning-layer teardown post-conditions (both VMs gone,
+            # per-VM disk artifacts gone, host-side JDK cache intact,
+            # switch + NAT removed, VmProvisionerConfig vault entry gone)
+            # have already been verified - Invoke-RunnerLifecycleTeardown
+            # calls Invoke-VmUsersTeardown, which calls
+            # Invoke-VmProvisioningTeardown, which calls
+            # Invoke-VmTeardownAssertions at the end of its own run.
 
-            # Assert VM was removed from Hyper-V.
-            if ($null -ne (Get-VM -Name $vmDef.vmName -ErrorAction SilentlyContinue)) {
-                throw "Teardown incomplete: VM '$($vmDef.vmName)' still exists in Hyper-V."
-            }
-            Write-Host '  [OK] VM removed from Hyper-V.' -ForegroundColor Green
-
-            # Assert VmProvisionerConfig vault entry was removed.
-            if ($null -ne (Get-SecretInfo -Vault VmProvisioner -Name VmProvisionerConfig `
-                    -ErrorAction SilentlyContinue)) {
-                throw "Teardown incomplete: VmProvisionerConfig still present in vault."
-            }
-            Write-Host '  [OK] VmProvisionerConfig removed from vault.' -ForegroundColor Green
-
-            # Assert VmUsersConfig vault entry was removed.
+            # Assert VmUsersConfig vault entry was removed (vm-users
+            # layer). Mirrors the same check inside the vm-users
+            # standalone teardown.
             if ($null -ne (Get-SecretInfo -Vault VmUsers -Name VmUsersConfig `
                     -ErrorAction SilentlyContinue)) {
                 throw "Teardown incomplete: VmUsersConfig still present in vault."
             }
             Write-Host '  [OK] VmUsersConfig removed from vault.' -ForegroundColor Green
 
-            # Assert GitHubRunnersConfig vault entry was removed.
+            # Assert GitHubRunnersConfig vault entry was removed (runner
+            # layer's own teardown post-condition).
             if ($null -ne (Get-SecretInfo -Vault GitHubRunners -Name GitHubRunnersConfig `
                     -ErrorAction SilentlyContinue)) {
                 throw "Teardown incomplete: GitHubRunnersConfig still present in vault."
             }
             Write-Host '  [OK] GitHubRunnersConfig removed from vault.' -ForegroundColor Green
-
-            # Assert E2E-VmLAN switch and NAT are removed.
-            if ($null -ne (Get-VMSwitch -Name 'E2E-VmLAN' -ErrorAction SilentlyContinue)) {
-                throw "Teardown incomplete: E2E-VmLAN switch still exists."
-            }
-            if ($null -ne (Get-NetNat -Name 'E2E-VmLAN-NAT' -ErrorAction SilentlyContinue)) {
-                throw "Teardown incomplete: E2E-VmLAN-NAT rule still exists."
-            }
-            Write-Host '  [OK] E2E-VmLAN switch and NAT removed.' -ForegroundColor Green
         }
         else {
             Write-Host 'Test did not complete - running best-effort cleanup ...' `
