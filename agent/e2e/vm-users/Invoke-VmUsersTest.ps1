@@ -7,6 +7,53 @@
 
 . "$PSScriptRoot\..\vm-provisioning\Invoke-VmProvisioningTest.ps1"
 
+# Re-verification helper used after phases 2 and 3 to confirm a
+# re-provision did not disturb user / group state.
+. "$PSScriptRoot\Invoke-VmUsersStillIntactAssertions.ps1"
+
+# ---------------------------------------------------------------------------
+# Assert-VmUsersStillIntact
+#   Opens a fresh SSH session to the VM and re-asserts that every user
+#   and group declared in $Entry is still present. Pairs with
+#   Invoke-VmUsersStillIntactAssertions; this wrapper just owns the
+#   connection lifecycle so callers between provisioning phases do not
+#   re-implement the connect/dispose pattern.
+#
+#   Used by:
+#     - Invoke-VmUsersTest (standalone vm-users E2E) after phases 2 and 3.
+#     - Invoke-RunnerLifecycleTest after phases 2 and 3.
+# ---------------------------------------------------------------------------
+
+function Assert-VmUsersStillIntact {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [PSCustomObject] $Config,
+        [Parameter(Mandatory)] [PSCustomObject] $VmDef,
+        [Parameter(Mandatory)] [object]         $Entry
+    )
+
+    Write-Host "Re-asserting users on $($VmDef.vmName) ..." -ForegroundColor Magenta
+
+    $sshClient = $null
+    try {
+        $sshClient = New-VmSshClient `
+                         -IpAddress $VmDef.ipAddress `
+                         -Username  $VmDef.username `
+                         -Password  $VmDef.password
+
+        Invoke-VmUsersStillIntactAssertions `
+            -SshClient $sshClient `
+            -VmName    $VmDef.vmName `
+            -Entry     $Entry
+    }
+    finally {
+        if ($null -ne $sshClient) {
+            if ($sshClient.IsConnected) { $sshClient.Disconnect() }
+            $sshClient.Dispose()
+        }
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Get-E2EUsersTestEntry
 #   Returns the fixed test VmUsersConfig entry used by both setup (written
@@ -79,7 +126,12 @@ function Invoke-VmUsersSetup {
         -Name   VmUsersConfig `
         -Secret (ConvertTo-Json @($Entry) -Depth 5 -Compress)
 
+    # Setup is provisioning-free (pre-check + identity pin). Phase 1 is
+    # the explicit first provision that brings VM1 up with the baseline
+    # JDK 21 install + file-transfer fixture - users layer needs the VM
+    # alive before it can SSH in to reconcile users.
     $vmDef = Invoke-VmProvisioningSetup -Config $Config
+    Invoke-VmProvisioningPhase1 -Config $Config -Vm1Def $vmDef
 
     Write-Host 'Reconciling users ...' -ForegroundColor Magenta
     & "$($Config.UsersPath)\hyper-v\ubuntu\create-users.ps1"
@@ -428,6 +480,20 @@ function Invoke-VmUsersTest {
             }
         }
 
+        # Now that users are verified on a fresh VM1, run the JDK
+        # re-provision phases against the same VM with users in place,
+        # and re-assert users are intact after each phase. This catches
+        # any regression where a re-provision step inadvertently touches
+        # user state.
+        $vm2Def = $vmDef._SecondaryVm
+        $entry  = Get-E2EUsersTestEntry
+
+        Invoke-VmProvisioningPhase2 -Config $Config -Vm1Def $vmDef -Vm2Def $vm2Def
+        Assert-VmUsersStillIntact -Config $Config -VmDef $vmDef -Entry $entry
+
+        Invoke-VmProvisioningPhase3 -Config $Config -Vm1Def $vmDef -Vm2Def $vm2Def
+        Assert-VmUsersStillIntact -Config $Config -VmDef $vmDef -Entry $entry
+
         $succeeded = $true
     }
     catch {
@@ -436,38 +502,22 @@ function Invoke-VmUsersTest {
     }
     finally {
         if ($succeeded) {
+            # Invoke-VmUsersTeardown calls Invoke-VmProvisioningTeardown
+            # which now also runs Invoke-VmTeardownAssertions internally,
+            # so provisioning-layer teardown post-conditions (both VMs
+            # gone, per-VM disk artifacts gone, host-side JDK cache
+            # intact, switch + NAT removed, VmProvisionerConfig vault
+            # entry gone) are verified by the time this returns.
             Invoke-VmUsersTeardown -Config $Config -VmDef $vmDef
 
-            Write-Host 'Verifying teardown ...' -ForegroundColor Magenta
-
-            # Assert VM was removed from Hyper-V.
-            if ($null -ne (Get-VM -Name $vmDef.vmName -ErrorAction SilentlyContinue)) {
-                throw "Teardown incomplete: VM '$($vmDef.vmName)' still exists in Hyper-V."
-            }
-            Write-Host '  [OK] VM removed from Hyper-V.' -ForegroundColor Green
-
-            # Assert VmProvisionerConfig vault entry was removed.
-            if ($null -ne (Get-SecretInfo -Vault VmProvisioner -Name VmProvisionerConfig `
-                    -ErrorAction SilentlyContinue)) {
-                throw "Teardown incomplete: VmProvisionerConfig still present in vault."
-            }
-            Write-Host '  [OK] VmProvisionerConfig removed from vault.' -ForegroundColor Green
-
-            # Assert VmUsersConfig vault entry was removed.
+            # Assert VmUsersConfig vault entry was removed. Users-layer-
+            # specific teardown post-condition; everything else is
+            # covered by Invoke-VmTeardownAssertions above.
             if ($null -ne (Get-SecretInfo -Vault VmUsers -Name VmUsersConfig `
                     -ErrorAction SilentlyContinue)) {
                 throw "Teardown incomplete: VmUsersConfig still present in vault."
             }
             Write-Host '  [OK] VmUsersConfig removed from vault.' -ForegroundColor Green
-
-            # Assert E2E-VmLAN switch and NAT are removed.
-            if ($null -ne (Get-VMSwitch -Name 'E2E-VmLAN' -ErrorAction SilentlyContinue)) {
-                throw "Teardown incomplete: E2E-VmLAN switch still exists."
-            }
-            if ($null -ne (Get-NetNat -Name 'E2E-VmLAN-NAT' -ErrorAction SilentlyContinue)) {
-                throw "Teardown incomplete: E2E-VmLAN-NAT rule still exists."
-            }
-            Write-Host '  [OK] E2E-VmLAN switch and NAT removed.' -ForegroundColor Green
         }
         else {
             # Best-effort deprovisioning when setup or assertions failed.
