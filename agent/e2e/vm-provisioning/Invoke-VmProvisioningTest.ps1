@@ -11,8 +11,9 @@
 # SSH.NET is used directly via Invoke-SshClientCommand (Infrastructure.Common).
 Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 
-# JDK assertion helper. Kept in its own file so it can be unit-tested in
+# Assertion helpers. Each lives in its own file so they can be unit-tested in
 # isolation and so this file stays focused on setup/teardown/orchestration.
+. "$PSScriptRoot\Invoke-VmReadyAssertions.ps1"
 . "$PSScriptRoot\Invoke-JdkInstallAssertions.ps1"
 
 # File-transfer assertion helper. Same rationale as the JDK helper above:
