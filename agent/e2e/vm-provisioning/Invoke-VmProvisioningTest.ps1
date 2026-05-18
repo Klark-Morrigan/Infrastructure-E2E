@@ -13,6 +13,7 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 
 # Assertion helpers. Each lives in its own file so they can be unit-tested in
 # isolation and so this file stays focused on setup/teardown/orchestration.
+. "$PSScriptRoot\Invoke-NoLeftoverTestVmsAssertions.ps1"
 . "$PSScriptRoot\Invoke-VmReadyAssertions.ps1"
 . "$PSScriptRoot\Invoke-JdkInstallAssertions.ps1"
 
