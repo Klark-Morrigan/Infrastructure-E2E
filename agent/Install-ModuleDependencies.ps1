@@ -25,6 +25,51 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# ---------------------------------------------------------------------------
+# Install-InfrastructureCommonWithRetry
+#   The chicken-and-egg case: Invoke-ModuleInstall (which has retry built
+#   in) lives inside Infrastructure.Common, so it cannot be used to install
+#   Infrastructure.Common itself. A small inline retry wrapper here covers
+#   that single bootstrap call. All later Invoke-ModuleInstall calls below
+#   get retry for free.
+#
+#   Defaults mirror Invoke-ModuleInstall's: 6 attempts, exponential 10 s ->
+#   20 -> 40 -> 80 -> 160, capped at 300 s (5 min). Total wait ~5 min
+#   before giving up - long enough to ride out a transient PSGallery
+#   resolution blip, short enough that a real outage fails the run.
+# ---------------------------------------------------------------------------
+function Install-InfrastructureCommonWithRetry {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [Version] $MinimumVersion,
+        [int] $MaxAttempts         = 6,
+        [int] $InitialDelaySeconds = 10,
+        [int] $MaxDelaySeconds     = 300
+    )
+    $delay = $InitialDelaySeconds
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            # -ErrorAction Stop promotes PSGallery "Unable to resolve
+            # package source" (a non-terminating error by default) to a
+            # terminating one so the catch block can retry it.
+            Install-Module Infrastructure.Common `
+                -MinimumVersion $MinimumVersion `
+                -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+            return
+        }
+        catch {
+            if ($attempt -ge $MaxAttempts) { throw }
+            Write-Warning (
+                "Install-Module Infrastructure.Common failed " +
+                "(attempt $attempt/$MaxAttempts): " +
+                "$($_.Exception.Message). Retrying in ${delay}s ..."
+            )
+            Start-Sleep -Seconds $delay
+            $delay = [Math]::Min($delay * 2, $MaxDelaySeconds)
+        }
+    }
+}
+
 # Step 1 - NuGet provider
 $_nuget = Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue |
     Sort-Object Version -Descending | Select-Object -First 1
@@ -36,8 +81,8 @@ if (-not $_nuget -or $_nuget.Version -lt [Version]'2.8.5.201') {
 # Step 2 - Infrastructure.Common (chicken-and-egg bootstrap)
 $_common = Get-Module -ListAvailable -Name Infrastructure.Common |
     Sort-Object Version -Descending | Select-Object -First 1
-if (-not $_common -or $_common.Version -lt [Version]'4.0.1') {
-    Install-Module Infrastructure.Common -Scope CurrentUser -Force -AllowClobber
+if (-not $_common -or $_common.Version -lt [Version]'5.1.0') {
+    Install-InfrastructureCommonWithRetry -MinimumVersion '5.1.0'
     # Re-query so the comparison below uses the freshly installed version.
     $_common = Get-Module -ListAvailable -Name Infrastructure.Common |
         Sort-Object Version -Descending | Select-Object -First 1
