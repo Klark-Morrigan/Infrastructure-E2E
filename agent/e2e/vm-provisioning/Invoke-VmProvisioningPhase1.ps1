@@ -8,13 +8,16 @@
 
 # ---------------------------------------------------------------------------
 # Invoke-VmProvisioningPhase1
-#   Phase 1 - install JDK 21 on VM1 (plus the file-transfer fixture).
+#   Phase 1 - install JDK 21 on VM1 (plus single-file and bulk-pattern
+#   file-transfer fixtures).
 #
 #   Single-VM VmProvisionerConfig so the baseline install path is
-#   isolated from any multi-VM interaction. The file-transfer fixture is
-#   only exercised here - the goal is to confirm Copy-VmFiles dispatch
-#   still works alongside the JDK install, not to re-cover it in every
-#   phase.
+#   isolated from any multi-VM interaction. The mixed files array (one
+#   single entry + one bulk entry) exercises per-entry dispatch in
+#   Invoke-VmPostProvisioning end-to-end. Phase 2 re-provisions the same
+#   VM with the same files array to assert idempotence (file contents
+#   and mode unchanged), so the VM-side SHA-256s are captured here into
+#   $script:Phase1*Shas and consumed there.
 # ---------------------------------------------------------------------------
 
 function Invoke-VmProvisioningPhase1 {
@@ -37,10 +40,18 @@ function Invoke-VmProvisioningPhase1 {
         vendor  = $script:JdkTestVendor
         version = $script:JdkInitialVersion
     }
+    # Mixed files array: one single entry + one bulk entry. JSON order is
+    # preserved by the per-entry dispatch in Invoke-VmPostProvisioning;
+    # asserting both forms in one provision run covers the "mixed dispatch"
+    # acceptance criterion from docs/dev/implementation/07 - ci jars.
     $entry.files = @(
         [ordered]@{
             source = $script:FileTransferSource
             target = $script:FileTransferTarget
+        },
+        [ordered]@{
+            pattern   = $script:BulkFileTransferPattern
+            targetDir = $script:BulkFileTransferTargetDir
         }
     )
 
@@ -62,10 +73,20 @@ function Invoke-VmProvisioningPhase1 {
             -RequestedVersion $script:JdkInitialVersion `
             -InstallPrefix    $script:JdkInstallPrefix
 
-        Invoke-FileTransferAssertions `
+        # Capture VM-side SHA-256s so phase 2 can assert idempotence by
+        # snapshot. Helpers also assert C2-C5 (single) / C1-C4 (bulk)
+        # against the host source on the way past.
+        $script:Phase1SingleSha = Invoke-FileTransferAssertions `
             -SshClient  $sshClient `
             -VmName     $Vm1Def.vmName `
             -SourcePath $script:FileTransferSource `
             -TargetPath $script:FileTransferTarget
+
+        $script:Phase1BulkShas = Invoke-BulkFileTransferAssertions `
+            -SshClient $sshClient `
+            -VmName    $Vm1Def.vmName `
+            -SourceDir $script:BulkFileTransferSourceDir `
+            -TargetDir $script:BulkFileTransferTargetDir `
+            -BaseNames $script:BulkFileTransferBaseNames
     }
 }

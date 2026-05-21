@@ -1,0 +1,4 @@
+E2E bulk fixture: jar A.
+Content is asserted byte-for-byte on the VM (SHA-256). Not a real archive -
+Copy-VmFilesByPattern moves bytes; the .jar extension is what the pattern
+matches against.

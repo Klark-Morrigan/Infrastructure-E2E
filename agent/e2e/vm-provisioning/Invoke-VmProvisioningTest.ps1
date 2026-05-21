@@ -19,6 +19,7 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 . "$PSScriptRoot\Invoke-JdkUninstallAssertions.ps1"
 . "$PSScriptRoot\Invoke-NoJdkVmAssertions.ps1"
 . "$PSScriptRoot\Invoke-FileTransferAssertions.ps1"
+. "$PSScriptRoot\Invoke-BulkFileTransferAssertions.ps1"
 
 # ---------------------------------------------------------------------------
 # Test scenario constants
@@ -52,11 +53,23 @@ $script:JdkInstallPrefix    = "/opt/jdk-$script:JdkTestVendor-"
 # File-transfer fixture. Resolved from $PSScriptRoot so the absolute path is
 # computed on whichever workstation runs the test rather than being hard-
 # coded. The target lives under /opt/e2e-fixtures/ so it does not collide
-# with any real provisioner-managed path. Exercised only in phase 1, on
-# VM1 - the goal is to prove Copy-VmFiles dispatch still works alongside
-# the JDK install path, not to re-cover it in every phase.
+# with any real provisioner-managed path. Exercised in phases 1 and 2 on
+# VM1 - phase 1 covers initial Copy-VmFiles dispatch alongside the JDK
+# install, phase 2 covers the idempotence guarantee on re-provision.
 $script:FileTransferSource = Join-Path $PSScriptRoot 'fixtures\file-transfer-fixture.txt'
 $script:FileTransferTarget = '/opt/e2e-fixtures/file-transfer-fixture.txt'
+
+# Bulk-file (pattern) fixture. Three tiny .jar files with distinguishable
+# content land under /opt/ci-jars via Copy-VmFilesByPattern. Mirrors the
+# CI-classpath use case that motivated the bulk form. Phase 1 places them,
+# phase 2 re-provisions to assert idempotence. Basenames are the
+# discriminator the assertions match against; their contents differ so a
+# partial-copy bug surfaces as a per-file SHA-256 mismatch naming the
+# offender.
+$script:BulkFileTransferSourceDir = Join-Path $PSScriptRoot 'fixtures\jars'
+$script:BulkFileTransferPattern   = Join-Path $PSScriptRoot 'fixtures\jars\*.jar'
+$script:BulkFileTransferTargetDir = '/opt/ci-jars'
+$script:BulkFileTransferBaseNames = @('a.jar', 'b.jar', 'c.jar')
 
 # ---------------------------------------------------------------------------
 # Internal helpers

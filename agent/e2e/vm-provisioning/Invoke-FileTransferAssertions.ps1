@@ -20,6 +20,12 @@
 #   $SourcePath / $TargetPath are passed in so this function stays
 #   self-contained and unit-testable - the caller decides what fixture
 #   was requested and where it should have landed.
+#
+#   When -ExpectedHash is supplied, additionally asserts the VM-side
+#   SHA-256 equals that value - the idempotence assertion for a re-
+#   provision (C7 in the bulk-files plan). Returns the observed VM-side
+#   SHA-256 (upper hex) so the caller can capture a phase-1 snapshot and
+#   pass it back in on phase 2.
 # ---------------------------------------------------------------------------
 
 function Invoke-FileTransferAssertions {
@@ -37,7 +43,11 @@ function Invoke-FileTransferAssertions {
 
         # Absolute Linux path the fixture was requested to land at.
         [Parameter(Mandatory)]
-        [string] $TargetPath
+        [string] $TargetPath,
+
+        # Optional snapshot of the VM-side hash from a prior phase. When
+        # supplied, the observed hash must equal it - idempotence (C7).
+        [string] $ExpectedHash
     )
 
     # 1) Existence. A missing file would also fail the hash check, but a
@@ -94,4 +104,19 @@ function Invoke-FileTransferAssertions {
             "Expected '644', got '$mode'."
     }
     Write-Host "  [OK] owner=$owner mode=$mode" -ForegroundColor Green
+
+    # 4) Idempotence: if the caller supplied a phase-1 snapshot, the
+    #    observed hash must still equal it. Transitively guaranteed by
+    #    step 2 when the host file is unchanged, but asserting it
+    #    explicitly catches a transport bug that, on a re-provision,
+    #    left a stale-but-different file behind.
+    if ($PSBoundParameters.ContainsKey('ExpectedHash') -and $ExpectedHash) {
+        if ($actualHash -ne $ExpectedHash.ToUpperInvariant()) {
+            throw "File-transfer idempotence broken on $VmName for '$TargetPath'. " +
+                "Phase-1 SHA-256 $ExpectedHash, observed $actualHash."
+        }
+        Write-Host "  [OK] SHA-256 matches phase-1 snapshot." -ForegroundColor Green
+    }
+
+    return $actualHash
 }

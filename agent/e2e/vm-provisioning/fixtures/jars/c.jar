@@ -1,0 +1,3 @@
+E2E bulk fixture: jar C.
+Three fixtures total so the C1 count assertion (exactly three .jar files
+under /opt/ci-jars) is non-trivial against off-by-one bugs.
