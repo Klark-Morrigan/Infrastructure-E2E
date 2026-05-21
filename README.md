@@ -225,7 +225,8 @@ Run from an elevated PowerShell session on the workstation.
 Runs a four-phase scenario over two VMs so the install / uninstall /
 re-install / deprovision lifecycle is covered in a single test run.
 VM identities (`vmName`, `ipAddress`, credentials) are pinned across all
-phases - only VM1's `javaDevKit` block changes between phases.
+phases - only VM1's `javaDevKit` and `envVars` blocks change between
+phases.
 
 On the lifecycle path the JDK re-provisioning phases (2-3) run *after*
 user reconciliation and runner registration on VM1, so the test
@@ -243,8 +244,16 @@ run.
    fixtures landed under `/opt/ci-jars` with `root:root` ownership,
    mode `0644`, and per-file SHA-256 matching their host sources. The
    VM-side hashes are snapshotted for the idempotence check in phase 2.
-   On the lifecycle path, users + runner are then created and verified
-   online against the JDK-21 VM before phase 2 runs.
+   The same VM also carries an `envVars` block (`e2e-ci`) with two
+   entries (`FOO_HOME=/opt/foo`, `BAR_VAR=baz`); the test asserts the
+   managed block landed in `/etc/environment` with `root:root 0644`,
+   both entries appear between the `# BEGIN e2e-ci` / `# END e2e-ci`
+   markers, and both values are visible to `pam_env`. After the
+   assertions pass an out-of-block sentinel
+   (`MARKER_OUTSIDE="untouched"`) is seeded via SSH and the
+   `/etc/environment` mtime is snapshotted for phase 2's re-write
+   check. On the lifecycle path, users + runner are then created and
+   verified online against the JDK-21 VM before phase 2 runs.
 2. **Uninstall on VM1, add VM2 (no JDK) in the same run.** Asserts the
    `/opt/jdk-temurin-*` install dir, `/etc/profile.d/jdk.sh`, and stale
    `/usr/local/bin` symlinks are all gone from VM1; asserts VM2 is up
@@ -254,14 +263,24 @@ run.
    carried forward unchanged from phase 1 (no edits), so this phase also
    doubles as the no-edit re-provision idempotence check: file contents
    and mode on `/opt/e2e-fixtures/...` and `/opt/ci-jars/*.jar` must
-   match the phase-1 SHA-256 snapshot. On layers that exist above
-   provisioning, users + runner are re-asserted intact immediately
-   after.
+   match the phase-1 SHA-256 snapshot. VM1's `envVars.entries` narrow
+   to one entry (BAR_VAR removed); the test asserts BAR_VAR's line is
+   gone from the managed block, FOO_HOME's line is still inside it,
+   `MARKER_OUTSIDE` survived the re-write outside the block, and
+   `/etc/environment`'s mtime advanced past the phase-1 snapshot
+   (proving the transport actually rewrote the file rather than
+   skip-unchanged). On layers that exist above provisioning, users +
+   runner are re-asserted intact immediately after.
 3. **Re-install JDK 17 on VM1, VM2 unchanged.** Asserts JDK 17 is the
    active install on VM1 (`JAVA_HOME` under `/opt/jdk-temurin-17`,
    `java -version` prefix matches `"17"`); re-runs the VM2 witness checks
-   to confirm phase 3 also did not touch VM2. Users + runner re-asserted
-   intact again on layers that have them.
+   to confirm phase 3 also did not touch VM2. VM1's `envVars.entries`
+   is set to `[]` (the operator's "remove the managed block" intent);
+   the test asserts the `# BEGIN e2e-ci` / `# END e2e-ci` markers and
+   both formerly-managed entries are gone from `/etc/environment`,
+   ownership/mode are unchanged, and `MARKER_OUTSIDE` still sits
+   outside the (now absent) block. Users + runner re-asserted intact
+   again on layers that have them.
 4. **Deprovision both.** Asserts both VMs are gone from Hyper-V, the
    per-VM `.vhdx` and `-seed.iso` files are gone, and the host-side JDK
    cache (tarball + lockfile for versions 21 and 17) is **still present** -
@@ -372,6 +391,8 @@ agent/
       Invoke-NoJdkVmAssertions.ps1             - "VM2 untouched" witness assertions (phases 2, 3)
       Invoke-FileTransferAssertions.ps1        - Copy-VmFiles (single) fixture post-conditions
       Invoke-BulkFileTransferAssertions.ps1    - Copy-VmFilesByPattern (bulk) fixture post-conditions
+      Invoke-EnvVarsAppliedAssertions.ps1      - Managed envVars block post-conditions (phases 1, 2)
+      Invoke-EnvVarsRemovedAssertions.ps1      - Managed envVars block removal post-conditions (phase 3)
       Start-VmProvisioningTest.ps1   - Manual runner for the provisioning test
     vm-users/
       Invoke-VmUsersTest.ps1               - vm-users E2E + re-asserts after phases 2, 3
