@@ -234,19 +234,29 @@ already fully configured. Users and runner are re-asserted after each
 re-provision so a regression that disturbs them surfaces in the same
 run.
 
-1. **Install JDK 21 on VM1.** Single-VM `VmProvisionerConfig`, plus the
-   generic-file fixture so Copy-VmFiles dispatch is also exercised. Asserts
-   `JAVA_HOME`, login + non-login `java` on `PATH`, `java -version` prefix
-   matches `"21"`, and the fixture landed at the target path with matching
-   SHA-256. On the lifecycle path, users + runner are then created and
-   verified online against the JDK-21 VM before phase 2 runs.
+1. **Install JDK 21 on VM1.** Single-VM `VmProvisionerConfig` with a
+   mixed `files` array (one single entry + one bulk pattern entry) so
+   both Copy-VmFiles and Copy-VmFilesByPattern dispatch are exercised
+   end-to-end. Asserts `JAVA_HOME`, login + non-login `java` on `PATH`,
+   `java -version` prefix matches `"21"`, the single fixture landed at
+   the target path with matching SHA-256, and exactly three `*.jar`
+   fixtures landed under `/opt/ci-jars` with `root:root` ownership,
+   mode `0644`, and per-file SHA-256 matching their host sources. The
+   VM-side hashes are snapshotted for the idempotence check in phase 2.
+   On the lifecycle path, users + runner are then created and verified
+   online against the JDK-21 VM before phase 2 runs.
 2. **Uninstall on VM1, add VM2 (no JDK) in the same run.** Asserts the
    `/opt/jdk-temurin-*` install dir, `/etc/profile.d/jdk.sh`, and stale
    `/usr/local/bin` symlinks are all gone from VM1; asserts VM2 is up
    (hostname matches, cloud-init done) and carries no JDK artifacts. The
    VM2 check is the "blast-radius witness" - a regression that leaked a
-   JDK step across VMs would only fire here. On layers that exist above
-   provisioning, users + runner are re-asserted intact immediately after.
+   JDK step across VMs would only fire here. VM1's `files` array is
+   carried forward unchanged from phase 1 (no edits), so this phase also
+   doubles as the no-edit re-provision idempotence check: file contents
+   and mode on `/opt/e2e-fixtures/...` and `/opt/ci-jars/*.jar` must
+   match the phase-1 SHA-256 snapshot. On layers that exist above
+   provisioning, users + runner are re-asserted intact immediately
+   after.
 3. **Re-install JDK 17 on VM1, VM2 unchanged.** Asserts JDK 17 is the
    active install on VM1 (`JAVA_HOME` under `/opt/jdk-temurin-17`,
    `java -version` prefix matches `"17"`); re-runs the VM2 witness checks
@@ -259,11 +269,12 @@ run.
 
 Versions and vendor (`temurin`, `21`, `17`) are hard-coded so the prefix
 assertion against the reported `java -version` is stable across operator
-workstations. The file-transfer fixture lives under
-`agent/e2e/vm-provisioning/fixtures/` and is resolved via `$PSScriptRoot`
-so the absolute path is computed per workstation. VM2's IP is derived
-from VM1's by incrementing the last octet - operator config still pins a
-single IP.
+workstations. The file-transfer fixtures live under
+`agent/e2e/vm-provisioning/fixtures/` (single-file fixture as a single
+`.txt`; bulk-pattern fixtures under `fixtures/jars/` as three distinct
+`.jar` files) and are resolved via `$PSScriptRoot` so the absolute path
+is computed per workstation. VM2's IP is derived from VM1's by
+incrementing the last octet - operator config still pins a single IP.
 
 ```powershell
 # Standard VmLAN setup - no arguments needed:
@@ -328,7 +339,7 @@ its own assertions on top.
 
 | Layer | Script | Asserts |
 |---|---|---|
-| VM provisioning | `agent/e2e/vm-provisioning/Invoke-VmProvisioningTest.ps1` | Four-phase install / uninstall / re-install / deprovision lifecycle over two VMs (see [VM provisioning test](#vm-provisioning-test)). Each phase asserts: VM is reachable via SSH; cloud-init completed; root filesystem not full. Per-phase: phase 1 - JDK 21 installed on VM1 (`JAVA_HOME`, login + non-login `PATH`, `java -version` prefix), `files` fixture landed at target (SHA-256, `root:root`, `0644`); phase 2 - VM1 JDK removed (install dir, `/etc/profile.d/jdk.sh`, stale symlinks all gone), VM2 has no JDK artifacts; phase 3 - JDK 17 active on VM1, VM2 still has no JDK artifacts; phase 4 - both VMs and their disk artifacts removed, host-side JDK cache for both versions preserved |
+| VM provisioning | `agent/e2e/vm-provisioning/Invoke-VmProvisioningTest.ps1` | Four-phase install / uninstall / re-install / deprovision lifecycle over two VMs (see [VM provisioning test](#vm-provisioning-test)). Each phase asserts: VM is reachable via SSH; cloud-init completed; root filesystem not full. Per-phase: phase 1 - JDK 21 installed on VM1 (`JAVA_HOME`, login + non-login `PATH`, `java -version` prefix), mixed `files` array landed - single fixture at target + three `*.jar` fixtures under `/opt/ci-jars` (per-file SHA-256, `root:root`, `0644`); phase 2 - VM1 JDK removed (install dir, `/etc/profile.d/jdk.sh`, stale symlinks all gone), VM2 has no JDK artifacts, file-transfer targets on VM1 idempotent vs phase-1 snapshot; phase 3 - JDK 17 active on VM1, VM2 still has no JDK artifacts; phase 4 - both VMs and their disk artifacts removed, host-side JDK cache for both versions preserved |
 | VM users | `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` | Expected OS groups exist; expected users exist with correct shell and group membership; sudoers files are in place |
 | Runner lifecycle | `agent/e2e/runner-lifecycle/Invoke-RunnerLifecycleTest.ps1` | Runner systemd service is active; runner appears online in the GitHub API |
 
@@ -359,7 +370,8 @@ agent/
       Invoke-JdkInstallAssertions.ps1          - JDK install post-conditions (used by phases 1, 3)
       Invoke-JdkUninstallAssertions.ps1        - JDK removal post-conditions (used by phase 2)
       Invoke-NoJdkVmAssertions.ps1             - "VM2 untouched" witness assertions (phases 2, 3)
-      Invoke-FileTransferAssertions.ps1        - Copy-VmFiles fixture post-conditions
+      Invoke-FileTransferAssertions.ps1        - Copy-VmFiles (single) fixture post-conditions
+      Invoke-BulkFileTransferAssertions.ps1    - Copy-VmFilesByPattern (bulk) fixture post-conditions
       Start-VmProvisioningTest.ps1   - Manual runner for the provisioning test
     vm-users/
       Invoke-VmUsersTest.ps1               - vm-users E2E + re-asserts after phases 2, 3
