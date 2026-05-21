@@ -43,6 +43,14 @@ function Invoke-VmProvisioningPhase3 {
         vendor  = $script:JdkTestVendor
         version = $script:JdkReinstallVersion
     }
+    # envVars: empty entries - the operator's explicit "remove the
+    # managed block" intent. The transport runs the strip-then-write
+    # path; the assertions below confirm the markers and entries are
+    # gone and the seeded out-of-block marker survived the strip.
+    $vm1Entry.envVars = [ordered]@{
+        blockName = $script:EnvVarsBlockName
+        entries   = @()
+    }
 
     $vm2Entry = New-VmEntryBase `
         -Config    $Config `
@@ -66,6 +74,18 @@ function Invoke-VmProvisioningPhase3 {
             -VmName           $Vm1Def.vmName `
             -RequestedVersion $script:JdkReinstallVersion `
             -InstallPrefix    $script:JdkInstallPrefix
+
+        # envVars: E7 (markers gone), E8 (formerly-managed entries
+        # gone), E1 (mode unchanged), E3 (MARKER_OUTSIDE still
+        # present). Names listed explicitly (not derived from the
+        # phase-1 fixtures) so a future fixture rename does not
+        # silently weaken the assertion.
+        Invoke-EnvVarsRemovedAssertions `
+            -SshClient          $sshClient `
+            -VmName             $Vm1Def.vmName `
+            -RemovedBlockName   $script:EnvVarsBlockName `
+            -RemovedEntryNames  @($script:EnvVarsFooHome.Name, $script:EnvVarsBarVar.Name) `
+            -ExpectedMarkerLine $script:EnvVarsMarkerLine
     }
 
     Write-Host "Phase 3: re-verifying VM2 has no JDK artifacts ($($Vm2Def.vmName)) ..." `
