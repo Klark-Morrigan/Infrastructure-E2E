@@ -20,6 +20,8 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 . "$PSScriptRoot\Invoke-NoJdkVmAssertions.ps1"
 . "$PSScriptRoot\Invoke-FileTransferAssertions.ps1"
 . "$PSScriptRoot\Invoke-BulkFileTransferAssertions.ps1"
+. "$PSScriptRoot\Invoke-EnvVarsAppliedAssertions.ps1"
+. "$PSScriptRoot\Invoke-EnvVarsRemovedAssertions.ps1"
 
 # ---------------------------------------------------------------------------
 # Test scenario constants
@@ -70,6 +72,27 @@ $script:BulkFileTransferSourceDir = Join-Path $PSScriptRoot 'fixtures\jars'
 $script:BulkFileTransferPattern   = Join-Path $PSScriptRoot 'fixtures\jars\*.jar'
 $script:BulkFileTransferTargetDir = '/opt/ci-jars'
 $script:BulkFileTransferBaseNames = @('a.jar', 'b.jar', 'c.jar')
+
+# envVars fixture. Single managed block 'e2e-ci' carried across all
+# three phases on VM1: phase 1 writes two entries, phase 2 narrows to
+# one, phase 3 sets entries:[] to exercise block removal. The
+# MARKER_OUTSIDE line is seeded by phase 1 AFTER its first
+# provision.ps1 returns (the VM does not exist before that) and is
+# checked by phases 2 and 3 to prove lines outside the managed block
+# survive re-writes and removal. See
+# docs/dev/implementation/08 - env vars/plan.md step 5 for the
+# decisions behind this shape.
+$script:EnvVarsBlockName  = 'e2e-ci'
+$script:EnvVarsFooHome    = [PSCustomObject]@{ Name = 'FOO_HOME'; Value = '/opt/foo' }
+$script:EnvVarsBarVar     = [PSCustomObject]@{ Name = 'BAR_VAR';  Value = 'baz' }
+$script:EnvVarsMarkerName = 'MARKER_OUTSIDE'
+$script:EnvVarsMarkerLine = "$($script:EnvVarsMarkerName)=`"untouched`""
+
+# Phase 2's E6 assertion compares /etc/environment's mtime against this
+# snapshot, taken at the end of phase 1 AFTER the marker is seeded so
+# the seed write itself does not leak into the "did the transport
+# rewrite the block?" signal.
+$script:EnvVarsPhase1Mtime = $null
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -210,6 +233,78 @@ function Invoke-WithVmSshClient {
             $sshClient.Dispose()
         }
     }
+}
+
+# Seeds an out-of-block sentinel line on the VM and snapshots the
+# resulting /etc/environment mtime. Used by phase 1 (after the first
+# managed-block write) so phases 2 and 3 can assert (a) the line
+# survives subsequent re-runs and (b) phase 2's re-write actually
+# updates the file. Uses tee -a under sudo so the append is atomic
+# from the operator's perspective; the line lands after the END
+# marker, so it is unambiguously outside the managed block.
+function Set-VmEnvironmentMarkerAndSnapshotMtime {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [object] $SshClient,
+        [Parameter(Mandatory)] [string] $VmName
+    )
+
+    # Idempotence: append only when the line is not already there, so
+    # a re-run of phase 1 (e.g. during local debugging) does not
+    # accumulate duplicate marker lines.
+    $append = "grep -Fxq '$($script:EnvVarsMarkerLine)' /etc/environment || " +
+        "echo '$($script:EnvVarsMarkerLine)' | sudo tee -a /etc/environment >/dev/null"
+    $result = Invoke-SshClientCommand -SshClient $SshClient -Command $append
+    if ($result.ExitStatus -ne 0) {
+        throw "Failed to seed MARKER_OUTSIDE on $VmName " +
+            "(exit $($result.ExitStatus)): $($result.Error)"
+    }
+
+    # mtime as Unix epoch seconds - phase 2 compares numerically, so we
+    # avoid timezone surprises that string timestamps would introduce.
+    $result = Invoke-SshClientCommand `
+        -SshClient $SshClient `
+        -Command  "stat -c '%Y' /etc/environment"
+    if ($result.ExitStatus -ne 0) {
+        throw "stat -c %Y on /etc/environment failed on $VmName " +
+            "(exit $($result.ExitStatus)): $($result.Error)"
+    }
+    $script:EnvVarsPhase1Mtime = [int64]$result.Output.Trim()
+    Write-Host "  [seed] MARKER_OUTSIDE in place; /etc/environment mtime=$($script:EnvVarsPhase1Mtime)" `
+        -ForegroundColor Magenta
+}
+
+# E6 helper: asserts /etc/environment's mtime advanced past the phase-1
+# snapshot. The transport's skip-unchanged path would leave the mtime
+# stale; phase 2 changes the block content (BAR_VAR removed) so a
+# stale mtime indicates either the transport never ran or the file
+# was not actually rewritten.
+function Assert-EtcEnvironmentMtimeAdvanced {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [object] $SshClient,
+        [Parameter(Mandatory)] [string] $VmName
+    )
+
+    if ($null -eq $script:EnvVarsPhase1Mtime) {
+        throw "Assert-EtcEnvironmentMtimeAdvanced: phase 1 did not snapshot " +
+            "an mtime - phases ran out of order."
+    }
+    $result = Invoke-SshClientCommand `
+        -SshClient $SshClient `
+        -Command  "stat -c '%Y' /etc/environment"
+    if ($result.ExitStatus -ne 0) {
+        throw "stat -c %Y on /etc/environment failed on $VmName " +
+            "(exit $($result.ExitStatus)): $($result.Error)"
+    }
+    $now = [int64]$result.Output.Trim()
+    if ($now -le $script:EnvVarsPhase1Mtime) {
+        throw "/etc/environment mtime did not advance on $VmName " +
+            "(phase 1 snapshot $($script:EnvVarsPhase1Mtime), now $now). " +
+            "Transport likely skipped the write - block contents may be stale."
+    }
+    Write-Host "  [OK] /etc/environment mtime advanced ($($script:EnvVarsPhase1Mtime) -> $now)" `
+        -ForegroundColor Green
 }
 
 # Phase functions. One file per phase so each is independently reviewable

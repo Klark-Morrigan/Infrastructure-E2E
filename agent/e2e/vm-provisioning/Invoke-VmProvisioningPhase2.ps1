@@ -63,6 +63,16 @@ function Invoke-VmProvisioningPhase2 {
             targetDir = $script:BulkFileTransferTargetDir
         }
     )
+    # envVars: narrow to one entry. BAR_VAR is dropped so the
+    # transport's desired-vs-existing compare sees a content
+    # difference - the block must be rewritten (proves the
+    # skip-unchanged path does not falsely skip a real change).
+    $vm1Entry.envVars = [ordered]@{
+        blockName = $script:EnvVarsBlockName
+        entries   = @(
+            [ordered]@{ name = $script:EnvVarsFooHome.Name; value = $script:EnvVarsFooHome.Value }
+        )
+    }
 
     # VM2 entry: no javaDevKit, no files. Plain VM creation so we can
     # observe that no JDK step touched it (B-assertions).
@@ -106,6 +116,32 @@ function Invoke-VmProvisioningPhase2 {
             -TargetDir     $script:BulkFileTransferTargetDir `
             -BaseNames     $script:BulkFileTransferBaseNames `
             -ExpectedShas  $script:Phase1BulkShas | Out-Null
+
+        # envVars: E1, E2, E3 (MARKER survived), E4' (FOO_HOME still in
+        # the block, BAR_VAR's removed). The function also re-checks
+        # pam_env (E5) for the still-present FOO_HOME, which doubles
+        # as a regression guard: a transport bug that broke the file
+        # mid-rewrite would show up as a missing pam_env value here.
+        Invoke-EnvVarsAppliedAssertions `
+            -SshClient          $sshClient `
+            -VmName             $Vm1Def.vmName `
+            -BlockName          $script:EnvVarsBlockName `
+            -ExpectedEntries    @($script:EnvVarsFooHome) `
+            -ExpectedMarkerLine $script:EnvVarsMarkerLine
+
+        # Explicitly check BAR_VAR is gone from any line (E4'). The
+        # applied-assertions function only checks that the entries we
+        # passed in are present; absence of removed entries is the
+        # complementary half.
+        Assert-EtcEnvironmentLineAbsent `
+            -SshClient $sshClient -VmName $Vm1Def.vmName `
+            -Pattern   "^$($script:EnvVarsBarVar.Name)="
+
+        # E6: file mtime advanced versus phase 1's snapshot. Proves the
+        # transport rewrote the block (BAR_VAR removal forced the
+        # desired != existing branch).
+        Assert-EtcEnvironmentMtimeAdvanced `
+            -SshClient $sshClient -VmName $Vm1Def.vmName
     }
 
     Write-Host "Phase 2: verifying VM2 has no JDK artifacts ($($Vm2Def.vmName)) ..." `
