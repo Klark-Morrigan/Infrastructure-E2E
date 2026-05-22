@@ -77,6 +77,8 @@ function Invoke-VmProvisioningPhase1 {
 
         Invoke-VmReadyAssertions -SshClient $sshClient -VmName $Vm1Def.vmName
 
+        Invoke-StaticNetworkAssertions -SshClient $sshClient -VmDef $Vm1Def
+
         Invoke-JdkInstallAssertions `
             -SshClient        $sshClient `
             -VmName           $Vm1Def.vmName `

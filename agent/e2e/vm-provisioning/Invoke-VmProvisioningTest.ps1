@@ -15,6 +15,7 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 # isolation and so this file stays focused on setup/teardown/orchestration.
 . "$PSScriptRoot\Invoke-NoLeftoverTestVmsAssertions.ps1"
 . "$PSScriptRoot\Invoke-VmReadyAssertions.ps1"
+. "$PSScriptRoot\Invoke-StaticNetworkAssertions.ps1"
 . "$PSScriptRoot\Invoke-JdkInstallAssertions.ps1"
 . "$PSScriptRoot\Invoke-JdkUninstallAssertions.ps1"
 . "$PSScriptRoot\Invoke-NoJdkVmAssertions.ps1"

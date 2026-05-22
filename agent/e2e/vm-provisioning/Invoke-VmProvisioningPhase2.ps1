@@ -93,6 +93,7 @@ function Invoke-VmProvisioningPhase2 {
     Invoke-WithVmSshClient -VmDef $Vm1Def -Assertions {
         param($sshClient)
         Invoke-VmReadyAssertions -SshClient $sshClient -VmName $Vm1Def.vmName
+        Invoke-StaticNetworkAssertions -SshClient $sshClient -VmDef $Vm1Def
         Invoke-JdkUninstallAssertions `
             -SshClient     $sshClient `
             -VmName        $Vm1Def.vmName `
@@ -148,6 +149,8 @@ function Invoke-VmProvisioningPhase2 {
         -ForegroundColor Magenta
     Invoke-WithVmSshClient -VmDef $Vm2Def -Assertions {
         param($sshClient)
+        Invoke-VmReadyAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
+        Invoke-StaticNetworkAssertions -SshClient $sshClient -VmDef $Vm2Def
         Invoke-NoJdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
     }
 }
