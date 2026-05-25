@@ -9,7 +9,8 @@
 # ---------------------------------------------------------------------------
 # Invoke-VmProvisioningPhase1
 #   Phase 1 - install JDK 21 on VM1 (plus single-file and bulk-pattern
-#   file-transfer fixtures).
+#   file-transfer fixtures), then re-provision with the same JSON to
+#   prove the reconciler's no-op branch.
 #
 #   Single-VM VmProvisionerConfig so the baseline install path is
 #   isolated from any multi-VM interaction. The mixed files array (one
@@ -18,6 +19,11 @@
 #   VM with the same files array to assert idempotence (file contents
 #   and mode unchanged), so the VM-side SHA-256s are captured here into
 #   $script:Phase1*Shas and consumed there.
+#
+#   The no-op rerun at the end snapshots the JDK artifact mtimes after the
+#   first provision, calls provision.ps1 again with the SAME JSON, and
+#   asserts the mtimes did not move. A regression where the JdkProvider
+#   re-extracts unconditionally would only fail here.
 # ---------------------------------------------------------------------------
 
 function Invoke-VmProvisioningPhase1 {
@@ -118,5 +124,30 @@ function Invoke-VmProvisioningPhase1 {
         # mtime, phase 3 to assert removal left the marker alone.
         Set-VmEnvironmentMarkerAndSnapshotMtime `
             -SshClient $sshClient -VmName $Vm1Def.vmName
+
+        # Snapshot the JDK artifacts AFTER the install assertions pass
+        # so the no-op rerun below can prove the reconciler did not
+        # touch them.
+        $script:Phase1JdkSnapshot = Get-JdkArtifactSnapshot `
+            -SshClient     $sshClient `
+            -VmName        $Vm1Def.vmName `
+            -InstallPrefix $script:JdkInstallPrefix
+    }
+
+    # No-op rerun. Same VmProvisionerConfig already on disk - the
+    # reconciler must take the diff's no-op branch for every artifact.
+    Write-Host 'Phase 1: re-provisioning VM1 with unchanged JSON (no-op) ...' `
+        -ForegroundColor Magenta
+    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1"
+
+    Write-Host "Phase 1: verifying no-op rerun did not touch JDK artifacts ..." `
+        -ForegroundColor Magenta
+    Invoke-WithVmSshClient -VmDef $Vm1Def -Assertions {
+        param($sshClient)
+        Invoke-JdkNoopAssertions `
+            -SshClient        $sshClient `
+            -VmName           $Vm1Def.vmName `
+            -InstallPrefix    $script:JdkInstallPrefix `
+            -PreviousSnapshot $script:Phase1JdkSnapshot
     }
 }
