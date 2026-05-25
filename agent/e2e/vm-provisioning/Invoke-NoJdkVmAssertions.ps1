@@ -12,7 +12,8 @@
 #   leaked a JDK step to the wrong VM would only fire here:
 #     B1 - SSH is reachable and 'hostname' returns the expected vmName.
 #     B2 - cloud-init finished cleanly (status 'done', exit 0).
-#     B3 - No JDK artifacts: no /opt/jdk-* dir and no /etc/profile.d/jdk.sh.
+#     B3 - No JDK artifacts: no /opt/jdk-* dir, no /etc/profile.d/jdk.sh,
+#          and no javaDevKit-*.json manifest under the reconciler store.
 #
 #   B1 also doubles as proof that VM2 was created at all in the phase that
 #   added it - a regression that quietly skipped VM2's provisioning would
@@ -90,4 +91,25 @@ function Invoke-NoJdkVmAssertions {
             "A JDK step leaked from another VM in the same provision run."
     }
     Write-Host '  [OK] B3b: no /etc/profile.d/jdk.sh' -ForegroundColor Green
+
+    # B3c) No javaDevKit-*.json manifest under the reconciler store. A leak
+    #      here means the reconciler ran with stale state on the witness
+    #      VM, which would cause unsolicited teardown attempts on its
+    #      next reconciliation.
+    $result = Invoke-SshClientCommand `
+        -SshClient $SshClient `
+        -Command  ("bash -c 'ls -1 /var/lib/infra-provisioner/manifests/" +
+                   "javaDevKit-*.json 2>/dev/null || true'")
+    if ($result.ExitStatus -ne 0) {
+        throw "Manifest leak probe failed on $VmName " +
+            "(exit $($result.ExitStatus)): $($result.Error)"
+    }
+    $leftover = $result.Output.Trim()
+    if (-not [string]::IsNullOrEmpty($leftover)) {
+        throw "Unexpected javaDevKit manifest(s) on ${VmName}: $leftover. " +
+            "A JDK reconciliation step leaked from another VM in the same " +
+            "provision run."
+    }
+    Write-Host '  [OK] B3c: no javaDevKit manifest leftover' `
+        -ForegroundColor Green
 }

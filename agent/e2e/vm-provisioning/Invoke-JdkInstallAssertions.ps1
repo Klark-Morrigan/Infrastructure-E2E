@@ -15,6 +15,10 @@
 #     - 'java -version' exits 0 and reports a build whose prefix matches the
 #       requested version. Prefix match (not equality) because the resolver
 #       legitimately upgrades "21" to a concrete build like "21.0.6+7".
+#     - A manifest file exists under /var/lib/infra-provisioner/manifests/
+#       matching javaDevKit-*.json. The manifest is the reconciler's truth
+#       source for "what is installed"; an install that left no manifest
+#       cannot be uninstalled or version-changed by future runs.
 #
 #   Throws on the first failure with a message naming the VM and the observed
 #   value. The outer try/finally in Invoke-VmProvisioningTest still runs
@@ -121,5 +125,29 @@ function Invoke-JdkInstallAssertions {
     }
     $firstLine = ($versionOutput -split "`n" | Select-Object -First 1).Trim()
     Write-Host "  [OK] java -version reports '$RequestedVersion': $firstLine" `
+        -ForegroundColor Green
+
+    # 4) Manifest file present under the reconciler store. ls -1 of the
+    #    provider-scoped glob: exit 0 + one or more lines = manifest(s)
+    #    written; exit 2 (no match) = the install path skipped the
+    #    manifest write, which is the regression this check guards.
+    $result = Invoke-SshClientCommand `
+        -SshClient $SshClient `
+        -Command  ("bash -c 'ls -1 /var/lib/infra-provisioner/manifests/" +
+                   "javaDevKit-*.json 2>/dev/null'")
+    if ($result.ExitStatus -ne 0) {
+        throw "Manifest glob probe failed on $VmName " +
+            "(exit $($result.ExitStatus)): $($result.Error)"
+    }
+    $manifestPaths = ($result.Output -split "`n" | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_)
+    } | ForEach-Object { $_.Trim() })
+    if (@($manifestPaths).Count -lt 1) {
+        throw "No JDK manifest file under " +
+            "/var/lib/infra-provisioner/manifests/ on $VmName. " +
+            "The reconciler's truth source is missing - uninstall and " +
+            "version-change paths will not work on the next run."
+    }
+    Write-Host "  [OK] manifest present: $($manifestPaths -join ', ')" `
         -ForegroundColor Green
 }

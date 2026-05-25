@@ -7,23 +7,36 @@
 
 # ---------------------------------------------------------------------------
 # Invoke-VmProvisioningPhase2
-#   Phase 2 - uninstall on VM1, add VM2 (no javaDevKit).
+#   Phase 2 - uninstall-via-null on VM1, add VM2 (no javaDevKit), then
+#   re-add javaDevKit on VM1 with a different version.
 #
-#   Rewrites VmProvisionerConfig with VM1.javaDevKit.uninstall = true AND
-#   adds VM2 (no javaDevKit). One provision run executes both changes -
-#   that is the regression-catching shape: a JDK uninstall on VM1 must not
-#   leak any JDK step onto a freshly created VM2 in the same run.
+#   Sub-phase 2a (first provision):
+#     - VM1 entry has javaDevKit = $null (explicit JSON null). This is
+#       one of the two reconciler-era "ensure none" signals - the legacy
+#       'uninstall: true' sub-field was deleted in feature 42. (Note:
+#       dropping the javaDevKit field entirely means "skip this provider",
+#       NOT "uninstall" - see Get-JdkDesiredVersions for the rationale.
+#       That's why we use explicit null here rather than omitting the
+#       field; phase 3b exercises the @() form for symmetry.)
+#     - VM2 added with no javaDevKit (field absent => skip provider; the
+#       freshly created VM has nothing to skip, so the end state is
+#       "no JDK").
+#     - One provision run executes both changes - the regression-catching
+#       shape: a JDK removal on VM1 must not leak any JDK step onto a
+#       freshly created VM2 in the same run.
 #
-#   VM1's `files` array is carried forward unchanged from phase 1 (same
-#   single + bulk entries) so this phase doubles as the "no-edit
-#   re-provision" required by the bulk-files plan's idempotence assertion
-#   (file contents and mode on the VM unchanged versus the phase-1
-#   snapshot). The JDK uninstall is an edit elsewhere in the config, not
-#   in `files`, so it does not invalidate the idempotence claim for the
-#   file targets.
+#   Sub-phase 2b (second provision):
+#     - VM1 entry gains javaDevKit = { temurin / $JdkReinstallVersion }.
+#     - VM2 entry unchanged.
+#     - Proves the reconciler installs from scratch when desired moves
+#       from empty -> a single version (the "reinstall after removal"
+#       scenario from feature 42's plan).
 #
-#   Assertions are issued before phase 3 edits the JSON so a phase-2 bug is
-#   not masked by a passing phase 3.
+#   VM1's `files` array is carried forward unchanged from phase 1 across
+#   both sub-phases so the bulk-files plan's idempotence assertion still
+#   has snapshot data to validate against. envVars narrow to one entry
+#   in 2a (forces a content-change rewrite, so the mtime-advance check
+#   below has signal) and stay narrowed in 2b (no churn there).
 # ---------------------------------------------------------------------------
 
 function Invoke-VmProvisioningPhase2 {
@@ -35,22 +48,19 @@ function Invoke-VmProvisioningPhase2 {
     )
 
     Write-Host '' -ForegroundColor Magenta
-    Write-Host 'Phase 2: rewriting VmProvisionerConfig - VM1 uninstall + add VM2 ...' `
+    Write-Host 'Phase 2a: rewriting VmProvisionerConfig - VM1 javaDevKit=$null + add VM2 ...' `
         -ForegroundColor Magenta
 
-    # VM1 entry: identity pinned (vmName/ip/credentials unchanged), only the
-    # javaDevKit block flips to the uninstall shape. vendor + version stay
-    # required by the schema even when uninstall=true (see plan step 1).
+    # 2a) VM1 entry: javaDevKit = $null (explicit JSON null is the
+    # "ensure none installed" signal in the reconciler contract;
+    # ConvertTo-Json renders $null as JSON null which the validator
+    # accepts and Get-JdkDesiredVersions maps to @()).
     $vm1Entry = New-VmEntryBase `
         -Config    $Config `
         -VmName    $Vm1Def.vmName `
         -IpAddress $Vm1Def.ipAddress `
         -Password  $Vm1Def.password
-    $vm1Entry.javaDevKit = [ordered]@{
-        vendor    = $script:JdkTestVendor
-        version   = $script:JdkInitialVersion
-        uninstall = $true
-    }
+    $vm1Entry.javaDevKit = $null
     # Carry the phase-1 files array forward unchanged so the bulk + single
     # idempotence assertions below have something to validate against.
     $vm1Entry.files = @(
@@ -84,11 +94,11 @@ function Invoke-VmProvisioningPhase2 {
 
     Write-VmProvisionerConfig -Entries @($vm1Entry, $vm2Entry)
 
-    Write-Host 'Phase 2: provisioning (uninstall on VM1, create VM2) ...' `
+    Write-Host 'Phase 2a: provisioning (uninstall via absent on VM1, create VM2) ...' `
         -ForegroundColor Magenta
     & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1"
 
-    Write-Host "Phase 2: verifying uninstall on $($Vm1Def.vmName) ..." `
+    Write-Host "Phase 2a: verifying uninstall-via-absent on $($Vm1Def.vmName) ..." `
         -ForegroundColor Magenta
     Invoke-WithVmSshClient -VmDef $Vm1Def -Assertions {
         param($sshClient)
@@ -145,12 +155,80 @@ function Invoke-VmProvisioningPhase2 {
             -SshClient $sshClient -VmName $Vm1Def.vmName
     }
 
-    Write-Host "Phase 2: verifying VM2 has no JDK artifacts ($($Vm2Def.vmName)) ..." `
+    Write-Host "Phase 2a: verifying VM2 has no JDK artifacts ($($Vm2Def.vmName)) ..." `
         -ForegroundColor Magenta
     Invoke-WithVmSshClient -VmDef $Vm2Def -Assertions {
         param($sshClient)
         Invoke-VmReadyAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
         Invoke-StaticNetworkAssertions -SshClient $sshClient -VmDef $Vm2Def
+        Invoke-NoJdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
+    }
+
+    # ------------------------------------------------------------------
+    # 2b) Re-add javaDevKit on VM1 (reinstall scenario).
+    # ------------------------------------------------------------------
+    Write-Host '' -ForegroundColor Magenta
+    Write-Host "Phase 2b: rewriting VmProvisionerConfig - VM1 re-adds JDK $($script:JdkReinstallVersion) ..." `
+        -ForegroundColor Magenta
+
+    $vm1Entry = New-VmEntryBase `
+        -Config    $Config `
+        -VmName    $Vm1Def.vmName `
+        -IpAddress $Vm1Def.ipAddress `
+        -Password  $Vm1Def.password
+    $vm1Entry.javaDevKit = [ordered]@{
+        vendor  = $script:JdkTestVendor
+        version = $script:JdkReinstallVersion
+    }
+    # files + envVars carry forward unchanged from 2a so the only diff
+    # the reconciler sees is the new javaDevKit field. No mtime-advance
+    # assertion here (envVars block content unchanged - the transport
+    # legitimately skips the rewrite).
+    $vm1Entry.files = @(
+        [ordered]@{
+            source = $script:FileTransferSource
+            target = $script:FileTransferTarget
+        },
+        [ordered]@{
+            pattern   = $script:BulkFileTransferPattern
+            targetDir = $script:BulkFileTransferTargetDir
+        }
+    )
+    $vm1Entry.envVars = [ordered]@{
+        blockName = $script:EnvVarsBlockName
+        entries   = @(
+            [ordered]@{ name = $script:EnvVarsFooHome.Name; value = $script:EnvVarsFooHome.Value }
+        )
+    }
+
+    $vm2Entry = New-VmEntryBase `
+        -Config    $Config `
+        -VmName    $Vm2Def.vmName `
+        -IpAddress $Vm2Def.ipAddress `
+        -Password  $Vm2Def.password
+
+    Write-VmProvisionerConfig -Entries @($vm1Entry, $vm2Entry)
+
+    Write-Host 'Phase 2b: provisioning (re-add JDK on VM1) ...' `
+        -ForegroundColor Magenta
+    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1"
+
+    Write-Host "Phase 2b: verifying JDK $($script:JdkReinstallVersion) reinstalled on $($Vm1Def.vmName) ..." `
+        -ForegroundColor Magenta
+    Invoke-WithVmSshClient -VmDef $Vm1Def -Assertions {
+        param($sshClient)
+        Invoke-VmReadyAssertions -SshClient $sshClient -VmName $Vm1Def.vmName
+        Invoke-JdkInstallAssertions `
+            -SshClient        $sshClient `
+            -VmName           $Vm1Def.vmName `
+            -RequestedVersion $script:JdkReinstallVersion `
+            -InstallPrefix    $script:JdkInstallPrefix
+    }
+
+    Write-Host "Phase 2b: re-verifying VM2 has no JDK artifacts ($($Vm2Def.vmName)) ..." `
+        -ForegroundColor Magenta
+    Invoke-WithVmSshClient -VmDef $Vm2Def -Assertions {
+        param($sshClient)
         Invoke-NoJdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
     }
 }

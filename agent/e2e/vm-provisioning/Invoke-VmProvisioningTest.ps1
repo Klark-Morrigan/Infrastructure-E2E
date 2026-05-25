@@ -18,6 +18,8 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 . "$PSScriptRoot\Invoke-StaticNetworkAssertions.ps1"
 . "$PSScriptRoot\Invoke-JdkInstallAssertions.ps1"
 . "$PSScriptRoot\Invoke-JdkUninstallAssertions.ps1"
+. "$PSScriptRoot\Invoke-JdkNoopAssertions.ps1"
+. "$PSScriptRoot\Invoke-JdkVersionChangeAssertions.ps1"
 . "$PSScriptRoot\Invoke-NoJdkVmAssertions.ps1"
 . "$PSScriptRoot\Invoke-FileTransferAssertions.ps1"
 . "$PSScriptRoot\Invoke-BulkFileTransferAssertions.ps1"
@@ -43,15 +45,24 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 $script:Vm1Name             = 'e2e-test-1'
 $script:Vm2Name             = 'e2e-test-2'
 
-# JDK pins. Two distinct major versions so phase 3 re-install on VM1 is
-# observably different from phase 1 (different /opt/jdk-temurin-* dir,
-# different java -version prefix). Phase-3 dir from phase 1 may legitimately
-# linger on disk - the install step is dir-scoped, not vendor-scoped - so
-# the assertions match by version, not by absence-of-other-version.
+# JDK pins. Two distinct major versions so the reconciler must observably
+# uninstall the old dir on a version change (different /opt/jdk-temurin-*
+# dir, different java -version prefix). Used across the scenarios:
+#   - Phase 1   : install   $JdkInitialVersion
+#   - Phase 2a  : drop field (uninstall via absent)
+#   - Phase 2b  : reinstall $JdkReinstallVersion
+#   - Phase 3a  : version change   $JdkReinstallVersion -> $JdkInitialVersion
+#   - Phase 3b  : remove via @()   (uninstall via empty list)
 $script:JdkTestVendor       = 'temurin'
 $script:JdkInitialVersion   = '21'
 $script:JdkReinstallVersion = '17'
 $script:JdkInstallPrefix    = "/opt/jdk-$script:JdkTestVendor-"
+
+# Snapshot captured by phase 1 after the install assertions pass and
+# consumed by the phase-1 no-op rerun assertion. Declared here (not
+# inside Phase 1) so it survives the dot-source / function-scope
+# boundary.
+$script:Phase1JdkSnapshot = $null
 
 # File-transfer fixture. Resolved from $PSScriptRoot so the absolute path is
 # computed on whichever workstation runs the test rather than being hard-

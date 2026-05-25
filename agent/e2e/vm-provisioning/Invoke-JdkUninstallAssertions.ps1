@@ -6,9 +6,13 @@
 
 # ---------------------------------------------------------------------------
 # Invoke-JdkUninstallAssertions
-#   Asserts the JDK removal path applied by Uninstall-Jdk + the dispatch in
-#   Invoke-VmPostProvisioning emptied the install dir, dropped the profile
-#   snippet, and pruned stale /usr/local/bin symlinks on the VM:
+#   Asserts the JDK removal path applied by the reconciler's JdkProvider
+#   (feature 42) after the operator drops the 'javaDevKit' field from the
+#   VM JSON (or sets it to null / @()). The legacy uninstall flag was
+#   superseded by feature 42 - removal is now expressed as a desired-state
+#   change in the JSON, not a sticky flag.
+#
+#   Checks:
 #     A1 - /opt/jdk-{vendor}-* glob produces no matches.
 #     A2 - /etc/profile.d/jdk.sh does not exist.
 #     A3 - JAVA_HOME no longer set in a login shell.
@@ -17,6 +21,11 @@
 #          that survive a login-shell-only cleanup.
 #     A5 - No stale /usr/local/bin symlinks pointing into the removed
 #          /opt/jdk-{vendor}-* directory.
+#     A6 - No javaDevKit-*.json manifest under
+#          /var/lib/infra-provisioner/manifests/. The manifest is the
+#          reconciler's truth source; a leftover here would cause the
+#          next reconciliation to re-uninstall (or fail) on already-gone
+#          artifacts.
 #
 #   Throws on the first failure with a message naming the VM and the
 #   observed value. The outer try/finally in Invoke-VmProvisioningTest still
@@ -134,4 +143,24 @@ function Invoke-JdkUninstallAssertions {
             "on ${VmName}: $staleLinks"
     }
     Write-Host '  [OK] A5: no stale /usr/local/bin symlinks' -ForegroundColor Green
+
+    # A6) No leftover manifest. ls -1 on the provider-scoped glob: exit 0 +
+    #     empty output = removed, exit 2 (no match) also = removed. Any
+    #     printed path is a leak.
+    $result = Invoke-SshClientCommand `
+        -SshClient $SshClient `
+        -Command  ("bash -c 'ls -1 /var/lib/infra-provisioner/manifests/" +
+                   "javaDevKit-*.json 2>/dev/null || true'")
+    if ($result.ExitStatus -ne 0) {
+        throw "Manifest leftover probe failed on $VmName " +
+            "(exit $($result.ExitStatus)): $($result.Error)"
+    }
+    $leftover = $result.Output.Trim()
+    if (-not [string]::IsNullOrEmpty($leftover)) {
+        throw "Leftover JDK manifest(s) on ${VmName}: $leftover. " +
+            "The reconciler's truth source still claims an install - the " +
+            "next reconciliation will re-attempt teardown."
+    }
+    Write-Host '  [OK] A6: no javaDevKit-*.json manifest leftover' `
+        -ForegroundColor Green
 }
