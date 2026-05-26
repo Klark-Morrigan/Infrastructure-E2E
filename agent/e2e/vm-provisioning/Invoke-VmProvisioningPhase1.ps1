@@ -34,7 +34,7 @@ function Invoke-VmProvisioningPhase1 {
     )
 
     Write-Host '' -ForegroundColor Magenta
-    Write-Host 'Phase 1: writing single-VM VmProvisionerConfig (VM1 + JDK 21) ...' `
+    Write-Host "Phase 1: writing single-VM VmProvisionerConfig (VM1 + JDK $($script:JdkInitialVersion) + dotnet SDK $($script:DotnetInitialResolvedVersion)) ..." `
         -ForegroundColor Magenta
 
     $entry = New-VmEntryBase `
@@ -45,6 +45,15 @@ function Invoke-VmProvisioningPhase1 {
     $entry.javaDevKit = [ordered]@{
         vendor  = $script:JdkTestVendor
         version = $script:JdkInitialVersion
+    }
+    # Co-tenant the dotnet SDK on VM1 from phase 1. Running JDK +
+    # dotnetSdk through the same provision exercises the reconciler's
+    # multi-provider dispatch order (JdkProvider then DotnetSdkProvider
+    # per Get-Providers) and proves the two providers do not interfere
+    # with each other's manifest writes.
+    $entry.dotnetSdk = [ordered]@{
+        channel = $script:DotnetInitialChannel
+        version = $script:DotnetInitialResolvedVersion
     }
     # Mixed files array: one single entry + one bulk entry. JSON order is
     # preserved by the per-entry dispatch in Invoke-VmPostProvisioning;
@@ -91,6 +100,12 @@ function Invoke-VmProvisioningPhase1 {
             -RequestedVersion $script:JdkInitialVersion `
             -InstallPrefix    $script:JdkInstallPrefix
 
+        Invoke-DotnetSdkInstallAssertions `
+            -SshClient       $sshClient `
+            -VmName          $Vm1Def.vmName `
+            -ResolvedVersion $script:DotnetInitialResolvedVersion `
+            -InstallPrefix   $script:DotnetInstallPrefix
+
         # Capture VM-side SHA-256s so phase 2 can assert idempotence by
         # snapshot. Helpers also assert C2-C5 (single) / C1-C4 (bulk)
         # against the host source on the way past.
@@ -132,6 +147,13 @@ function Invoke-VmProvisioningPhase1 {
             -SshClient     $sshClient `
             -VmName        $Vm1Def.vmName `
             -InstallPrefix $script:JdkInstallPrefix
+
+        # Same snapshot for the dotnet SDK so the no-op rerun proves
+        # the DotnetSdkProvider also took the diff's no-op branch.
+        $script:Phase1DotnetSnapshot = Get-DotnetSdkArtifactSnapshot `
+            -SshClient     $sshClient `
+            -VmName        $Vm1Def.vmName `
+            -InstallPrefix $script:DotnetInstallPrefix
     }
 
     # No-op rerun. Same VmProvisionerConfig already on disk - the
@@ -140,7 +162,7 @@ function Invoke-VmProvisioningPhase1 {
         -ForegroundColor Magenta
     & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1"
 
-    Write-Host "Phase 1: verifying no-op rerun did not touch JDK artifacts ..." `
+    Write-Host "Phase 1: verifying no-op rerun did not touch JDK / dotnet artifacts ..." `
         -ForegroundColor Magenta
     Invoke-WithVmSshClient -VmDef $Vm1Def -Assertions {
         param($sshClient)
@@ -149,5 +171,11 @@ function Invoke-VmProvisioningPhase1 {
             -VmName           $Vm1Def.vmName `
             -InstallPrefix    $script:JdkInstallPrefix `
             -PreviousSnapshot $script:Phase1JdkSnapshot
+
+        Invoke-DotnetSdkNoopAssertions `
+            -SshClient        $sshClient `
+            -VmName           $Vm1Def.vmName `
+            -InstallPrefix    $script:DotnetInstallPrefix `
+            -PreviousSnapshot $script:Phase1DotnetSnapshot
     }
 }

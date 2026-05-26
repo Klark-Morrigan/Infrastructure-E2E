@@ -36,11 +36,15 @@ function Invoke-VmProvisioningPhase3 {
     )
 
     Write-Host '' -ForegroundColor Magenta
-    Write-Host "Phase 3a: rewriting VmProvisionerConfig - VM1 changes JDK $($script:JdkReinstallVersion) -> $($script:JdkInitialVersion) ..." `
+    Write-Host ("Phase 3a: rewriting VmProvisionerConfig - VM1 changes JDK " +
+                "$($script:JdkReinstallVersion) -> $($script:JdkInitialVersion) and " +
+                "dotnet SDK $($script:DotnetReinstallResolvedVersion) -> $($script:DotnetInitialResolvedVersion) ...") `
         -ForegroundColor Magenta
 
-    # 3a) VM1 entry: bump javaDevKit.version. Everything else unchanged
-    # so the only diff the reconciler sees is the version field.
+    # 3a) VM1 entry: bump javaDevKit.version + dotnetSdk version. Both
+    # are changed in the same provision run so the reconciler must
+    # observably uninstall+install for each provider without the two
+    # interfering. Everything else is unchanged.
     $vm1Entry = New-VmEntryBase `
         -Config    $Config `
         -VmName    $Vm1Def.vmName `
@@ -49,6 +53,10 @@ function Invoke-VmProvisioningPhase3 {
     $vm1Entry.javaDevKit = [ordered]@{
         vendor  = $script:JdkTestVendor
         version = $script:JdkInitialVersion
+    }
+    $vm1Entry.dotnetSdk = [ordered]@{
+        channel = $script:DotnetInitialChannel
+        version = $script:DotnetInitialResolvedVersion
     }
     # envVars unchanged from phase 2b - still narrowed to FOO_HOME so
     # no spurious managed-block diff masks the JDK change.
@@ -94,6 +102,20 @@ function Invoke-VmProvisioningPhase3 {
             -VmName           $Vm1Def.vmName `
             -RequestedVersion $script:JdkInitialVersion `
             -InstallPrefix    $script:JdkInstallPrefix
+
+        # Same swap pair for the dotnet SDK.
+        Invoke-DotnetSdkVersionChangeAssertions `
+            -SshClient                $sshClient `
+            -VmName                   $Vm1Def.vmName `
+            -InstallPrefix            $script:DotnetInstallPrefix `
+            -PreviousResolvedVersion  $script:DotnetReinstallResolvedVersion `
+            -NewResolvedVersion       $script:DotnetInitialResolvedVersion
+
+        Invoke-DotnetSdkInstallAssertions `
+            -SshClient       $sshClient `
+            -VmName          $Vm1Def.vmName `
+            -ResolvedVersion $script:DotnetInitialResolvedVersion `
+            -InstallPrefix   $script:DotnetInstallPrefix
     }
 
     # ------------------------------------------------------------------
@@ -102,7 +124,7 @@ function Invoke-VmProvisioningPhase3 {
     # in 2a); envVars.entries = @() drives the managed-block removal.
     # ------------------------------------------------------------------
     Write-Host '' -ForegroundColor Magenta
-    Write-Host 'Phase 3b: rewriting VmProvisionerConfig - VM1 javaDevKit = @() + envVars empty ...' `
+    Write-Host 'Phase 3b: rewriting VmProvisionerConfig - VM1 javaDevKit = @() + dotnetSdk = @() + envVars empty ...' `
         -ForegroundColor Magenta
 
     $vm1Entry = New-VmEntryBase `
@@ -111,9 +133,10 @@ function Invoke-VmProvisioningPhase3 {
         -IpAddress $Vm1Def.ipAddress `
         -Password  $Vm1Def.password
     # Explicit empty list - the "ensure none" signal. Distinct from 2a
-    # (which dropped the field entirely) so both removal contracts
-    # are exercised in one run.
+    # (which used explicit $null) so both ensure-none contracts are
+    # exercised across the scenario.
     $vm1Entry.javaDevKit = @()
+    $vm1Entry.dotnetSdk  = @()
     $vm1Entry.envVars = [ordered]@{
         blockName = $script:EnvVarsBlockName
         entries   = @()
@@ -141,6 +164,11 @@ function Invoke-VmProvisioningPhase3 {
             -VmName        $Vm1Def.vmName `
             -InstallPrefix $script:JdkInstallPrefix
 
+        Invoke-DotnetSdkUninstallAssertions `
+            -SshClient     $sshClient `
+            -VmName        $Vm1Def.vmName `
+            -InstallPrefix $script:DotnetInstallPrefix
+
         # envVars: E7 (markers gone), E8 (formerly-managed entries
         # gone), E1 (mode unchanged), E3 (MARKER_OUTSIDE still
         # present). Names listed explicitly (not derived from the
@@ -154,12 +182,13 @@ function Invoke-VmProvisioningPhase3 {
             -ExpectedMarkerLine $script:EnvVarsMarkerLine
     }
 
-    Write-Host "Phase 3b: re-verifying VM2 has no JDK artifacts ($($Vm2Def.vmName)) ..." `
+    Write-Host "Phase 3b: re-verifying VM2 has no JDK / dotnet artifacts ($($Vm2Def.vmName)) ..." `
         -ForegroundColor Magenta
     Invoke-WithVmSshClient -VmDef $Vm2Def -Assertions {
         param($sshClient)
         Invoke-VmReadyAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
         Invoke-StaticNetworkAssertions -SshClient $sshClient -VmDef $Vm2Def
         Invoke-NoJdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
+        Invoke-NoDotnetSdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
     }
 }

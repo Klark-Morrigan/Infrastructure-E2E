@@ -20,7 +20,12 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 . "$PSScriptRoot\Invoke-JdkUninstallAssertions.ps1"
 . "$PSScriptRoot\Invoke-JdkNoopAssertions.ps1"
 . "$PSScriptRoot\Invoke-JdkVersionChangeAssertions.ps1"
+. "$PSScriptRoot\Invoke-DotnetSdkInstallAssertions.ps1"
+. "$PSScriptRoot\Invoke-DotnetSdkUninstallAssertions.ps1"
+. "$PSScriptRoot\Invoke-DotnetSdkNoopAssertions.ps1"
+. "$PSScriptRoot\Invoke-DotnetSdkVersionChangeAssertions.ps1"
 . "$PSScriptRoot\Invoke-NoJdkVmAssertions.ps1"
+. "$PSScriptRoot\Invoke-NoDotnetSdkVmAssertions.ps1"
 . "$PSScriptRoot\Invoke-FileTransferAssertions.ps1"
 . "$PSScriptRoot\Invoke-BulkFileTransferAssertions.ps1"
 . "$PSScriptRoot\Invoke-EnvVarsAppliedAssertions.ps1"
@@ -63,6 +68,31 @@ $script:JdkInstallPrefix    = "/opt/jdk-$script:JdkTestVendor-"
 # inside Phase 1) so it survives the dot-source / function-scope
 # boundary.
 $script:Phase1JdkSnapshot = $null
+
+# .NET SDK pins. Two distinct major.minor channels so the version-change
+# phase observably swaps install dirs and manifests. Exact resolved
+# version strings so the install assertion can require equality against
+# 'dotnet --version' (the resolver always lands on a feature-band build,
+# unlike JDK where the resolver expands '21' to '21.0.6+7' and the
+# assertion does a prefix match).
+#   - Phase 1   : install   $DotnetInitialResolvedVersion
+#   - Phase 2a  : dotnetSdk=$null (uninstall via explicit null)
+#   - Phase 2b  : reinstall $DotnetReinstallResolvedVersion
+#   - Phase 3a  : version change $DotnetReinstallResolvedVersion -> $DotnetInitialResolvedVersion
+#   - Phase 3b  : remove via @() (uninstall via empty list)
+# 8.0.100 and 9.0.100 are both released GA SDK builds Microsoft has
+# committed to permanently - safe to pin against the live release
+# metadata feed.
+$script:DotnetInitialChannel           = '8.0'
+$script:DotnetInitialResolvedVersion   = '8.0.100'
+$script:DotnetReinstallChannel         = '9.0'
+$script:DotnetReinstallResolvedVersion = '9.0.100'
+$script:DotnetInstallPrefix            = '/opt/dotnet-'
+
+# Snapshot captured by phase 1 after the dotnet install assertions pass
+# and consumed by the phase-1 no-op rerun assertion. Symmetric with
+# Phase1JdkSnapshot.
+$script:Phase1DotnetSnapshot = $null
 
 # File-transfer fixture. Resolved from $PSScriptRoot so the absolute path is
 # computed on whichever workstation runs the test rather than being hard-
