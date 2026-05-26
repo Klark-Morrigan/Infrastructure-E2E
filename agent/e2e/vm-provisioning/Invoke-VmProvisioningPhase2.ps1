@@ -48,7 +48,7 @@ function Invoke-VmProvisioningPhase2 {
     )
 
     Write-Host '' -ForegroundColor Magenta
-    Write-Host 'Phase 2a: rewriting VmProvisionerConfig - VM1 javaDevKit=$null + add VM2 ...' `
+    Write-Host 'Phase 2a: rewriting VmProvisionerConfig - VM1 javaDevKit=$null + dotnetSdk=$null + add VM2 ...' `
         -ForegroundColor Magenta
 
     # 2a) VM1 entry: javaDevKit = $null (explicit JSON null is the
@@ -61,6 +61,11 @@ function Invoke-VmProvisioningPhase2 {
         -IpAddress $Vm1Def.ipAddress `
         -Password  $Vm1Def.password
     $vm1Entry.javaDevKit = $null
+    # dotnetSdk = $null follows the same contract as javaDevKit: explicit
+    # JSON null = "ensure none installed". The dotnet provider's
+    # Get-DesiredVersions then returns @() and the reconciler drives the
+    # uninstall path.
+    $vm1Entry.dotnetSdk = $null
     # Carry the phase-1 files array forward unchanged so the bulk + single
     # idempotence assertions below have something to validate against.
     $vm1Entry.files = @(
@@ -109,6 +114,11 @@ function Invoke-VmProvisioningPhase2 {
             -VmName        $Vm1Def.vmName `
             -InstallPrefix $script:JdkInstallPrefix
 
+        Invoke-DotnetSdkUninstallAssertions `
+            -SshClient     $sshClient `
+            -VmName        $Vm1Def.vmName `
+            -InstallPrefix $script:DotnetInstallPrefix
+
         # Idempotence: re-run the file-transfer assertions on the
         # re-provisioned VM. The phase-1 snapshots assert that nothing
         # externally visible about the file targets changed across the
@@ -155,20 +165,21 @@ function Invoke-VmProvisioningPhase2 {
             -SshClient $sshClient -VmName $Vm1Def.vmName
     }
 
-    Write-Host "Phase 2a: verifying VM2 has no JDK artifacts ($($Vm2Def.vmName)) ..." `
+    Write-Host "Phase 2a: verifying VM2 has no JDK / dotnet artifacts ($($Vm2Def.vmName)) ..." `
         -ForegroundColor Magenta
     Invoke-WithVmSshClient -VmDef $Vm2Def -Assertions {
         param($sshClient)
         Invoke-VmReadyAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
         Invoke-StaticNetworkAssertions -SshClient $sshClient -VmDef $Vm2Def
         Invoke-NoJdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
+        Invoke-NoDotnetSdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
     }
 
     # ------------------------------------------------------------------
     # 2b) Re-add javaDevKit on VM1 (reinstall scenario).
     # ------------------------------------------------------------------
     Write-Host '' -ForegroundColor Magenta
-    Write-Host "Phase 2b: rewriting VmProvisionerConfig - VM1 re-adds JDK $($script:JdkReinstallVersion) ..." `
+    Write-Host "Phase 2b: rewriting VmProvisionerConfig - VM1 re-adds JDK $($script:JdkReinstallVersion) + dotnet SDK $($script:DotnetReinstallResolvedVersion) ..." `
         -ForegroundColor Magenta
 
     $vm1Entry = New-VmEntryBase `
@@ -179,6 +190,13 @@ function Invoke-VmProvisioningPhase2 {
     $vm1Entry.javaDevKit = [ordered]@{
         vendor  = $script:JdkTestVendor
         version = $script:JdkReinstallVersion
+    }
+    # Reinstall the dotnet SDK on the *other* channel/version so the
+    # reconciler must drive a fresh install (empty -> single version)
+    # for both providers in the same run.
+    $vm1Entry.dotnetSdk = [ordered]@{
+        channel = $script:DotnetReinstallChannel
+        version = $script:DotnetReinstallResolvedVersion
     }
     # files + envVars carry forward unchanged from 2a so the only diff
     # the reconciler sees is the new javaDevKit field. No mtime-advance
@@ -213,7 +231,7 @@ function Invoke-VmProvisioningPhase2 {
         -ForegroundColor Magenta
     & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1"
 
-    Write-Host "Phase 2b: verifying JDK $($script:JdkReinstallVersion) reinstalled on $($Vm1Def.vmName) ..." `
+    Write-Host "Phase 2b: verifying JDK $($script:JdkReinstallVersion) + dotnet SDK $($script:DotnetReinstallResolvedVersion) reinstalled on $($Vm1Def.vmName) ..." `
         -ForegroundColor Magenta
     Invoke-WithVmSshClient -VmDef $Vm1Def -Assertions {
         param($sshClient)
@@ -223,12 +241,19 @@ function Invoke-VmProvisioningPhase2 {
             -VmName           $Vm1Def.vmName `
             -RequestedVersion $script:JdkReinstallVersion `
             -InstallPrefix    $script:JdkInstallPrefix
+
+        Invoke-DotnetSdkInstallAssertions `
+            -SshClient       $sshClient `
+            -VmName          $Vm1Def.vmName `
+            -ResolvedVersion $script:DotnetReinstallResolvedVersion `
+            -InstallPrefix   $script:DotnetInstallPrefix
     }
 
-    Write-Host "Phase 2b: re-verifying VM2 has no JDK artifacts ($($Vm2Def.vmName)) ..." `
+    Write-Host "Phase 2b: re-verifying VM2 has no JDK / dotnet artifacts ($($Vm2Def.vmName)) ..." `
         -ForegroundColor Magenta
     Invoke-WithVmSshClient -VmDef $Vm2Def -Assertions {
         param($sshClient)
         Invoke-NoJdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
+        Invoke-NoDotnetSdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
     }
 }
