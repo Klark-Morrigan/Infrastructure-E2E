@@ -119,6 +119,19 @@ function Invoke-VmProvisioningPhase2 {
             -VmName        $Vm1Def.vmName `
             -InstallPrefix $script:DotnetInstallPrefix
 
+        # dotnetTools entry was dropped from VM1's JSON in this phase
+        # (the SDK is being uninstalled, so co-tenanted tools must go
+        # too). Asserts the walker / provider combination left no
+        # orphaned store dir, symlink, or manifest behind. This is the
+        # E2E backing for plan step 7 step 4's "regression guard for the
+        # walker" - a future regression that left tool manifests behind
+        # after a parent SDK uninstall would fail U3.
+        Invoke-DotnetToolsUninstallAssertions `
+            -SshClient $sshClient `
+            -VmName    $Vm1Def.vmName `
+            -ToolId    $script:DotnetToolId `
+            -Command   $script:DotnetToolCommand
+
         # Idempotence: re-run the file-transfer assertions on the
         # re-provisioned VM. The phase-1 snapshots assert that nothing
         # externally visible about the file targets changed across the
@@ -198,6 +211,16 @@ function Invoke-VmProvisioningPhase2 {
         channel = $script:DotnetReinstallChannel
         version = $script:DotnetReinstallResolvedVersion
     }
+    # Re-co-tenant the same tool at its initial pin. Phase 3a then
+    # version-changes it to $DotnetToolReinstallVersion alongside the
+    # SDK version-change so the swap is observable in a single
+    # provision run.
+    $vm1Entry.dotnetTools = @(
+        [ordered]@{
+            id      = $script:DotnetToolId
+            version = $script:DotnetToolInitialVersion
+        }
+    )
     # files + envVars carry forward unchanged from 2a so the only diff
     # the reconciler sees is the new javaDevKit field. No mtime-advance
     # assertion here (envVars block content unchanged - the transport
@@ -247,6 +270,13 @@ function Invoke-VmProvisioningPhase2 {
             -VmName          $Vm1Def.vmName `
             -ResolvedVersion $script:DotnetReinstallResolvedVersion `
             -InstallPrefix   $script:DotnetInstallPrefix
+
+        Invoke-DotnetToolsInstallAssertions `
+            -SshClient   $sshClient `
+            -VmName      $Vm1Def.vmName `
+            -ToolId      $script:DotnetToolId `
+            -ToolVersion $script:DotnetToolInitialVersion `
+            -Command     $script:DotnetToolCommand
     }
 
     Write-Host "Phase 2b: re-verifying VM2 has no JDK / dotnet artifacts ($($Vm2Def.vmName)) ..." `

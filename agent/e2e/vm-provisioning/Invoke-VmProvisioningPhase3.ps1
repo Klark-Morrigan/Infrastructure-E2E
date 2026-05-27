@@ -58,6 +58,20 @@ function Invoke-VmProvisioningPhase3 {
         channel = $script:DotnetInitialChannel
         version = $script:DotnetInitialResolvedVersion
     }
+    # dotnetTools version flips from $DotnetToolInitialVersion (installed
+    # by phase 2b) to $DotnetToolReinstallVersion at the same time as the
+    # SDK version-change. Running both swaps in one provision run
+    # exercises the walker on the SDK uninstall side (which must
+    # dispatch the existing tool's Uninstall-Version before tearing
+    # down the SDK so the SDK install dir is empty by the time it is
+    # removed). After the SDK reinstall the tool provider then installs
+    # the new tool version under the new SDK.
+    $vm1Entry.dotnetTools = @(
+        [ordered]@{
+            id      = $script:DotnetToolId
+            version = $script:DotnetToolReinstallVersion
+        }
+    )
     # envVars unchanged from phase 2b - still narrowed to FOO_HOME so
     # no spurious managed-block diff masks the JDK change.
     $vm1Entry.envVars = [ordered]@{
@@ -116,6 +130,26 @@ function Invoke-VmProvisioningPhase3 {
             -VmName          $Vm1Def.vmName `
             -ResolvedVersion $script:DotnetInitialResolvedVersion `
             -InstallPrefix   $script:DotnetInstallPrefix
+
+        # Old store gone + new store present + manifest swap + symlink
+        # survives. The plain "install assertion against the new tool
+        # version" pass below covers --version output, manifest contents,
+        # and the parent SDK's children array referencing the new tool
+        # manifest.
+        Invoke-DotnetToolsVersionChangeAssertions `
+            -SshClient        $sshClient `
+            -VmName           $Vm1Def.vmName `
+            -ToolId           $script:DotnetToolId `
+            -PreviousVersion  $script:DotnetToolInitialVersion `
+            -NewVersion       $script:DotnetToolReinstallVersion `
+            -Command          $script:DotnetToolCommand
+
+        Invoke-DotnetToolsInstallAssertions `
+            -SshClient   $sshClient `
+            -VmName      $Vm1Def.vmName `
+            -ToolId      $script:DotnetToolId `
+            -ToolVersion $script:DotnetToolReinstallVersion `
+            -Command     $script:DotnetToolCommand
     }
 
     # ------------------------------------------------------------------
@@ -135,8 +169,15 @@ function Invoke-VmProvisioningPhase3 {
     # Explicit empty list - the "ensure none" signal. Distinct from 2a
     # (which used explicit $null) so both ensure-none contracts are
     # exercised across the scenario.
-    $vm1Entry.javaDevKit = @()
-    $vm1Entry.dotnetSdk  = @()
+    $vm1Entry.javaDevKit  = @()
+    $vm1Entry.dotnetSdk   = @()
+    # dotnetTools = @() is the other "ensure none" contract for nested
+    # providers. Combined with dotnetSdk = @() this exercises the
+    # composite tear-down: the tool provider goes first per Get-Providers
+    # order, leaving the SDK's children array empty by the time the SDK
+    # uninstall fires - which is the path plan step 7 step 4's regression
+    # guard cares about (orphan manifest leftover would fail U3).
+    $vm1Entry.dotnetTools = @()
     $vm1Entry.envVars = [ordered]@{
         blockName = $script:EnvVarsBlockName
         entries   = @()
@@ -168,6 +209,12 @@ function Invoke-VmProvisioningPhase3 {
             -SshClient     $sshClient `
             -VmName        $Vm1Def.vmName `
             -InstallPrefix $script:DotnetInstallPrefix
+
+        Invoke-DotnetToolsUninstallAssertions `
+            -SshClient $sshClient `
+            -VmName    $Vm1Def.vmName `
+            -ToolId    $script:DotnetToolId `
+            -Command   $script:DotnetToolCommand
 
         # envVars: E7 (markers gone), E8 (formerly-managed entries
         # gone), E1 (mode unchanged), E3 (MARKER_OUTSIDE still

@@ -140,6 +140,32 @@ function Invoke-DotnetSdkInstallAssertions {
     }
     Write-Host "  [OK] DOTNET_CLI_TELEMETRY_OPTOUT=1" -ForegroundColor Green
 
+    # 4b) /etc/dotnet/install_location points at the install dir. This
+    #     is Microsoft's documented apphost runtime-discovery hint for
+    #     SDKs installed outside /usr/share/dotnet, and the only thing
+    #     that lets `dotnet tool` shims invoked from a non-login shell
+    #     (sshd command exec, systemd, cron) find the runtime. A
+    #     regression that drops the write surfaces here as either a
+    #     missing file or a stale path pointing at a now-gone install.
+    $result = Invoke-SshClientCommand `
+        -SshClient $SshClient `
+        -Command  'sudo cat /etc/dotnet/install_location'
+    if ($result.ExitStatus -ne 0) {
+        throw "Reading /etc/dotnet/install_location failed on $VmName " +
+            "(exit $($result.ExitStatus)): $($result.Error). The apphost " +
+            "runtime-discovery hint is missing - dotnet tool shims will " +
+            "fail with 'You must install .NET to run this application'."
+    }
+    $installLocation = $result.Output.Trim()
+    if ($installLocation -ne $dotnetRoot) {
+        throw "/etc/dotnet/install_location on $VmName is '$installLocation', " +
+            "expected '$dotnetRoot' (the DOTNET_ROOT value already verified " +
+            "above). The runtime-discovery hint is out of sync with the " +
+            "active install."
+    }
+    Write-Host "  [OK] /etc/dotnet/install_location: $installLocation" `
+        -ForegroundColor Green
+
     # 5) Manifest file present under the reconciler store. ls -1 of the
     #    provider-scoped glob: exit 0 + one or more lines = manifest(s)
     #    written; exit 2 (no match) = the install path skipped the

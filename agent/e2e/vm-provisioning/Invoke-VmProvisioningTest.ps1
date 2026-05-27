@@ -24,6 +24,7 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 . "$PSScriptRoot\Invoke-DotnetSdkUninstallAssertions.ps1"
 . "$PSScriptRoot\Invoke-DotnetSdkNoopAssertions.ps1"
 . "$PSScriptRoot\Invoke-DotnetSdkVersionChangeAssertions.ps1"
+. "$PSScriptRoot\Invoke-DotnetToolsAssertions.ps1"
 . "$PSScriptRoot\Invoke-NoJdkVmAssertions.ps1"
 . "$PSScriptRoot\Invoke-NoDotnetSdkVmAssertions.ps1"
 . "$PSScriptRoot\Invoke-FileTransferAssertions.ps1"
@@ -93,6 +94,25 @@ $script:DotnetInstallPrefix            = '/opt/dotnet-'
 # and consumed by the phase-1 no-op rerun assertion. Symmetric with
 # Phase1JdkSnapshot.
 $script:Phase1DotnetSnapshot = $null
+
+# .NET global-tool pins. One real tool (dotnet-reportgenerator-globaltool)
+# is co-tenanted on VM1 across phases 1-3 to exercise the
+# DotnetToolsProvider end-to-end against a real nuget.org round-trip.
+# Two distinct minor releases so phase 3a's version-change is observably
+# a swap of .store/{id}/{version}/ rather than a no-op.
+#
+# The tool is installed in phase 1 alongside dotnetSdk 8.0.100, removed
+# (via the SDK uninstall walker) in phase 2a, reinstalled in phase 2b
+# alongside dotnetSdk 9.0.100, version-changed in phase 3a, and fully
+# torn down in phase 3b.
+#
+# reportgenerator targets net8.0/net9.0 multi-target so both SDK pins
+# above are compatible. The pinned versions are released GA NuGet
+# builds Microsoft cannot retract retroactively.
+$script:DotnetToolId               = 'dotnet-reportgenerator-globaltool'
+$script:DotnetToolInitialVersion   = '5.4.4'
+$script:DotnetToolReinstallVersion = '5.4.5'
+$script:DotnetToolCommand          = 'reportgenerator'
 
 # File-transfer fixture. Resolved from $PSScriptRoot so the absolute path is
 # computed on whichever workstation runs the test rather than being hard-
