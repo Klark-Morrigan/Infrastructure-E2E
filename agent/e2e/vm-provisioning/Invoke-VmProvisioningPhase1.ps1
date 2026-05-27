@@ -55,6 +55,17 @@ function Invoke-VmProvisioningPhase1 {
         channel = $script:DotnetInitialChannel
         version = $script:DotnetInitialResolvedVersion
     }
+    # Co-tenant a single .NET global tool from phase 1. Together with
+    # dotnetSdk above this drives DotnetToolsProvider end-to-end through
+    # the nested-provider walker contract: SDK installs first, then the
+    # tool installs against the host-prefetched .nupkg, and the SDK
+    # manifest's children array gains a reference to the tool manifest.
+    $entry.dotnetTools = @(
+        [ordered]@{
+            id      = $script:DotnetToolId
+            version = $script:DotnetToolInitialVersion
+        }
+    )
     # Mixed files array: one single entry + one bulk entry. JSON order is
     # preserved by the per-entry dispatch in Invoke-VmPostProvisioning;
     # asserting both forms in one provision run covers the "mixed dispatch"
@@ -105,6 +116,17 @@ function Invoke-VmProvisioningPhase1 {
             -VmName          $Vm1Def.vmName `
             -ResolvedVersion $script:DotnetInitialResolvedVersion `
             -InstallPrefix   $script:DotnetInstallPrefix
+
+        # Tool install assertions follow the SDK install assertions
+        # because I5 reads the parent SDK manifest - the SDK assertions
+        # have already verified that manifest is present and well-formed
+        # at this point.
+        Invoke-DotnetToolsInstallAssertions `
+            -SshClient   $sshClient `
+            -VmName      $Vm1Def.vmName `
+            -ToolId      $script:DotnetToolId `
+            -ToolVersion $script:DotnetToolInitialVersion `
+            -Command     $script:DotnetToolCommand
 
         # Capture VM-side SHA-256s so phase 2 can assert idempotence by
         # snapshot. Helpers also assert C2-C5 (single) / C1-C4 (bulk)

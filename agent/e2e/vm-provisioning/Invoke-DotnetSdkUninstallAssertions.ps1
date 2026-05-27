@@ -137,6 +137,27 @@ function Invoke-DotnetSdkUninstallAssertions {
     Write-Host '  [OK] A5: /usr/local/bin/dotnet symlink removed' `
         -ForegroundColor Green
 
+    # A5b) /etc/dotnet/install_location is gone. A leftover file would
+    #      point the apphost at the now-deleted /opt/dotnet-<version>
+    #      and break any subsequent dotnet-tool invocation. The parent
+    #      /etc/dotnet/ dir is intentionally left behind (shared with
+    #      other tooling); only the file is removed.
+    $result = Invoke-SshClientCommand `
+        -SshClient $SshClient `
+        -Command  "bash -c 'test -e /etc/dotnet/install_location && echo present || echo absent'"
+    if ($result.ExitStatus -ne 0) {
+        throw "/etc/dotnet/install_location probe failed on $VmName " +
+            "(exit $($result.ExitStatus)): $($result.Error)"
+    }
+    $locState = $result.Output.Trim()
+    if ($locState -ne 'absent') {
+        throw "/etc/dotnet/install_location still present on $VmName " +
+            "(probe reported '$locState'). The apphost runtime-discovery " +
+            "hint outlived its SDK install."
+    }
+    Write-Host '  [OK] A5b: /etc/dotnet/install_location removed' `
+        -ForegroundColor Green
+
     # A6) No leftover manifest. Any printed path is a leak.
     $result = Invoke-SshClientCommand `
         -SshClient $SshClient `

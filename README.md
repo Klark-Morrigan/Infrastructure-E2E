@@ -389,6 +389,7 @@ agent/
       Invoke-JdkInstallAssertions.ps1          - JDK install post-conditions (used by phases 1, 3)
       Invoke-JdkUninstallAssertions.ps1        - JDK removal post-conditions (used by phase 2)
       Invoke-NoJdkVmAssertions.ps1             - "VM2 untouched" witness assertions (phases 2, 3)
+      Invoke-DotnetToolsAssertions.ps1         - dotnetTools install / version-change / uninstall post-conditions (covers the happy-path nested-provider lifecycle across phases 1-3)
       Invoke-FileTransferAssertions.ps1        - Copy-VmFiles (single) fixture post-conditions
       Invoke-BulkFileTransferAssertions.ps1    - Copy-VmFilesByPattern (bulk) fixture post-conditions
       Invoke-EnvVarsAppliedAssertions.ps1      - Managed envVars block post-conditions (phases 1, 2)
