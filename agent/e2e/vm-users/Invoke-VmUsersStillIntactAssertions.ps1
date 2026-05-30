@@ -1,7 +1,7 @@
 <#
 .NOTES
     Do not run this file directly. Dot-sourced by Invoke-VmUsersTest.ps1
-    after Infrastructure.Common (for Invoke-SshClientCommand) is loaded.
+    after PowerShell.Common (for Invoke-SshClientCommand) is loaded.
 #>
 
 # ---------------------------------------------------------------------------

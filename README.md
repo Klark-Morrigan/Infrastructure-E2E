@@ -55,7 +55,7 @@ PowerShell 7+ (`pwsh`).
   - `VmUsers` (owned by `Infrastructure-Vm-Users`)
   - `GitHubRunners` (owned by `Infrastructure-GitHubRunners`)
   - `E2EConfig` (owned by this repo - see [GitHub App setup](#github-app-setup))
-- `Infrastructure.Common` >= `3.1.0` installed from PSGallery
+- `PowerShell.Common` >= `3.1.0` installed from PSGallery
 
 ---
 
