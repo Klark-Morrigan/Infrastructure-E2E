@@ -11,7 +11,7 @@
 
     Step 1 - NuGet provider: PowerShellGet uses it to download from PSGallery.
 
-    Step 2 - Infrastructure.Common: the chicken-and-egg case. It supplies
+    Step 2 - PowerShell.Common: the chicken-and-egg case. It supplies
              Invoke-ModuleInstall used by every install below, so it cannot
              install itself - the inline guard is unavoidable.
 
@@ -26,10 +26,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ---------------------------------------------------------------------------
-# Install-InfrastructureCommonWithRetry
+# Install-PowerShellCommonWithRetry
 #   The chicken-and-egg case: Invoke-ModuleInstall (which has retry built
-#   in) lives inside Infrastructure.Common, so it cannot be used to install
-#   Infrastructure.Common itself. A small inline retry wrapper here covers
+#   in) lives inside PowerShell.Common, so it cannot be used to install
+#   PowerShell.Common itself. A small inline retry wrapper here covers
 #   that single bootstrap call. All later Invoke-ModuleInstall calls below
 #   get retry for free.
 #
@@ -38,7 +38,7 @@ $ErrorActionPreference = 'Stop'
 #   before giving up - long enough to ride out a transient PSGallery
 #   resolution blip, short enough that a real outage fails the run.
 # ---------------------------------------------------------------------------
-function Install-InfrastructureCommonWithRetry {
+function Install-PowerShellCommonWithRetry {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [Version] $MinimumVersion,
@@ -52,7 +52,7 @@ function Install-InfrastructureCommonWithRetry {
             # -ErrorAction Stop promotes PSGallery "Unable to resolve
             # package source" (a non-terminating error by default) to a
             # terminating one so the catch block can retry it.
-            Install-Module Infrastructure.Common `
+            Install-Module PowerShell.Common `
                 -MinimumVersion $MinimumVersion `
                 -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
             return
@@ -60,7 +60,7 @@ function Install-InfrastructureCommonWithRetry {
         catch {
             if ($attempt -ge $MaxAttempts) { throw }
             Write-Warning (
-                "Install-Module Infrastructure.Common failed " +
+                "Install-Module PowerShell.Common failed " +
                 "(attempt $attempt/$MaxAttempts): " +
                 "$($_.Exception.Message). Retrying in ${delay}s ..."
             )
@@ -78,23 +78,23 @@ if (-not $_nuget -or $_nuget.Version -lt [Version]'2.8.5.201') {
         -Scope CurrentUser -Force -ForceBootstrap | Out-Null
 }
 
-# Step 2 - Infrastructure.Common (chicken-and-egg bootstrap)
-$_common = Get-Module -ListAvailable -Name Infrastructure.Common |
+# Step 2 - PowerShell.Common (chicken-and-egg bootstrap)
+$_common = Get-Module -ListAvailable -Name PowerShell.Common |
     Sort-Object Version -Descending | Select-Object -First 1
 if (-not $_common -or $_common.Version -lt [Version]'5.1.0') {
-    Install-InfrastructureCommonWithRetry -MinimumVersion '5.1.0'
+    Install-PowerShellCommonWithRetry -MinimumVersion '6.0.0'
     # Re-query so the comparison below uses the freshly installed version.
-    $_common = Get-Module -ListAvailable -Name Infrastructure.Common |
+    $_common = Get-Module -ListAvailable -Name PowerShell.Common |
         Sort-Object Version -Descending | Select-Object -First 1
 }
 # Reload only when the loaded state differs from the target (multiple
 # versions live, or wrong version live). Mirrors the conditional in
 # Invoke-ModuleInstall - inlined here because the bootstrap installs
 # the very module that defines that function.
-$_loaded = @(Get-Module -Name Infrastructure.Common)
+$_loaded = @(Get-Module -Name PowerShell.Common)
 if ($_loaded.Count -ne 1 -or $_loaded[0].Version -ne $_common.Version) {
     if ($_loaded) { $_loaded | Remove-Module -Force }
-    Import-Module Infrastructure.Common -Force -ErrorAction Stop
+    Import-Module PowerShell.Common -Force -ErrorAction Stop
 }
 
 # Step 3 - Everything else

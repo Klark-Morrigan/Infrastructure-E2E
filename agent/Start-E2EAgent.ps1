@@ -30,7 +30,7 @@
 
     Prerequisites:
       - setup-secrets.ps1 has been run to populate the E2EConfig vault.
-      - Infrastructure.Common >= 1.3.3 installed (or will be installed here).
+      - PowerShell.Common >= 1.3.3 installed (or will be installed here).
       - Infrastructure.Secrets installed.
 
 .EXAMPLE
@@ -271,7 +271,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     . "$PSScriptRoot\Initialize-E2EEnvironment.ps1"
 
     # Dot-source the lifecycle test so Invoke-RunnerLifecycleTest is available
-    # to the loop function above. This must happen after Infrastructure.Common
+    # to the loop function above. This must happen after PowerShell.Common
     # is loaded because the lifecycle test depends on it.
     . "$PSScriptRoot\e2e\runner-lifecycle\Invoke-RunnerLifecycleTest.ps1"
 
