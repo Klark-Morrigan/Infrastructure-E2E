@@ -186,9 +186,11 @@ secrets:
 
 ## How to run the polling agent
 
-Start the agent on the workstation **before** triggering a workflow run.
-The agent must be running when the workflow creates the deployment so it
-can pick it up and post a status update promptly.
+Start the agent on the workstation. Order relative to triggering the
+workflow does not matter - the agent polls for any pending deployment,
+so a deployment created before the agent starts is picked up on the
+next poll. The only constraint is that the agent must pick the
+deployment up before the workflow's status poll times out.
 
 ```powershell
 # Run from the repo root (elevated PowerShell on the workstation)
