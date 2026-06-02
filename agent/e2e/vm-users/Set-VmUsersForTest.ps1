@@ -67,19 +67,32 @@ function Set-VmUsersForTest {
             if (-not $AnsiblePath) {
                 throw 'UsersFlow=ansible requires -AnsiblePath'
             }
-            # --cd because the bridge resolves .venv/bin/activate, the
-            # helpers, and the playbook path relative to the repo root.
+            # Push-Location + `wsl --` rather than `wsl --cd <path> --`:
             #
-            # `bash -lc` (login shell) rather than direct `./ops/...`:
-            # `wsl --` execs the script via the kernel, which reads the
-            # `#!/usr/bin/env bash` shebang and runs env. env then needs
-            # bash on PATH - but the non-interactive wsl call inherits
-            # the calling PS process's sparse PATH, with no /etc/profile
-            # sourced, so /usr/bin is often absent and env fails with
-            # `env: can't execute 'bash': No such file or directory`.
-            # A login shell sources /etc/profile, fixing PATH for the
-            # whole bridge chain in one place.
-            & wsl --cd $AnsiblePath -- bash -lc './ops/create-users.sh'
+            # `wsl --cd <windows-path> -- <cmd>` routes through a
+            # /bin/sh -c "cd <path>; <cmd>" interop layer that inherits
+            # the calling PowerShell process's sparse PATH (no /usr/bin),
+            # so even `bash` cannot be found by name and the call dies
+            # with `/bin/sh: bash: not found`. Bypassing the kernel-side
+            # shebang on `./ops/create-users.sh` hits the same sparse
+            # PATH a different way: `env: can't execute 'bash': No such
+            # file or directory`.
+            #
+            # The bootstrap script (Infrastructure-VM-Ansible/ops/
+            # bootstrap-controller.ps1) uses Push-Location $RepoRoot +
+            # `wsl -- ./ops/_bootstrap-controller-wsl.sh` and works
+            # cleanly. Mirroring that shape here avoids the --cd sh
+            # wrapper entirely: wsl execs the script directly with its
+            # normal startup PATH (/usr/bin included), the kernel
+            # resolves the shebang, env finds bash, the bridge chain
+            # runs.
+            Push-Location $AnsiblePath
+            try {
+                & wsl -- ./ops/create-users.sh
+            }
+            finally {
+                Pop-Location
+            }
             if ($LASTEXITCODE -ne 0) {
                 throw "Ansible create-users.sh exited $LASTEXITCODE"
             }
