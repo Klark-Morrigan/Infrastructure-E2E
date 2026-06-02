@@ -11,6 +11,11 @@
 # re-provision did not disturb user / group state.
 . "$PSScriptRoot\Invoke-VmUsersStillIntactAssertions.ps1"
 
+# Create-side dispatcher: selects custom-powershell vs ansible based on
+# $Config.UsersFlow. Replaces the inline create-users.ps1 invocation that
+# used to live in Invoke-VmUsersSetup.
+. "$PSScriptRoot\Set-VmUsersForTest.ps1"
+
 # ---------------------------------------------------------------------------
 # Assert-VmUsersStillIntact
 #   Opens a fresh SSH session to the VM and re-asserts that every user
@@ -133,8 +138,17 @@ function Invoke-VmUsersSetup {
     $vmDef = Invoke-VmProvisioningSetup -Config $Config
     Invoke-VmProvisioningPhase1 -Config $Config -Vm1Def $vmDef
 
-    Write-Host 'Reconciling users ...' -ForegroundColor Magenta
-    & "$($Config.UsersPath)\hyper-v\ubuntu\create-users.ps1"
+    Write-Host "Reconciling users via '$($Config.UsersFlow)' flow ..." -ForegroundColor Magenta
+    # $Config carries UsersFlow + AnsiblePath from Start-E2EAgent /
+    # Start-VmUsersTest. AnsiblePath is optional in the dispatcher and
+    # ignored unless UsersFlow=ansible; the agent-loop validates its
+    # presence at startup so a missing path fails before the VM is built.
+    Set-VmUsersForTest `
+        -UsersFlow   $Config.UsersFlow `
+        -UsersPath   $Config.UsersPath `
+        -AnsiblePath $Config.AnsiblePath `
+        -VmDef       $vmDef `
+        -Entry       $Entry
 
     # Verify SSH is reachable after create-users.ps1 returns. create-users.ps1
     # pings the VM and silently skips it with Write-Warning when ping fails -

@@ -95,9 +95,26 @@ function Invoke-E2EAgentLoop {
 
         # Absolute path to the Infrastructure-Vm-Users repo root on the
         # workstation. Passed to the lifecycle test so it can call
-        # create-users.ps1.
+        # create-users.ps1 (when UsersFlow=custom-powershell) and
+        # remove-users.ps1 (always - the teardown half stays on the
+        # Vm-Users path for both flows until feature 03 ships).
         [Parameter(Mandatory)]
         [string] $UsersPath,
+
+        # Selects which create-users implementation the test layer
+        # dispatches to. 'ansible' is the post-feature-02 default;
+        # 'custom-powershell' opts back in to the original Vm-Users path
+        # for parallel validation. Both are permanent first-class peers.
+        [Parameter()]
+        [ValidateSet('custom-powershell', 'ansible')]
+        [string] $UsersFlow = 'ansible',
+
+        # Absolute path to the Infrastructure-VM-Ansible repo root on the
+        # workstation. Required when UsersFlow=ansible (the default); the
+        # loop validates the path exists below before the first VM is
+        # built so a misconfigured agent fails at startup, not mid-test.
+        [Parameter()]
+        [string] $AnsiblePath,
 
         # Absolute path to the Infrastructure-GitHubRunners repo root on
         # the workstation. Passed to the lifecycle test so it can call
@@ -147,6 +164,20 @@ function Invoke-E2EAgentLoop {
 
     if ($Deadline -eq [DateTime]::MinValue) {
         $Deadline = [DateTime]::UtcNow.AddMinutes($TimeoutMinutes)
+    }
+
+    # Fail-fast: validate AnsiblePath at startup so a misconfigured
+    # session does not build a VM and only then discover the bridge
+    # is unreachable. custom-powershell ignores the path; only the
+    # ansible flow needs it. Test directly under WSL is out of scope
+    # here - the dispatcher does that when it actually runs.
+    if ($UsersFlow -eq 'ansible') {
+        if (-not $AnsiblePath) {
+            throw "UsersFlow='ansible' requires -AnsiblePath."
+        }
+        if (-not (Test-Path -LiteralPath $AnsiblePath -PathType Container)) {
+            throw "AnsiblePath '$AnsiblePath' does not exist or is not a directory."
+        }
     }
 
     # Derive display value from the resolved Deadline so injected deadlines
@@ -206,6 +237,8 @@ function Invoke-E2EAgentLoop {
                     PrivateKeyPath        = $PrivateKeyPath
                     ProvisionerPath       = $ProvisionerPath
                     UsersPath             = $UsersPath
+                    UsersFlow             = $UsersFlow
+                    AnsiblePath           = $AnsiblePath
                     RunnersPath           = $RunnersPath
                     HostTarballCachePath  = $HostTarballCachePath
                     Owner                 = $Owner
@@ -318,23 +351,37 @@ if ($MyInvocation.InvocationName -ne '.') {
     # deadline is checked at session boundaries so the agent stops without
     # operator intervention. PipelineStoppedException (Ctrl+C) is re-thrown
     # so the operator can also stop it early.
+    # UsersFlow / AnsiblePath are optional in the vault payload so older
+    # E2EConfig files do not need a re-write to keep working. When absent,
+    # Invoke-E2EAgentLoop's defaults (ansible flow + the conventional
+    # repo path) apply. Strict mode requires guarded property access.
+    $vaultUsersFlow   = $null
+    $vaultAnsiblePath = $null
+    if ($config.PSObject.Properties['UsersFlow'])   { $vaultUsersFlow   = $config.UsersFlow }
+    if ($config.PSObject.Properties['AnsiblePath']) { $vaultAnsiblePath = $config.AnsiblePath }
+
     while ([DateTime]::UtcNow -lt $globalDeadline) {
         try {
-            Invoke-E2EAgentLoop `
-                -AppId                 $config.AppId `
-                -E2EInstallationId     $config.E2EInstallationId `
-                -RunnersInstallationId $config.RunnersInstallationId `
-                -PrivateKeyPath        $config.PrivateKeyPath `
-                -ProvisionerPath       $config.ProvisionerPath `
-                -UsersPath             $config.UsersPath `
-                -RunnersPath           $config.RunnersPath `
-                -HostTarballCachePath  $config.HostTarballCachePath `
-                -TestVm                $config.TestVm `
-                -Owner               $config.Owner `
-                -Repo                $config.Repo `
-                -Environment         $config.Environment `
-                -PollIntervalSeconds $config.PollIntervalSeconds `
-                -TimeoutMinutes      $config.TimeoutMinutes
+            $loopParams = @{
+                AppId                 = $config.AppId
+                E2EInstallationId     = $config.E2EInstallationId
+                RunnersInstallationId = $config.RunnersInstallationId
+                PrivateKeyPath        = $config.PrivateKeyPath
+                ProvisionerPath       = $config.ProvisionerPath
+                UsersPath             = $config.UsersPath
+                RunnersPath           = $config.RunnersPath
+                HostTarballCachePath  = $config.HostTarballCachePath
+                TestVm                = $config.TestVm
+                Owner                 = $config.Owner
+                Repo                  = $config.Repo
+                Environment           = $config.Environment
+                PollIntervalSeconds   = $config.PollIntervalSeconds
+                TimeoutMinutes        = $config.TimeoutMinutes
+            }
+            if ($vaultUsersFlow)   { $loopParams['UsersFlow']   = $vaultUsersFlow }
+            if ($vaultAnsiblePath) { $loopParams['AnsiblePath'] = $vaultAnsiblePath }
+
+            Invoke-E2EAgentLoop @loopParams
         }
         catch [System.Management.Automation.PipelineStoppedException] {
             throw

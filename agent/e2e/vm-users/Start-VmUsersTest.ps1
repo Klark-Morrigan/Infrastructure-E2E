@@ -34,6 +34,18 @@ param(
     # Absolute path to the Infrastructure-Vm-Users repo root.
     [string] $UsersPath = 'C:\a_Code\Infrastructure-Vm-Users',
 
+    # Selects the create-users implementation. Default 'ansible' so the
+    # post-feature-02 primary path runs with no extra flags; pass
+    # 'custom-powershell' to keep validating the original Vm-Users flow.
+    # Both flows are permanent first-class peers - neither is legacy.
+    [ValidateSet('custom-powershell', 'ansible')]
+    [string] $UsersFlow = 'ansible',
+
+    # Absolute path to the Infrastructure-VM-Ansible repo root. Required
+    # when -UsersFlow ansible (the default); ignored otherwise. The
+    # dispatcher fails fast when it is missing under UsersFlow=ansible.
+    [string] $AnsiblePath = 'C:\a_Code\Infrastructure-VM-Ansible',
+
     # Ubuntu version to provision.
     [string] $UbuntuVersion = '24.04',
 
@@ -69,6 +81,8 @@ $ErrorActionPreference = 'Stop'
 Invoke-VmUsersTest -Config ([PSCustomObject]@{
     ProvisionerPath = $ProvisionerPath
     UsersPath       = $UsersPath
+    UsersFlow       = $UsersFlow
+    AnsiblePath     = $AnsiblePath
     TestVm          = [PSCustomObject]@{
         ubuntuVersion = $UbuntuVersion
         ipAddress     = $IpAddress
