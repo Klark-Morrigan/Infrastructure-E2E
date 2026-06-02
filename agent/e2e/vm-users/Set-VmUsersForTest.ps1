@@ -69,7 +69,17 @@ function Set-VmUsersForTest {
             }
             # --cd because the bridge resolves .venv/bin/activate, the
             # helpers, and the playbook path relative to the repo root.
-            & wsl --cd $AnsiblePath -- ./ops/create-users.sh
+            #
+            # `bash -lc` (login shell) rather than direct `./ops/...`:
+            # `wsl --` execs the script via the kernel, which reads the
+            # `#!/usr/bin/env bash` shebang and runs env. env then needs
+            # bash on PATH - but the non-interactive wsl call inherits
+            # the calling PS process's sparse PATH, with no /etc/profile
+            # sourced, so /usr/bin is often absent and env fails with
+            # `env: can't execute 'bash': No such file or directory`.
+            # A login shell sources /etc/profile, fixing PATH for the
+            # whole bridge chain in one place.
+            & wsl --cd $AnsiblePath -- bash -lc './ops/create-users.sh'
             if ($LASTEXITCODE -ne 0) {
                 throw "Ansible create-users.sh exited $LASTEXITCODE"
             }
