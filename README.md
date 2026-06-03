@@ -156,6 +156,7 @@ following in the `E2EConfig` vault:
   "UsersPath":           "C:\\a_Code\\Infrastructure-Vm-Users",
   "UsersFlow":           "ansible",                                   // optional - 'ansible' (default) or 'custom-powershell'
   "AnsiblePath":         "C:\\a_Code\\Infrastructure-VM-Ansible",     // optional - required when UsersFlow=ansible
+  "WslDistro":           "Ubuntu-24.04",                              // optional - required when UsersFlow=ansible; see Infrastructure-VM-Ansible README Troubleshooting
   "RunnersPath":         "C:\\a_Code\\Infrastructure-GitHubRunners",
   "HostTarballCachePath": "C:\\cache\\github-runners",
   "TestVm": {
