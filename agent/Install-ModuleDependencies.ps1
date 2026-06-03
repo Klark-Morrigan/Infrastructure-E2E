@@ -80,10 +80,17 @@ if (-not $_nuget -or $_nuget.Version -lt [Version]'2.8.5.201') {
 
 # Step 2 - PowerShell.Common (chicken-and-egg bootstrap).
 #
+# The 6.2.0 floor is the first version that ships Assert-WslHasBash,
+# called from Start-E2EAgent.ps1 to fail-fast when the named WSL distro
+# does not have bash. An older 6.x in CurrentUser's module path would
+# pass a looser version check and the agent would crash mid-startup
+# with `The term 'Assert-WslHasBash' is not recognized`. Both the
+# Get-Module gate and the Install-Module pin must move in lockstep -
+# the gate decides whether to reinstall; the pin decides what to fetch.
 $_common = Get-Module -ListAvailable -Name PowerShell.Common |
     Sort-Object Version -Descending | Select-Object -First 1
-if (-not $_common -or $_common.Version -lt [Version]'5.1.0') {
-    Install-PowerShellCommonWithRetry -MinimumVersion '6.0.0'
+if (-not $_common -or $_common.Version -lt [Version]'6.2.0') {
+    Install-PowerShellCommonWithRetry -MinimumVersion '6.2.0'
     # Re-query so the comparison below uses the freshly installed version.
     $_common = Get-Module -ListAvailable -Name PowerShell.Common |
         Sort-Object Version -Descending | Select-Object -First 1
