@@ -34,10 +34,10 @@ function Invoke-VmProvisioningTeardown {
     )
 
     Write-Host 'Deprovisioning VM(s) ...' -ForegroundColor Magenta
-    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\deprovision.ps1"
+    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\deprovision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
 
     Write-Host 'Removing test VmProvisionerConfig from vault ...' -ForegroundColor Magenta
-    Remove-Secret -Vault VmProvisioner -Name VmProvisionerConfig
+    Remove-Secret -Vault VmProvisioner -Name (Get-E2ESecretName 'VmProvisionerConfig')
 
     Invoke-VmTeardownAssertions -Config $Config
 }

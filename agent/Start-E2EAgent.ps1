@@ -40,7 +40,18 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [int] $RuntimeHours = 1
+    [int] $RuntimeHours = 1,
+
+    # Required. The agent's own persistent config is read as
+    # `E2EConfig-<Suffix>`. Operator launches pass `Production`. The
+    # agent's lifecycle-internal test fixtures (VmProvisionerConfig,
+    # VmUsersConfig, GitHubRunnersConfig) use a separate `E2E` suffix
+    # so they're isolated from the operator's persistent vault
+    # entries even if the operator runs production workflows on the
+    # same workstation.
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string] $SecretSuffix
 )
 
 Set-StrictMode -Version Latest
@@ -357,9 +368,10 @@ if ($MyInvocation.InvocationName -ne '.') {
     # }
     # ---------------------------------------------------------------------------
 
-    Write-Host 'Reading E2EConfig from vault ...' -ForegroundColor Cyan
+    $e2eSecretName = "E2EConfig-$SecretSuffix"
+    Write-Host "Reading $e2eSecretName from vault ..." -ForegroundColor Cyan
 
-    $configJson = Get-InfrastructureSecret -VaultName 'E2EConfig' -SecretName 'E2EConfig'
+    $configJson = Get-InfrastructureSecret -VaultName 'E2EConfig' -SecretName $e2eSecretName
     $config     = $configJson | ConvertFrom-Json
 
     $globalDeadline = [DateTime]::UtcNow.AddHours($RuntimeHours)

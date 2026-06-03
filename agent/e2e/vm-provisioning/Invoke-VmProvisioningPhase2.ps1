@@ -101,7 +101,7 @@ function Invoke-VmProvisioningPhase2 {
 
     Write-Host 'Phase 2a: provisioning (uninstall via absent on VM1, create VM2) ...' `
         -ForegroundColor Magenta
-    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1"
+    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
 
     Write-Host "Phase 2a: verifying uninstall-via-absent on $($Vm1Def.vmName) ..." `
         -ForegroundColor Magenta
@@ -252,7 +252,7 @@ function Invoke-VmProvisioningPhase2 {
 
     Write-Host 'Phase 2b: provisioning (re-add JDK on VM1) ...' `
         -ForegroundColor Magenta
-    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1"
+    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
 
     Write-Host "Phase 2b: verifying JDK $($script:JdkReinstallVersion) + dotnet SDK $($script:DotnetReinstallResolvedVersion) reinstalled on $($Vm1Def.vmName) ..." `
         -ForegroundColor Magenta

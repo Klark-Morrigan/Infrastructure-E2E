@@ -65,7 +65,7 @@ function Set-VmUsersForTest {
             # The invocation that lived inline in Invoke-VmUsersSetup
             # before this step. Identical surface so the existing flow
             # remains a first-class peer of the Ansible one.
-            & "$UsersPath\hyper-v\ubuntu\create-users.ps1"
+            & "$UsersPath\hyper-v\ubuntu\create-users.ps1" -SecretSuffix $script:E2ETestSecretSuffix
             if ($LASTEXITCODE -ne 0) {
                 throw "custom-powershell create-users.ps1 exited $LASTEXITCODE"
             }

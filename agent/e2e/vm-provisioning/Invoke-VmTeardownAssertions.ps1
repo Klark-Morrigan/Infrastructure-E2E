@@ -84,11 +84,12 @@ function Invoke-VmTeardownAssertions {
     }
 
     # VmProvisionerConfig removed from the vault.
-    if ($null -ne (Get-SecretInfo -Vault VmProvisioner -Name VmProvisionerConfig `
+    $provisionerSecretName = Get-E2ESecretName 'VmProvisionerConfig'
+    if ($null -ne (Get-SecretInfo -Vault VmProvisioner -Name $provisionerSecretName `
             -ErrorAction SilentlyContinue)) {
-        throw "Teardown incomplete: VmProvisionerConfig still present in vault."
+        throw "Teardown incomplete: $provisionerSecretName still present in vault."
     }
-    Write-Host '  [OK] VmProvisionerConfig removed from vault.' -ForegroundColor Green
+    Write-Host "  [OK] $provisionerSecretName removed from vault." -ForegroundColor Green
 
     # E2E-VmLAN switch + NAT are exclusive to this test so no guard is
     # needed - any leftover here means teardown failed.
