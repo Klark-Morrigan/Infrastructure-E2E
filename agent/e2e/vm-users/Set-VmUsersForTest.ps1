@@ -46,6 +46,13 @@ function Set-VmUsersForTest {
         # rather than at the underlying wsl invocation.
         [string] $AnsiblePath,
 
+        # Name of the WSL distro the Ansible bridge runs inside.
+        # Required when UsersFlow=ansible; ignored otherwise. Passed to
+        # `wsl -d <name> --` so the dispatcher does not depend on the
+        # operator's WSL default (which Docker Desktop silently moves
+        # to its no-bash 'docker-desktop' engine distro).
+        [string] $WslDistro,
+
         [Parameter(Mandatory)]
         [PSCustomObject] $VmDef,
 
@@ -67,28 +74,45 @@ function Set-VmUsersForTest {
             if (-not $AnsiblePath) {
                 throw 'UsersFlow=ansible requires -AnsiblePath'
             }
-            # Push-Location + `wsl --` rather than `wsl --cd <path> --`:
+            if (-not $WslDistro) {
+                throw 'UsersFlow=ansible requires -WslDistro'
+            }
+            # Push-Location + `wsl -d <distro> --`:
             #
-            # `wsl --cd <windows-path> -- <cmd>` routes through a
-            # /bin/sh -c "cd <path>; <cmd>" interop layer that inherits
-            # the calling PowerShell process's sparse PATH (no /usr/bin),
-            # so even `bash` cannot be found by name and the call dies
-            # with `/bin/sh: bash: not found`. Bypassing the kernel-side
-            # shebang on `./ops/create-users.sh` hits the same sparse
-            # PATH a different way: `env: can't execute 'bash': No such
-            # file or directory`.
+            # `-d <distro>` targets the bash-having Linux distro the
+            # operator bootstrapped against, regardless of what the
+            # workstation's WSL default happens to be. Docker Desktop's
+            # installer silently changes the default to its minimal
+            # `docker-desktop` engine distro (busybox + no bash), so a
+            # bare `wsl --` here would otherwise fail with
+            # `env: can't execute 'bash': No such file or directory`
+            # the next time Docker Desktop is installed or upgraded.
             #
-            # The bootstrap script (Infrastructure-VM-Ansible/ops/
-            # bootstrap-controller.ps1) uses Push-Location $RepoRoot +
-            # `wsl -- ./ops/_bootstrap-controller-wsl.sh` and works
-            # cleanly. Mirroring that shape here avoids the --cd sh
-            # wrapper entirely: wsl execs the script directly with its
-            # normal startup PATH (/usr/bin included), the kernel
-            # resolves the shebang, env finds bash, the bridge chain
-            # runs.
+            # Push-Location anchors PowerShell's cwd at the repo root
+            # so wsl inherits it as the Linux cwd. `wsl --cd <path>`
+            # would do the same, but it routes the command through a
+            # /bin/sh -c "cd <path>; <cmd>" interop layer with a sparse
+            # PATH inherited from the calling PS process - and that sh
+            # layer cannot find `bash` by name. Push-Location avoids
+            # that wrapper entirely; wsl execs the script directly with
+            # its normal startup PATH.
             Push-Location $AnsiblePath
             try {
-                & wsl -- ./ops/create-users.sh
+                # `2>&1 | Out-Host`: the wsl invocation is a native
+                # command, and its stdout/stderr otherwise get collected
+                # into this function's pipeline output. Whoever calls
+                # Set-VmUsersForTest in a subexpression / assignment
+                # context (or upstream of any cmdlet pipe) consumes that
+                # pipeline and silently drops ansible-playbook's output,
+                # leaving the operator to debug an exit code with no
+                # error text. Merge stderr first (2>&1), then write
+                # straight to the host display via Out-Host, bypassing
+                # the function pipeline entirely. `$LASTEXITCODE` is set
+                # by the native command and unaffected by the downstream
+                # cmdlet. Same gotcha as bootstrap-controller.ps1's
+                # wsl-invocation fix; see that file for the canonical
+                # explanation.
+                & wsl -d $WslDistro -- ./ops/create-users.sh 2>&1 | Out-Host
             }
             finally {
                 Pop-Location

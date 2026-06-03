@@ -46,6 +46,13 @@ param(
     # dispatcher fails fast when it is missing under UsersFlow=ansible.
     [string] $AnsiblePath = 'C:\a_Code\Infrastructure-VM-Ansible',
 
+    # Name of the WSL distro the Ansible bridge runs inside. Required
+    # when -UsersFlow ansible (the default); ignored otherwise. Passed
+    # via `wsl -d <name>` so the test does not depend on the
+    # workstation's WSL default (which Docker Desktop silently
+    # changes to its no-bash 'docker-desktop' engine distro).
+    [string] $WslDistro = 'Ubuntu-24.04',
+
     # Ubuntu version to provision.
     [string] $UbuntuVersion = '24.04',
 
@@ -83,6 +90,7 @@ Invoke-VmUsersTest -Config ([PSCustomObject]@{
     UsersPath       = $UsersPath
     UsersFlow       = $UsersFlow
     AnsiblePath     = $AnsiblePath
+    WslDistro       = $WslDistro
     TestVm          = [PSCustomObject]@{
         ubuntuVersion = $UbuntuVersion
         ipAddress     = $IpAddress

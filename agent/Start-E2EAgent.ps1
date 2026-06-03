@@ -116,6 +116,15 @@ function Invoke-E2EAgentLoop {
         [Parameter()]
         [string] $AnsiblePath,
 
+        # Name of the WSL distro to run the Ansible bridge inside. Passed
+        # via `wsl -d <name>` so the agent does not depend on the
+        # workstation's WSL default - Docker Desktop's installer silently
+        # changes the default to its no-bash `docker-desktop` engine
+        # distro, which broke this code path until the explicit -d was
+        # added. Required when UsersFlow=ansible (the default).
+        [Parameter()]
+        [string] $WslDistro,
+
         # Absolute path to the Infrastructure-GitHubRunners repo root on
         # the workstation. Passed to the lifecycle test so it can call
         # register-runners.ps1 and deregister-runners.ps1.
@@ -166,11 +175,16 @@ function Invoke-E2EAgentLoop {
         $Deadline = [DateTime]::UtcNow.AddMinutes($TimeoutMinutes)
     }
 
-    # Fail-fast: validate AnsiblePath at startup so a misconfigured
-    # session does not build a VM and only then discover the bridge
-    # is unreachable. custom-powershell ignores the path; only the
-    # ansible flow needs it. Test directly under WSL is out of scope
-    # here - the dispatcher does that when it actually runs.
+    # Fail-fast: validate AnsiblePath and WslDistro at startup so a
+    # misconfigured session does not build a VM and only then discover
+    # the bridge is unreachable. custom-powershell ignores both; only
+    # the ansible flow needs them.
+    #
+    # WslDistro is verified up-front via Assert-WslHasBash from
+    # PowerShell.Common - that catches the docker-desktop-default trap
+    # (no bash) named in the parameter docs, and surfaces a
+    # WslMissingBash: error with a remediation hint instead of letting
+    # the bridge fail mid-test with a sparse-PATH error.
     if ($UsersFlow -eq 'ansible') {
         if (-not $AnsiblePath) {
             throw "UsersFlow='ansible' requires -AnsiblePath."
@@ -178,6 +192,10 @@ function Invoke-E2EAgentLoop {
         if (-not (Test-Path -LiteralPath $AnsiblePath -PathType Container)) {
             throw "AnsiblePath '$AnsiblePath' does not exist or is not a directory."
         }
+        if (-not $WslDistro) {
+            throw "UsersFlow='ansible' requires -WslDistro."
+        }
+        Assert-WslHasBash -DistroName $WslDistro
     }
 
     # Derive display value from the resolved Deadline so injected deadlines
@@ -239,6 +257,7 @@ function Invoke-E2EAgentLoop {
                     UsersPath             = $UsersPath
                     UsersFlow             = $UsersFlow
                     AnsiblePath           = $AnsiblePath
+                    WslDistro             = $WslDistro
                     RunnersPath           = $RunnersPath
                     HostTarballCachePath  = $HostTarballCachePath
                     Owner                 = $Owner
@@ -351,14 +370,19 @@ if ($MyInvocation.InvocationName -ne '.') {
     # deadline is checked at session boundaries so the agent stops without
     # operator intervention. PipelineStoppedException (Ctrl+C) is re-thrown
     # so the operator can also stop it early.
-    # UsersFlow / AnsiblePath are optional in the vault payload so older
-    # E2EConfig files do not need a re-write to keep working. When absent,
-    # Invoke-E2EAgentLoop's defaults (ansible flow + the conventional
-    # repo path) apply. Strict mode requires guarded property access.
+    # UsersFlow / AnsiblePath / WslDistro are optional in the vault
+    # payload so older E2EConfig files do not need a re-write to keep
+    # working. When absent, Invoke-E2EAgentLoop's defaults (ansible
+    # flow + the conventional repo path) apply, and WslDistro has no
+    # default - the loop will fail-fast with a named error so the
+    # operator adds it to the vault rather than the agent guessing.
+    # Strict mode requires guarded property access.
     $vaultUsersFlow   = $null
     $vaultAnsiblePath = $null
+    $vaultWslDistro   = $null
     if ($config.PSObject.Properties['UsersFlow'])   { $vaultUsersFlow   = $config.UsersFlow }
     if ($config.PSObject.Properties['AnsiblePath']) { $vaultAnsiblePath = $config.AnsiblePath }
+    if ($config.PSObject.Properties['WslDistro'])   { $vaultWslDistro   = $config.WslDistro }
 
     while ([DateTime]::UtcNow -lt $globalDeadline) {
         try {
@@ -380,6 +404,7 @@ if ($MyInvocation.InvocationName -ne '.') {
             }
             if ($vaultUsersFlow)   { $loopParams['UsersFlow']   = $vaultUsersFlow }
             if ($vaultAnsiblePath) { $loopParams['AnsiblePath'] = $vaultAnsiblePath }
+            if ($vaultWslDistro)   { $loopParams['WslDistro']   = $vaultWslDistro }
 
             Invoke-E2EAgentLoop @loopParams
         }

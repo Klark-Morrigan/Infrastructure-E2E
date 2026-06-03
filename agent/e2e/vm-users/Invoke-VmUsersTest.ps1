@@ -139,14 +139,16 @@ function Invoke-VmUsersSetup {
     Invoke-VmProvisioningPhase1 -Config $Config -Vm1Def $vmDef
 
     Write-Host "Reconciling users via '$($Config.UsersFlow)' flow ..." -ForegroundColor Magenta
-    # $Config carries UsersFlow + AnsiblePath from Start-E2EAgent /
-    # Start-VmUsersTest. AnsiblePath is optional in the dispatcher and
-    # ignored unless UsersFlow=ansible; the agent-loop validates its
-    # presence at startup so a missing path fails before the VM is built.
+    # $Config carries UsersFlow + AnsiblePath + WslDistro from
+    # Start-E2EAgent / Start-VmUsersTest. AnsiblePath and WslDistro
+    # are optional in the dispatcher and ignored unless
+    # UsersFlow=ansible; the agent-loop validates their presence at
+    # startup so a missing value fails before the VM is built.
     Set-VmUsersForTest `
         -UsersFlow   $Config.UsersFlow `
         -UsersPath   $Config.UsersPath `
         -AnsiblePath $Config.AnsiblePath `
+        -WslDistro   $Config.WslDistro `
         -VmDef       $vmDef `
         -Entry       $Entry
 

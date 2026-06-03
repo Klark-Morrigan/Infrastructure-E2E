@@ -78,7 +78,8 @@ if (-not $_nuget -or $_nuget.Version -lt [Version]'2.8.5.201') {
         -Scope CurrentUser -Force -ForceBootstrap | Out-Null
 }
 
-# Step 2 - PowerShell.Common (chicken-and-egg bootstrap)
+# Step 2 - PowerShell.Common (chicken-and-egg bootstrap).
+#
 $_common = Get-Module -ListAvailable -Name PowerShell.Common |
     Sort-Object Version -Descending | Select-Object -First 1
 if (-not $_common -or $_common.Version -lt [Version]'5.1.0') {
