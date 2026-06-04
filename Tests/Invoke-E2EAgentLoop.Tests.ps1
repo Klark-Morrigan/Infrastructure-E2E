@@ -5,8 +5,20 @@ BeforeAll {
     function Get-PendingDeployment      { param($Token, $Owner, $Repo, $Environment) }
     function Set-DeploymentStatus       { param($Token, $Owner, $Repo, $DeploymentId, $State, $Description, $LogUrl) }
     function Invoke-RunnerLifecycleTest { param($Config) }
+    # Assert-WslHasBash is a PowerShell.Common cmdlet the ansible-flow
+    # startup validation calls to catch the docker-desktop-default trap
+    # (a no-bash WSL distro). Stub it as a no-op so the unit tests are not
+    # forced to actually have WSL installed.
+    function Assert-WslHasBash          { param($DistroName) }
 
-    . "$PSScriptRoot\..\agent\Start-E2EAgent.ps1"
+    # Start-E2EAgent.ps1 now declares -SecretSuffix as a mandatory
+    # top-level parameter. Dot-sourcing without binding it would trip
+    # the parameter binder before the function-definition body runs.
+    # The script's "main" body has its own dot-source guard
+    # ($MyInvocation.InvocationName -ne '.'), so the dummy value is
+    # never read - only the parameter slot needs to be satisfied so
+    # Invoke-E2EAgentLoop becomes defined in the test scope.
+    . "$PSScriptRoot\..\agent\Start-E2EAgent.ps1" -SecretSuffix 'tests'
 }
 
 Describe 'Invoke-E2EAgentLoop' {
@@ -30,6 +42,9 @@ Describe 'Invoke-E2EAgentLoop' {
             UsersPath             = 'C:\test\users'
             UsersFlow             = 'ansible'
             AnsiblePath           = $Script:AnsiblePath
+            # WslDistro is required when UsersFlow=ansible; the value is
+            # not exercised here (Assert-WslHasBash is stubbed above).
+            WslDistro             = 'Ubuntu-24.04'
             RunnersPath           = 'C:\test\runners'
             HostTarballCachePath  = 'C:\test\tarball-cache'
             TestVm                = [PSCustomObject]@{
