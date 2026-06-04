@@ -3,6 +3,15 @@ BeforeAll {
     # own; Pester runs in a fresh runspace per file.
     . "$PSScriptRoot\..\agent\e2e\vm-users\Set-VmUsersForTest.ps1"
 
+    # The dispatcher reads $script:E2ETestSecretSuffix, which production
+    # sets via Initialize-E2EEnvironment.ps1 (the bootstrap that dot-sources
+    # the agent's per-step scripts into one shared script scope). Unit tests
+    # bypass the bootstrap, so the variable would be unset at lookup time
+    # and StrictMode would turn the read into a RuntimeException. Seed it
+    # here; the value is never observed (the fixture create-users.ps1
+    # scripts ignore -SecretSuffix because they have no param block).
+    $script:E2ETestSecretSuffix = 'TEST'
+
     # Shared fixture - VmDef + Entry shapes the dispatcher only forwards.
     # Neither is touched by either flow today (both read everything from
     # the vault) but they are mandatory params so production callers
@@ -98,12 +107,17 @@ Describe 'Set-VmUsersForTest' {
             $Script:UsersPath   = Join-Path $TestDrive 'Vm-Users'
         }
 
-        It 'invokes wsl --cd AnsiblePath -- ./ops/create-users.sh' {
-            $Script:Captured = [System.Collections.Generic.List[string]]::new()
+        It 'invokes wsl -d <distro> -- ./ops/create-users.sh from AnsiblePath' {
+            $Script:Captured    = [System.Collections.Generic.List[string]]::new()
+            $Script:CapturedCwd = $null
             # Function shadow for wsl. $args captures all unparsed tokens
-            # so we can assert the full surface, not just presence.
+            # so we can assert the full surface, not just presence. The
+            # dispatcher now anchors cwd via Push-Location instead of
+            # `wsl --cd`, so we capture (Get-Location) at call time to
+            # assert it equals AnsiblePath.
             function wsl {
                 foreach ($a in $args) { $Script:Captured.Add([string]$a) }
+                $Script:CapturedCwd  = (Get-Location).Path
                 $global:LASTEXITCODE = 0
             }
 
@@ -111,6 +125,7 @@ Describe 'Set-VmUsersForTest' {
                 -UsersFlow   'ansible' `
                 -UsersPath   $Script:UsersPath `
                 -AnsiblePath $Script:AnsiblePath `
+                -WslDistro   'Ubuntu-24.04' `
                 -VmDef       $Script:VmDef `
                 -Entry       $Script:Entry
 
@@ -119,7 +134,8 @@ Describe 'Set-VmUsersForTest' {
             # it - but production wsl.exe (a native exe) does receive
             # the '--' verbatim. Assert the surrounding tokens only.
             $joined = $Script:Captured -join ' '
-            $joined | Should -Match '^--cd .+Ansible(\s+--)?\s+\./ops/create-users\.sh$'
+            $joined | Should -Match '^-d Ubuntu-24\.04(\s+--)?\s+\./ops/create-users\.sh$'
+            $Script:CapturedCwd | Should -Be $Script:AnsiblePath
         }
 
         It 'throws when AnsiblePath is missing' {
@@ -138,6 +154,7 @@ Describe 'Set-VmUsersForTest' {
                 -UsersFlow   'ansible' `
                 -UsersPath   $Script:UsersPath `
                 -AnsiblePath $Script:AnsiblePath `
+                -WslDistro   'Ubuntu-24.04' `
                 -VmDef       $Script:VmDef `
                 -Entry       $Script:Entry
             } | Should -Throw '*exited 9*'
@@ -156,6 +173,7 @@ Describe 'Set-VmUsersForTest' {
                 -UsersFlow   'ansible' `
                 -UsersPath   $Script:UsersPath `
                 -AnsiblePath $Script:AnsiblePath `
+                -WslDistro   'Ubuntu-24.04' `
                 -VmDef       $Script:VmDef `
                 -Entry       $Script:Entry
             } | Should -Not -Throw
