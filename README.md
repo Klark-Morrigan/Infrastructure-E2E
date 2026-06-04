@@ -31,8 +31,12 @@ polling agent that receives signals from GitHub Actions workflows.
 - Unit or integration tests for individual repos - those live in their
   own repos.
 - Provisioning, user management, or runner registration - those are
-  delegated to `Infrastructure-Vm-Provisioner`, `Infrastructure-Vm-Users`,
-  and `Infrastructure-GitHubRunners` respectively.
+  delegated to `Infrastructure-Vm-Provisioner`,
+  `Infrastructure-VM-Ansible` (primary) and `Infrastructure-Vm-Users`
+  (custom-powershell flow), and `Infrastructure-GitHubRunners`
+  respectively. User reconciliation and removal each have two
+  first-class implementations selected at agent startup via
+  `UsersFlow`.
 
 ---
 
@@ -377,7 +381,7 @@ its own assertions on top.
 | Layer | Script | Asserts |
 |---|---|---|
 | VM provisioning | `agent/e2e/vm-provisioning/Invoke-VmProvisioningTest.ps1` | Four-phase install / uninstall / re-install / deprovision lifecycle over two VMs (see [VM provisioning test](#vm-provisioning-test)). Each phase asserts: VM is reachable via SSH; cloud-init completed; root filesystem not full. Per-phase: phase 1 - JDK 21 installed on VM1 (`JAVA_HOME`, login + non-login `PATH`, `java -version` prefix), mixed `files` array landed - single fixture at target + three `*.jar` fixtures under `/opt/ci-jars` (per-file SHA-256, `root:root`, `0644`); phase 2 - VM1 JDK removed (install dir, `/etc/profile.d/jdk.sh`, stale symlinks all gone), VM2 has no JDK artifacts, file-transfer targets on VM1 idempotent vs phase-1 snapshot; phase 3 - JDK 17 active on VM1, VM2 still has no JDK artifacts; phase 4 - both VMs and their disk artifacts removed, host-side JDK cache for both versions preserved |
-| VM users | `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` | Expected OS groups exist; expected users exist with correct shell and group membership; sudoers files are in place. The create half dispatches via [`Set-VmUsersForTest.ps1`](agent/e2e/vm-users/Set-VmUsersForTest.ps1) - selecting `UsersFlow=ansible` (default) runs `Infrastructure-VM-Ansible/ops/create-users.sh` under WSL; `UsersFlow=custom-powershell` runs `Infrastructure-Vm-Users/hyper-v/ubuntu/create-users.ps1`. The teardown half stays on the PowerShell remove path for both flows until the Ansible repo grows a remove-users playbook. |
+| VM users | `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` | Expected OS groups exist; expected users exist with correct shell and group membership; sudoers files are in place. The create half dispatches via [`Set-VmUsersForTest.ps1`](agent/e2e/vm-users/Set-VmUsersForTest.ps1) - selecting `UsersFlow=ansible` (default) runs `Infrastructure-VM-Ansible/ops/create-users.sh` under WSL; `UsersFlow=custom-powershell` runs `Infrastructure-Vm-Users/hyper-v/ubuntu/create-users.ps1`. The teardown half dispatches symmetrically via [`Remove-VmUsersForTest.ps1`](agent/e2e/vm-users/Remove-VmUsersForTest.ps1) - `UsersFlow=ansible` runs `Infrastructure-VM-Ansible/ops/remove-users.sh` (feature 03 of that repo); `UsersFlow=custom-powershell` runs `Infrastructure-Vm-Users/hyper-v/ubuntu/remove-users.ps1`. Both halves are first-class permanent peers and either pairing is supported - an `ansible` create can be torn down by a `custom-powershell` remove and vice versa, because both directions reconcile by username against the same on-VM contract. |
 | Runner lifecycle | `agent/e2e/runner-lifecycle/Invoke-RunnerLifecycleTest.ps1` | Runner systemd service is active; runner appears online in the GitHub API |
 
 The polling agent (`Start-E2EAgent.ps1`) always runs the full runner
@@ -417,6 +421,7 @@ agent/
       Invoke-VmUsersTest.ps1               - vm-users E2E + re-asserts after phases 2, 3
       Invoke-VmUsersStillIntactAssertions.ps1 - "users untouched" re-verification block
       Set-VmUsersForTest.ps1               - create-side dispatcher (custom-powershell | ansible)
+      Remove-VmUsersForTest.ps1            - teardown dispatcher (custom-powershell | ansible)
     runner-lifecycle/
       Invoke-RunnerLifecycleTest.ps1            - Full lifecycle E2E + re-asserts after phases 2, 3
       Invoke-RunnerStillOnlineAssertions.ps1    - "runner still active + online" re-verification block
@@ -425,6 +430,7 @@ agent/
 Tests/
   Invoke-E2EAgentLoop.Tests.ps1    - Unit tests for the polling loop
   Set-VmUsersForTest.Tests.ps1     - Unit tests for the create-side flow dispatcher
+  Remove-VmUsersForTest.Tests.ps1  - Unit tests for the teardown flow dispatcher
 docs/
   dev/
     implementation/                - Problem and plan docs per implementation phase

@@ -16,6 +16,14 @@
 # used to live in Invoke-VmUsersSetup.
 . "$PSScriptRoot\Set-VmUsersForTest.ps1"
 
+# Remove-side dispatcher: symmetric peer of Set-VmUsersForTest, selecting
+# the same UsersFlow. Replaces the inline remove-users.ps1 invocation
+# that used to live in Invoke-VmUsersTeardown. Lets the Ansible
+# remove-users.sh path (feature 03 of Infrastructure-VM-Ansible) run
+# under UsersFlow=ansible while custom-powershell keeps the legacy
+# Vm-Users path as a first-class peer.
+. "$PSScriptRoot\Remove-VmUsersForTest.ps1"
+
 # ---------------------------------------------------------------------------
 # Assert-VmUsersStillIntact
 #   Opens a fresh SSH session to the VM and re-asserts that every user
@@ -271,8 +279,20 @@ function Invoke-VmUsersTeardown {
     }
 
     try {
-        Write-Host 'Removing users ...' -ForegroundColor Magenta
-        & "$($Config.UsersPath)\hyper-v\ubuntu\remove-users.ps1" -SecretSuffix $script:E2ETestSecretSuffix
+        Write-Host "Removing users via '$($Config.UsersFlow)' flow ..." -ForegroundColor Magenta
+        # $Config carries UsersFlow + AnsiblePath + WslDistro from
+        # Start-E2EAgent / Start-VmUsersTest, same chain that feeds the
+        # create-side dispatcher above. AnsiblePath / WslDistro are
+        # validated at agent startup so a misconfigured session fails
+        # before any VM is built; the dispatcher re-checks them here as
+        # belt-and-braces.
+        Remove-VmUsersForTest `
+            -UsersFlow   $Config.UsersFlow `
+            -UsersPath   $Config.UsersPath `
+            -AnsiblePath $Config.AnsiblePath `
+            -WslDistro   $Config.WslDistro `
+            -VmDef       $VmDef `
+            -Entry       $Entry
 
         # Assert users, home directories, sudoers files, and declared groups are
         # gone - while the VM is still alive. This must run before
