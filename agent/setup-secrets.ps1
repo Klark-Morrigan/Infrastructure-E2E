@@ -18,15 +18,29 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [string] $ConfigFile
+    [string] $ConfigFile,
+
+    # Required. The secret is written as `E2EConfig-<Suffix>`. Operator
+    # runs pass `Production`; ephemeral fixtures pass their own label.
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string] $SecretSuffix
 )
 
 . "$PSScriptRoot\Initialize-E2EEnvironment.ps1"
 
+# Forward the secret-store cmdlet only the params it knows about.
+$initParams = @{}
+foreach ($k in 'ConfigFile') {
+    if ($PSBoundParameters.ContainsKey($k)) {
+        $initParams[$k] = $PSBoundParameters[$k]
+    }
+}
+
 Initialize-MicrosoftPowerShellSecretStoreVault `
     -VaultName  'E2EConfig' `
-    -SecretName 'E2EConfig' `
-    @PSBoundParameters `
+    -SecretName "E2EConfig-$SecretSuffix" `
+    @initParams `
     -Validate {
         param($json)
         $config = $json | ConvertFrom-Json

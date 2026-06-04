@@ -5,8 +5,20 @@ BeforeAll {
     function Get-PendingDeployment      { param($Token, $Owner, $Repo, $Environment) }
     function Set-DeploymentStatus       { param($Token, $Owner, $Repo, $DeploymentId, $State, $Description, $LogUrl) }
     function Invoke-RunnerLifecycleTest { param($Config) }
+    # Assert-WslHasBash is a PowerShell.Common cmdlet the ansible-flow
+    # startup validation calls to catch the docker-desktop-default trap
+    # (a no-bash WSL distro). Stub it as a no-op so the unit tests are not
+    # forced to actually have WSL installed.
+    function Assert-WslHasBash          { param($DistroName) }
 
-    . "$PSScriptRoot\..\agent\Start-E2EAgent.ps1"
+    # Start-E2EAgent.ps1 now declares -SecretSuffix as a mandatory
+    # top-level parameter. Dot-sourcing without binding it would trip
+    # the parameter binder before the function-definition body runs.
+    # The script's "main" body has its own dot-source guard
+    # ($MyInvocation.InvocationName -ne '.'), so the dummy value is
+    # never read - only the parameter slot needs to be satisfied so
+    # Invoke-E2EAgentLoop becomes defined in the test scope.
+    . "$PSScriptRoot\..\agent\Start-E2EAgent.ps1" -SecretSuffix 'tests'
 }
 
 Describe 'Invoke-E2EAgentLoop' {
@@ -16,6 +28,11 @@ Describe 'Invoke-E2EAgentLoop' {
         # Deadline is intentionally absent here - set fresh each test by the
         # BeforeEach below so the loop does not spin for hours once the
         # deployment mock starts returning $null.
+        # AnsiblePath points at a real directory because the loop now
+        # validates the path exists at startup when UsersFlow=ansible
+        # (the default). Tests that exercise the validation override it.
+        $Script:AnsiblePath = $TestDrive
+
         $Script:BaseParams = @{
             AppId                 = 1
             E2EInstallationId     = 10
@@ -23,6 +40,11 @@ Describe 'Invoke-E2EAgentLoop' {
             PrivateKeyPath        = 'C:\test.pem'
             ProvisionerPath       = 'C:\test\provisioner'
             UsersPath             = 'C:\test\users'
+            UsersFlow             = 'ansible'
+            AnsiblePath           = $Script:AnsiblePath
+            # WslDistro is required when UsersFlow=ansible; the value is
+            # not exercised here (Assert-WslHasBash is stubbed above).
+            WslDistro             = 'Ubuntu-24.04'
             RunnersPath           = 'C:\test\runners'
             HostTarballCachePath  = 'C:\test\tarball-cache'
             TestVm                = [PSCustomObject]@{
@@ -140,6 +162,8 @@ Describe 'Invoke-E2EAgentLoop' {
             $Script:_config.PrivateKeyPath          | Should -Be 'C:\test.pem'
             $Script:_config.ProvisionerPath         | Should -Be 'C:\test\provisioner'
             $Script:_config.UsersPath               | Should -Be 'C:\test\users'
+            $Script:_config.UsersFlow               | Should -Be 'ansible'
+            $Script:_config.AnsiblePath             | Should -Be $Script:AnsiblePath
             $Script:_config.RunnersPath             | Should -Be 'C:\test\runners'
             $Script:_config.HostTarballCachePath    | Should -Be 'C:\test\tarball-cache'
             $Script:_config.Owner            | Should -Be 'org'
@@ -386,6 +410,72 @@ Describe 'Invoke-E2EAgentLoop' {
             Invoke-E2EAgentLoop @params
 
             Should -Invoke Get-PendingDeployment -Times 0
+        }
+    }
+
+    # ------------------------------------------------------------------
+    Context 'UsersFlow / AnsiblePath plumbing' {
+    # ------------------------------------------------------------------
+
+        It 'defaults UsersFlow to ansible when callers do not pass one' {
+            # Once feature 02 ships, the Ansible flow is the primary path.
+            # A regression that re-flips the default to custom-powershell
+            # would silently route every test session through the older
+            # flow - this assertion fails such a regression at unit time.
+            $Script:_def_config = $null
+            Mock Get-GitHubAppToken { $Script:FreshToken }
+            $script:_defCount = 0
+            Mock Get-PendingDeployment {
+                $script:_defCount++
+                if ($script:_defCount -eq 1) { return [PSCustomObject]@{ id = 99 } }
+                return $null
+            }
+            Mock Set-DeploymentStatus {}
+            Mock Invoke-RunnerLifecycleTest { $Script:_def_config = $Config }
+
+            # Clone BaseParams and strip UsersFlow so the default kicks in.
+            $params = $Script:BaseParams.Clone()
+            $params.Remove('UsersFlow')
+
+            Invoke-E2EAgentLoop @params
+
+            $Script:_def_config.UsersFlow | Should -Be 'ansible'
+        }
+
+        It "throws at startup when UsersFlow='ansible' and AnsiblePath is missing" {
+            # No mocks reachable: the validation runs before the polling
+            # loop starts, so no token / deployment calls happen.
+            $params = $Script:BaseParams.Clone()
+            $params.Remove('AnsiblePath')
+
+            { Invoke-E2EAgentLoop @params } | Should -Throw '*requires -AnsiblePath*'
+        }
+
+        It "throws at startup when AnsiblePath does not exist on disk" {
+            $params = $Script:BaseParams.Clone()
+            $params['AnsiblePath'] = 'C:\definitely\not\a\real\path-XYZ-12345'
+
+            { Invoke-E2EAgentLoop @params } |
+                Should -Throw '*does not exist*'
+        }
+
+        It "does not require AnsiblePath when UsersFlow='custom-powershell'" {
+            Mock Get-GitHubAppToken { $Script:FreshToken }
+            Mock Get-PendingDeployment { $null }
+            Mock Set-DeploymentStatus {}
+
+            $params = $Script:BaseParams.Clone()
+            $params['UsersFlow'] = 'custom-powershell'
+            $params.Remove('AnsiblePath')
+
+            { Invoke-E2EAgentLoop @params } | Should -Not -Throw
+        }
+
+        It "rejects unknown UsersFlow values at parameter binding time" {
+            $params = $Script:BaseParams.Clone()
+            $params['UsersFlow'] = 'legacy'
+
+            { Invoke-E2EAgentLoop @params } | Should -Throw '*ValidateSet*'
         }
     }
 

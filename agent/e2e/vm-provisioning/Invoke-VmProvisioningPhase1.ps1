@@ -94,7 +94,7 @@ function Invoke-VmProvisioningPhase1 {
     Write-VmProvisionerConfig -Entries @($entry)
 
     Write-Host 'Phase 1: provisioning VM1 ...' -ForegroundColor Magenta
-    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1"
+    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
 
     Write-Host "Phase 1: verifying post-conditions on $($Vm1Def.vmName) ..." `
         -ForegroundColor Magenta
@@ -182,7 +182,7 @@ function Invoke-VmProvisioningPhase1 {
     # reconciler must take the diff's no-op branch for every artifact.
     Write-Host 'Phase 1: re-provisioning VM1 with unchanged JSON (no-op) ...' `
         -ForegroundColor Magenta
-    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1"
+    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
 
     Write-Host "Phase 1: verifying no-op rerun did not touch JDK / dotnet artifacts ..." `
         -ForegroundColor Magenta

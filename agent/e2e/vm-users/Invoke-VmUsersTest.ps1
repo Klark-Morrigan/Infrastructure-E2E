@@ -11,6 +11,11 @@
 # re-provision did not disturb user / group state.
 . "$PSScriptRoot\Invoke-VmUsersStillIntactAssertions.ps1"
 
+# Create-side dispatcher: selects custom-powershell vs ansible based on
+# $Config.UsersFlow. Replaces the inline create-users.ps1 invocation that
+# used to live in Invoke-VmUsersSetup.
+. "$PSScriptRoot\Set-VmUsersForTest.ps1"
+
 # ---------------------------------------------------------------------------
 # Assert-VmUsersStillIntact
 #   Opens a fresh SSH session to the VM and re-asserts that every user
@@ -123,7 +128,7 @@ function Invoke-VmUsersSetup {
     Write-Host 'Writing test VmUsersConfig to vault ...' -ForegroundColor Magenta
     Set-Secret `
         -Vault  VmUsers `
-        -Name   VmUsersConfig `
+        -Name   (Get-E2ESecretName 'VmUsersConfig') `
         -Secret (ConvertTo-Json @($Entry) -Depth 5 -Compress)
 
     # Setup is provisioning-free (pre-check + identity pin). Phase 1 is
@@ -133,8 +138,19 @@ function Invoke-VmUsersSetup {
     $vmDef = Invoke-VmProvisioningSetup -Config $Config
     Invoke-VmProvisioningPhase1 -Config $Config -Vm1Def $vmDef
 
-    Write-Host 'Reconciling users ...' -ForegroundColor Magenta
-    & "$($Config.UsersPath)\hyper-v\ubuntu\create-users.ps1"
+    Write-Host "Reconciling users via '$($Config.UsersFlow)' flow ..." -ForegroundColor Magenta
+    # $Config carries UsersFlow + AnsiblePath + WslDistro from
+    # Start-E2EAgent / Start-VmUsersTest. AnsiblePath and WslDistro
+    # are optional in the dispatcher and ignored unless
+    # UsersFlow=ansible; the agent-loop validates their presence at
+    # startup so a missing value fails before the VM is built.
+    Set-VmUsersForTest `
+        -UsersFlow   $Config.UsersFlow `
+        -UsersPath   $Config.UsersPath `
+        -AnsiblePath $Config.AnsiblePath `
+        -WslDistro   $Config.WslDistro `
+        -VmDef       $vmDef `
+        -Entry       $Entry
 
     # Verify SSH is reachable after create-users.ps1 returns. create-users.ps1
     # pings the VM and silently skips it with Write-Warning when ping fails -
@@ -256,7 +272,7 @@ function Invoke-VmUsersTeardown {
 
     try {
         Write-Host 'Removing users ...' -ForegroundColor Magenta
-        & "$($Config.UsersPath)\hyper-v\ubuntu\remove-users.ps1"
+        & "$($Config.UsersPath)\hyper-v\ubuntu\remove-users.ps1" -SecretSuffix $script:E2ETestSecretSuffix
 
         # Assert users, home directories, sudoers files, and declared groups are
         # gone - while the VM is still alive. This must run before
@@ -337,7 +353,7 @@ function Invoke-VmUsersTeardown {
         }
 
         Write-Host 'Removing test VmUsersConfig from vault ...' -ForegroundColor Magenta
-        Remove-Secret -Vault VmUsers -Name VmUsersConfig
+        Remove-Secret -Vault VmUsers -Name (Get-E2ESecretName 'VmUsersConfig')
     }
     finally {
         # Always deprovision the VM even if user removal or assertions failed.
@@ -513,11 +529,12 @@ function Invoke-VmUsersTest {
             # Assert VmUsersConfig vault entry was removed. Users-layer-
             # specific teardown post-condition; everything else is
             # covered by Invoke-VmTeardownAssertions above.
-            if ($null -ne (Get-SecretInfo -Vault VmUsers -Name VmUsersConfig `
+            $usersSecretName = Get-E2ESecretName 'VmUsersConfig'
+            if ($null -ne (Get-SecretInfo -Vault VmUsers -Name $usersSecretName `
                     -ErrorAction SilentlyContinue)) {
-                throw "Teardown incomplete: VmUsersConfig still present in vault."
+                throw "Teardown incomplete: $usersSecretName still present in vault."
             }
-            Write-Host '  [OK] VmUsersConfig removed from vault.' -ForegroundColor Green
+            Write-Host "  [OK] $usersSecretName removed from vault." -ForegroundColor Green
         }
         else {
             # Best-effort deprovisioning when setup or assertions failed.
@@ -532,7 +549,7 @@ function Invoke-VmUsersTest {
                 Write-Warning "Deprovisioning after failure: $($_.Exception.Message)"
             }
             try {
-                Remove-Secret -Vault VmUsers -Name VmUsersConfig -ErrorAction SilentlyContinue
+                Remove-Secret -Vault VmUsers -Name (Get-E2ESecretName 'VmUsersConfig') -ErrorAction SilentlyContinue
             }
             catch {}
         }

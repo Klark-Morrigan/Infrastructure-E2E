@@ -205,7 +205,7 @@ function Invoke-RunnerLifecycleSetup {
     $runnersEntries = Get-E2ERunnersConfigEntry -Config $Config
     Set-Secret `
         -Vault  GitHubRunners `
-        -Name   GitHubRunnersConfig `
+        -Name   (Get-E2ESecretName 'GitHubRunnersConfig') `
         -Secret (ConvertTo-Json $runnersEntries -Depth 5 -Compress)
 
     # Provision VM, create all users (base + e2edeploy + e2erunner).
@@ -275,6 +275,7 @@ function Invoke-RunnerLifecycleTeardown {
     # GitHub registration via the API without SSH access.
     & "$($Config.RunnersPath)\hyper-v\ubuntu\deregister-runners.ps1" `
         -Token $RunnersToken `
+        -SecretSuffix $script:E2ETestSecretSuffix `
         -Force
 
     $configEntry = Get-E2ERunnersConfigEntry -Config $Config
@@ -351,7 +352,7 @@ function Invoke-RunnerLifecycleTeardown {
     Invoke-VmUsersTeardown -Config $Config -VmDef $VmDef -Entry $Entry
 
     Write-Host 'Removing test GitHubRunnersConfig from vault ...' -ForegroundColor Magenta
-    Remove-Secret -Vault GitHubRunners -Name GitHubRunnersConfig
+    Remove-Secret -Vault GitHubRunners -Name (Get-E2ESecretName 'GitHubRunnersConfig')
 }
 
 # ---------------------------------------------------------------------------
@@ -386,7 +387,8 @@ function Invoke-RunnerLifecycleTest {
         # mid-way (e.g. config.sh succeeds but svc.sh fails).
         Write-Host 'Registering runners ...' -ForegroundColor Magenta
         & "$($Config.RunnersPath)\hyper-v\ubuntu\register-runners.ps1" `
-            -Token $runnersToken
+            -Token  $runnersToken `
+            -SecretSuffix $script:E2ETestSecretSuffix
 
         $configEntry = Get-E2ERunnersConfigEntry -Config $Config
         $runnerName  = $configEntry[0].runnerName
@@ -528,19 +530,21 @@ function Invoke-RunnerLifecycleTest {
             # Assert VmUsersConfig vault entry was removed (vm-users
             # layer). Mirrors the same check inside the vm-users
             # standalone teardown.
-            if ($null -ne (Get-SecretInfo -Vault VmUsers -Name VmUsersConfig `
+            $usersSecretName = Get-E2ESecretName 'VmUsersConfig'
+            if ($null -ne (Get-SecretInfo -Vault VmUsers -Name $usersSecretName `
                     -ErrorAction SilentlyContinue)) {
-                throw "Teardown incomplete: VmUsersConfig still present in vault."
+                throw "Teardown incomplete: $usersSecretName still present in vault."
             }
-            Write-Host '  [OK] VmUsersConfig removed from vault.' -ForegroundColor Green
+            Write-Host "  [OK] $usersSecretName removed from vault." -ForegroundColor Green
 
             # Assert GitHubRunnersConfig vault entry was removed (runner
             # layer's own teardown post-condition).
-            if ($null -ne (Get-SecretInfo -Vault GitHubRunners -Name GitHubRunnersConfig `
+            $runnersSecretName = Get-E2ESecretName 'GitHubRunnersConfig'
+            if ($null -ne (Get-SecretInfo -Vault GitHubRunners -Name $runnersSecretName `
                     -ErrorAction SilentlyContinue)) {
-                throw "Teardown incomplete: GitHubRunnersConfig still present in vault."
+                throw "Teardown incomplete: $runnersSecretName still present in vault."
             }
-            Write-Host '  [OK] GitHubRunnersConfig removed from vault.' -ForegroundColor Green
+            Write-Host "  [OK] $runnersSecretName removed from vault." -ForegroundColor Green
         }
         else {
             Write-Host 'Test did not complete - running best-effort cleanup ...' `
@@ -551,7 +555,8 @@ function Invoke-RunnerLifecycleTest {
             if ($runnersToken) {
                 try {
                     & "$($Config.RunnersPath)\hyper-v\ubuntu\deregister-runners.ps1" `
-                        -Token $runnersToken `
+                        -Token  $runnersToken `
+                        -SecretSuffix $script:E2ETestSecretSuffix `
                         -Force
                 }
                 catch {
@@ -562,10 +567,10 @@ function Invoke-RunnerLifecycleTest {
             try { Invoke-VmProvisioningTeardown -Config $Config }
             catch { Write-Warning "Best-effort deprovisioning failed: $($_.Exception.Message)" }
 
-            try { Remove-Secret -Vault VmUsers -Name VmUsersConfig -ErrorAction SilentlyContinue }
+            try { Remove-Secret -Vault VmUsers -Name (Get-E2ESecretName 'VmUsersConfig') -ErrorAction SilentlyContinue }
             catch {}
 
-            try { Remove-Secret -Vault GitHubRunners -Name GitHubRunnersConfig -ErrorAction SilentlyContinue }
+            try { Remove-Secret -Vault GitHubRunners -Name (Get-E2ESecretName 'GitHubRunnersConfig') -ErrorAction SilentlyContinue }
             catch {}
         }
     }

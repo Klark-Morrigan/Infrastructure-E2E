@@ -239,7 +239,7 @@ function Write-VmProvisionerConfig {
 
     Set-Secret `
         -Vault  VmProvisioner `
-        -Name   VmProvisionerConfig `
+        -Name   (Get-E2ESecretName 'VmProvisionerConfig') `
         -Secret (ConvertTo-Json $Entries -Depth 5 -Compress)
 }
 
