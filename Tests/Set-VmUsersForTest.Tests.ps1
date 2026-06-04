@@ -107,7 +107,7 @@ Describe 'Set-VmUsersForTest' {
             $Script:UsersPath   = Join-Path $TestDrive 'Vm-Users'
         }
 
-        It 'invokes wsl -d <distro> -- ./ops/create-users.sh from AnsiblePath' {
+        It 'invokes wsl with the WslDistro targeting create-users.sh from AnsiblePath' {
             $Script:Captured    = [System.Collections.Generic.List[string]]::new()
             $Script:CapturedCwd = $null
             # Function shadow for wsl. $args captures all unparsed tokens
