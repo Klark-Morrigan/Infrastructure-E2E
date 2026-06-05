@@ -120,10 +120,26 @@ function Invoke-E2EAgentLoop {
         [ValidateSet('custom-powershell', 'ansible')]
         [string] $UsersFlow = 'ansible',
 
+        # Selects which register-runners implementation the runner
+        # lifecycle test dispatches to. 'custom-powershell' (the current
+        # default) keeps invoking Infrastructure-GitHubRunners'
+        # register-runners.ps1. 'ansible' opts in to
+        # Infrastructure-VM-Ansible's ops/register-runners.sh. The
+        # default stays on custom-powershell for one full release cycle
+        # while the Ansible path validates on real hardware; the
+        # default-flip happens in a follow-up bump.
+        [Parameter()]
+        [ValidateSet('custom-powershell', 'ansible')]
+        [string] $RunnersFlow = 'custom-powershell',
+
         # Absolute path to the Infrastructure-VM-Ansible repo root on the
-        # workstation. Required when UsersFlow=ansible (the default); the
-        # loop validates the path exists below before the first VM is
-        # built so a misconfigured agent fails at startup, not mid-test.
+        # workstation. Required when either UsersFlow=ansible (the users
+        # flow default) or RunnersFlow=ansible. Both flows share the same
+        # repo and the same WSL distro because the one Infrastructure-
+        # VM-Ansible checkout houses ops/create-users.sh,
+        # ops/register-runners.sh, and ops/_run-playbook.sh. The loop
+        # validates the path exists below before the first VM is built
+        # so a misconfigured agent fails at startup, not mid-test.
         [Parameter()]
         [string] $AnsiblePath,
 
@@ -189,22 +205,26 @@ function Invoke-E2EAgentLoop {
     # Fail-fast: validate AnsiblePath and WslDistro at startup so a
     # misconfigured session does not build a VM and only then discover
     # the bridge is unreachable. custom-powershell ignores both; only
-    # the ansible flow needs them.
+    # the ansible flow on either layer needs them.
     #
     # WslDistro is verified up-front via Assert-WslHasBash from
     # PowerShell.Common - that catches the docker-desktop-default trap
     # (no bash) named in the parameter docs, and surfaces a
     # WslMissingBash: error with a remediation hint instead of letting
     # the bridge fail mid-test with a sparse-PATH error.
-    if ($UsersFlow -eq 'ansible') {
+    $ansibleFlows = @()
+    if ($UsersFlow   -eq 'ansible') { $ansibleFlows += 'UsersFlow' }
+    if ($RunnersFlow -eq 'ansible') { $ansibleFlows += 'RunnersFlow' }
+    if ($ansibleFlows.Count -gt 0) {
+        $flowList = $ansibleFlows -join '/'
         if (-not $AnsiblePath) {
-            throw "UsersFlow='ansible' requires -AnsiblePath."
+            throw "${flowList}='ansible' requires -AnsiblePath."
         }
         if (-not (Test-Path -LiteralPath $AnsiblePath -PathType Container)) {
             throw "AnsiblePath '$AnsiblePath' does not exist or is not a directory."
         }
         if (-not $WslDistro) {
-            throw "UsersFlow='ansible' requires -WslDistro."
+            throw "${flowList}='ansible' requires -WslDistro."
         }
         Assert-WslHasBash -DistroName $WslDistro
     }
@@ -270,6 +290,7 @@ function Invoke-E2EAgentLoop {
                     AnsiblePath           = $AnsiblePath
                     WslDistro             = $WslDistro
                     RunnersPath           = $RunnersPath
+                    RunnersFlow           = $RunnersFlow
                     HostTarballCachePath  = $HostTarballCachePath
                     Owner                 = $Owner
                     TestVm                = $TestVm
@@ -355,6 +376,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     #   "ProvisionerPath":     "C:\\a_Code\\Infrastructure-Vm-Provisioner",
     #   "UsersPath":           "C:\\a_Code\\Infrastructure-Vm-Users",
     #   "RunnersPath":         "C:\\a_Code\\Infrastructure-GitHubRunners",
+    #   "RunnersFlow":         "custom-powershell",
     #   "HostTarballCachePath": "C:\\cache\\github-runners",
     #   "TestVm": {
     #     "ubuntuVersion": "24.04",
@@ -382,17 +404,20 @@ if ($MyInvocation.InvocationName -ne '.') {
     # deadline is checked at session boundaries so the agent stops without
     # operator intervention. PipelineStoppedException (Ctrl+C) is re-thrown
     # so the operator can also stop it early.
-    # UsersFlow / AnsiblePath / WslDistro are optional in the vault
-    # payload so older E2EConfig files do not need a re-write to keep
-    # working. When absent, Invoke-E2EAgentLoop's defaults (ansible
-    # flow + the conventional repo path) apply, and WslDistro has no
-    # default - the loop will fail-fast with a named error so the
-    # operator adds it to the vault rather than the agent guessing.
-    # Strict mode requires guarded property access.
+    # UsersFlow / RunnersFlow / AnsiblePath / WslDistro are optional in
+    # the vault payload so older E2EConfig files do not need a re-write
+    # to keep working. When absent, Invoke-E2EAgentLoop's defaults
+    # (UsersFlow=ansible, RunnersFlow=custom-powershell) apply, and
+    # WslDistro has no default - if either flow is 'ansible' the loop
+    # fail-fasts with a named error so the operator adds it to the vault
+    # rather than the agent guessing. Strict mode requires guarded
+    # property access.
     $vaultUsersFlow   = $null
+    $vaultRunnersFlow = $null
     $vaultAnsiblePath = $null
     $vaultWslDistro   = $null
     if ($config.PSObject.Properties['UsersFlow'])   { $vaultUsersFlow   = $config.UsersFlow }
+    if ($config.PSObject.Properties['RunnersFlow']) { $vaultRunnersFlow = $config.RunnersFlow }
     if ($config.PSObject.Properties['AnsiblePath']) { $vaultAnsiblePath = $config.AnsiblePath }
     if ($config.PSObject.Properties['WslDistro'])   { $vaultWslDistro   = $config.WslDistro }
 
@@ -415,6 +440,7 @@ if ($MyInvocation.InvocationName -ne '.') {
                 TimeoutMinutes        = $config.TimeoutMinutes
             }
             if ($vaultUsersFlow)   { $loopParams['UsersFlow']   = $vaultUsersFlow }
+            if ($vaultRunnersFlow) { $loopParams['RunnersFlow'] = $vaultRunnersFlow }
             if ($vaultAnsiblePath) { $loopParams['AnsiblePath'] = $vaultAnsiblePath }
             if ($vaultWslDistro)   { $loopParams['WslDistro']   = $vaultWslDistro }
 
