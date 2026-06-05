@@ -6,6 +6,12 @@
 
 . "$PSScriptRoot\..\vm-users\Invoke-VmUsersTest.ps1"
 
+# Register-side dispatcher: symmetric peer of Set-VmUsersForTest, selecting
+# between Infrastructure-GitHubRunners' register-runners.ps1 and
+# Infrastructure-VM-Ansible's ops/register-runners.sh. The lifecycle test
+# forwards $Config.RunnersFlow into this single switch point.
+. "$PSScriptRoot\Set-VmRunnersForTest.ps1"
+
 # Lightweight re-verification of the runner after a re-provision (phase 2
 # or phase 3). Confirms the systemd service is still active and the
 # runner still appears 'online' in GitHub.
@@ -382,16 +388,28 @@ function Invoke-RunnerLifecycleTest {
         $runnersToken = $setup.RunnersToken
         $entry        = $setup.Entry
 
+        $configEntry = Get-E2ERunnersConfigEntry -Config $Config
+        $runnerName  = $configEntry[0].runnerName
+
         # Registration starts here - $runnersToken is already assigned so the
         # finally block can call deregister-runners.ps1 even if this fails
         # mid-way (e.g. config.sh succeeds but svc.sh fails).
-        Write-Host 'Registering runners ...' -ForegroundColor Magenta
-        & "$($Config.RunnersPath)\hyper-v\ubuntu\register-runners.ps1" `
-            -Token  $runnersToken `
-            -SecretSuffix $script:E2ETestSecretSuffix
-
-        $configEntry = Get-E2ERunnersConfigEntry -Config $Config
-        $runnerName  = $configEntry[0].runnerName
+        Write-Host "Registering runners via '$($Config.RunnersFlow)' flow ..." `
+            -ForegroundColor Magenta
+        # $Config carries RunnersFlow + AnsiblePath + WslDistro from
+        # Start-E2EAgent. AnsiblePath and WslDistro are optional in the
+        # dispatcher and ignored unless RunnersFlow=ansible; the
+        # agent-loop validates their presence at startup so a missing
+        # value fails before the VM is built.
+        Set-VmRunnersForTest `
+            -RunnersFlow  $Config.RunnersFlow `
+            -RunnersPath  $Config.RunnersPath `
+            -AnsiblePath  $Config.AnsiblePath `
+            -WslDistro    $Config.WslDistro `
+            -Token        $runnersToken `
+            -SecretSuffix $script:E2ETestSecretSuffix `
+            -VmDef        $vmDef `
+            -Entry        $configEntry
 
         Write-Host "Verifying runner service: $($vmDef.vmName) at $($vmDef.ipAddress) ..." `
             -ForegroundColor Magenta

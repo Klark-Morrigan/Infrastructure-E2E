@@ -34,9 +34,9 @@ polling agent that receives signals from GitHub Actions workflows.
   delegated to `Infrastructure-Vm-Provisioner`,
   `Infrastructure-VM-Ansible` (primary) and `Infrastructure-Vm-Users`
   (custom-powershell flow), and `Infrastructure-GitHubRunners`
-  respectively. User reconciliation and removal each have two
-  first-class implementations selected at agent startup via
-  `UsersFlow`.
+  respectively. User reconciliation, user removal, and runner
+  registration each have two first-class implementations selected at
+  agent startup via `UsersFlow` and `RunnersFlow`.
 
 ---
 
@@ -61,11 +61,18 @@ PowerShell 7+ (`pwsh`).
   - `E2EConfig` (owned by this repo - see [GitHub App setup](#github-app-setup))
 - `PowerShell.Common` >= `3.1.0` installed from PSGallery
 - When `UsersFlow=ansible` (the default since feature 02 of
-  `Infrastructure-VM-Ansible`), the agent runs the Ansible flow inside
-  WSL2; the Ansible controller must have been bootstrapped once via
+  `Infrastructure-VM-Ansible`) or `RunnersFlow=ansible` (opt-in during
+  the first validation cycle; the default-flip happens in a follow-up
+  bump), the agent runs that flow inside WSL2; the Ansible controller
+  must have been bootstrapped once via
   `Infrastructure-VM-Ansible/ops/bootstrap-controller.ps1`. Pass
   `-UsersFlow custom-powershell` to fall back to the original
-  Infrastructure-Vm-Users flow for parallel validation.
+  Infrastructure-Vm-Users flow, or `-RunnersFlow ansible` to opt the
+  register-runners half into the Ansible path. The two flow switches
+  are independent: an `ansible` create-users can be paired with a
+  `custom-powershell` register-runners and vice versa, because both
+  directions reconcile the same on-VM contract regardless of which
+  side ran which step.
 
 ---
 
@@ -162,6 +169,7 @@ following in the `E2EConfig` vault:
   "AnsiblePath":         "C:\\a_Code\\Infrastructure-VM-Ansible",     // optional - required when UsersFlow=ansible
   "WslDistro":           "Ubuntu-24.04",                              // optional - required when UsersFlow=ansible; see Infrastructure-VM-Ansible README Troubleshooting
   "RunnersPath":         "C:\\a_Code\\Infrastructure-GitHubRunners",
+  "RunnersFlow":         "custom-powershell",                         // optional - 'custom-powershell' (current default) or 'ansible'
   "HostTarballCachePath": "C:\\cache\\github-runners",
   "TestVm": {
     "ubuntuVersion":  "24.04",
@@ -357,7 +365,8 @@ in - so an Ansible role change cannot merge to master without proving
 the new code still reconciles users and brings up an online runner on a
 real VM. Whether the agent runs the Ansible or the PowerShell create
 flow is selected by `UsersFlow` at agent startup, not by which repo
-triggered the workflow.
+triggered the workflow. The runner registration flow is selected
+independently by `RunnersFlow`.
 
 ### Reading results
 
@@ -382,7 +391,7 @@ its own assertions on top.
 |---|---|---|
 | VM provisioning | `agent/e2e/vm-provisioning/Invoke-VmProvisioningTest.ps1` | Four-phase install / uninstall / re-install / deprovision lifecycle over two VMs (see [VM provisioning test](#vm-provisioning-test)). Each phase asserts: VM is reachable via SSH; cloud-init completed; root filesystem not full. Per-phase: phase 1 - JDK 21 installed on VM1 (`JAVA_HOME`, login + non-login `PATH`, `java -version` prefix), mixed `files` array landed - single fixture at target + three `*.jar` fixtures under `/opt/ci-jars` (per-file SHA-256, `root:root`, `0644`); phase 2 - VM1 JDK removed (install dir, `/etc/profile.d/jdk.sh`, stale symlinks all gone), VM2 has no JDK artifacts, file-transfer targets on VM1 idempotent vs phase-1 snapshot; phase 3 - JDK 17 active on VM1, VM2 still has no JDK artifacts; phase 4 - both VMs and their disk artifacts removed, host-side JDK cache for both versions preserved |
 | VM users | `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` | Expected OS groups exist; expected users exist with correct shell and group membership; sudoers files are in place. The create half dispatches via [`Set-VmUsersForTest.ps1`](agent/e2e/vm-users/Set-VmUsersForTest.ps1) - selecting `UsersFlow=ansible` (default) runs `Infrastructure-VM-Ansible/ops/create-users.sh` under WSL; `UsersFlow=custom-powershell` runs `Infrastructure-Vm-Users/hyper-v/ubuntu/create-users.ps1`. The teardown half dispatches symmetrically via [`Remove-VmUsersForTest.ps1`](agent/e2e/vm-users/Remove-VmUsersForTest.ps1) - `UsersFlow=ansible` runs `Infrastructure-VM-Ansible/ops/remove-users.sh` (feature 03 of that repo); `UsersFlow=custom-powershell` runs `Infrastructure-Vm-Users/hyper-v/ubuntu/remove-users.ps1`. Both halves are first-class permanent peers and either pairing is supported - an `ansible` create can be torn down by a `custom-powershell` remove and vice versa, because both directions reconcile by username against the same on-VM contract. |
-| Runner lifecycle | `agent/e2e/runner-lifecycle/Invoke-RunnerLifecycleTest.ps1` | Runner systemd service is active; runner appears online in the GitHub API |
+| Runner lifecycle | `agent/e2e/runner-lifecycle/Invoke-RunnerLifecycleTest.ps1` | Runner systemd service is active; runner appears online in the GitHub API. The register half dispatches via [`Set-VmRunnersForTest.ps1`](agent/e2e/runner-lifecycle/Set-VmRunnersForTest.ps1) - `RunnersFlow=custom-powershell` (current default) runs `Infrastructure-GitHubRunners/hyper-v/ubuntu/register-runners.ps1`; `RunnersFlow=ansible` runs `Infrastructure-VM-Ansible/ops/register-runners.sh` under WSL. The default-flip to `ansible` happens in a follow-up bump after the Ansible path validates on real hardware. The teardown half stays on `Infrastructure-GitHubRunners/hyper-v/ubuntu/deregister-runners.ps1` for both flows until feature 09 of `Infrastructure-VM-Ansible` introduces the symmetric remove-side fork. As with `UsersFlow`, either pairing is supported - an `ansible` register can be torn down by the PowerShell deregister and vice versa, because both directions reconcile against the same on-VM and GitHub-API contracts. |
 
 The polling agent (`Start-E2EAgent.ps1`) always runs the full runner
 lifecycle test, which transitively exercises all three layers. The
@@ -425,12 +434,14 @@ agent/
     runner-lifecycle/
       Invoke-RunnerLifecycleTest.ps1            - Full lifecycle E2E + re-asserts after phases 2, 3
       Invoke-RunnerStillOnlineAssertions.ps1    - "runner still active + online" re-verification block
+      Set-VmRunnersForTest.ps1                  - register-side dispatcher (custom-powershell | ansible)
   Initialize-E2EEnvironment.ps1    - Shared module bootstrap (dot-sourced by entry points)
   Start-E2EAgent.ps1               - Polling agent (run manually on workstation)
 Tests/
   Invoke-E2EAgentLoop.Tests.ps1    - Unit tests for the polling loop
   Set-VmUsersForTest.Tests.ps1     - Unit tests for the create-side flow dispatcher
   Remove-VmUsersForTest.Tests.ps1  - Unit tests for the teardown flow dispatcher
+  Set-VmRunnersForTest.Tests.ps1   - Unit tests for the register-side flow dispatcher
 docs/
   dev/
     implementation/                - Problem and plan docs per implementation phase
