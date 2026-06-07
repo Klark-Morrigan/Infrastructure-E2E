@@ -48,13 +48,15 @@ Describe 'Invoke-E2EAgentLoop' {
             RunnersPath           = 'C:\test\runners'
             HostTarballCachePath  = 'C:\test\tarball-cache'
             TestVm                = [PSCustomObject]@{
-                ubuntuVersion = '24.04'
-                ipAddress     = '192.168.100.200'
-                subnetMask    = 24
-                gateway       = '192.168.100.1'
-                dns           = '8.8.8.8'
-                vmConfigPath  = 'E:\a_VMs\Hyper-V\Config'
-                vhdPath       = 'E:\a_VMs\Hyper-V\Disks'
+                ubuntuVersion       = '24.04'
+                routerExternalIp    = '192.168.100.200'
+                externalSubnetMask  = 24
+                externalGateway     = '192.168.100.1'
+                dns                 = '8.8.8.8'
+                externalSwitchName  = 'ExternalSwitch-Shared'
+                externalAdapterName = 'Ethernet'
+                vmConfigPath        = 'E:\a_VMs\Hyper-V\Config'
+                vhdPath             = 'E:\a_VMs\Hyper-V\Disks'
             }
             Owner                 = 'org'
             Repo                  = 'repo'
@@ -167,7 +169,7 @@ Describe 'Invoke-E2EAgentLoop' {
             $Script:_config.RunnersPath             | Should -Be 'C:\test\runners'
             $Script:_config.HostTarballCachePath    | Should -Be 'C:\test\tarball-cache'
             $Script:_config.Owner            | Should -Be 'org'
-            $Script:_config.TestVm.ipAddress | Should -Be '192.168.100.200'
+            $Script:_config.TestVm.routerExternalIp | Should -Be '192.168.100.200'
         }
 
         It 'posts success after the lifecycle test passes' {
