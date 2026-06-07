@@ -12,21 +12,24 @@
 #   Setup would not match the old VMs' credentials and every subsequent
 #   SSH call would get "Permission denied (password)".
 #
-#   Both VMs are checked because the scenario provisions both starting in
-#   phase 2 - a leftover VM2 from a failed prior run would still trip
-#   later phases even though the standalone wrapper's phase 1 only
-#   touches VM1.
+#   All three VMs (router + VM1 + VM2) are checked. The router is
+#   minted at Setup and stays up across phases; VM1 enters at phase 1;
+#   VM2 enters at phase 2 - a leftover VM from any of them would still
+#   trip later phases. The router check also catches the case where a
+#   prior aborted run left the per-environment Private switch in a
+#   stale state with the router still attached.
 #
 #   The remediation hint in the throw message points the operator at
 #   deprovision.ps1 rather than at manual Get-VM / Remove-VM steps so
-#   the cache + switch + NAT are cleaned up together.
+#   the per-env Private switch + the legacy NetNat cleanup are
+#   handled together.
 # ---------------------------------------------------------------------------
 
 function Invoke-NoLeftoverTestVmsAssertions {
     [CmdletBinding()]
     param()
 
-    foreach ($vmName in @($script:Vm1Name, $script:Vm2Name)) {
+    foreach ($vmName in @($script:RouterVmName, $script:Vm1Name, $script:Vm2Name)) {
         if ($null -ne (Get-VM -Name $vmName -ErrorAction SilentlyContinue)) {
             throw ("Leftover VM '$vmName' found in Hyper-V. A previous " +
                 "test run did not complete teardown. Remove it manually " +

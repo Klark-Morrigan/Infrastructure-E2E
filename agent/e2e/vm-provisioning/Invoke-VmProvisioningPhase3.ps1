@@ -99,6 +99,7 @@ function Invoke-VmProvisioningPhase3 {
         param($sshClient)
         Invoke-VmReadyAssertions -SshClient $sshClient -VmName $Vm1Def.vmName
         Invoke-StaticNetworkAssertions -SshClient $sshClient -VmDef $Vm1Def
+        Invoke-EgressAssertions -SshClient $sshClient -VmName $Vm1Def.vmName
 
         # Old-side cleanup + symlink re-target.
         Invoke-JdkVersionChangeAssertions `
@@ -200,6 +201,7 @@ function Invoke-VmProvisioningPhase3 {
     Invoke-WithVmSshClient -VmDef $Vm1Def -Assertions {
         param($sshClient)
         Invoke-VmReadyAssertions -SshClient $sshClient -VmName $Vm1Def.vmName
+        Invoke-EgressAssertions -SshClient $sshClient -VmName $Vm1Def.vmName
         Invoke-JdkUninstallAssertions `
             -SshClient     $sshClient `
             -VmName        $Vm1Def.vmName `
@@ -235,6 +237,7 @@ function Invoke-VmProvisioningPhase3 {
         param($sshClient)
         Invoke-VmReadyAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
         Invoke-StaticNetworkAssertions -SshClient $sshClient -VmDef $Vm2Def
+        Invoke-EgressAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
         Invoke-NoJdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
         Invoke-NoDotnetSdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
     }

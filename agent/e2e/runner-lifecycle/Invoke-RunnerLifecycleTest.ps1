@@ -145,6 +145,11 @@ function Get-E2ERunnerUsersEntry {
 #   by Invoke-RunnerLifecycleSetup. The runner registers against the repo
 #   whose name is the last path component of Config.RunnersPath - the same
 #   convention used when cloning the repo (directory name == repo name).
+#
+#   VM1's IP is taken from $script:Vm1Ip (the test's internal private-
+#   subnet IP, 10.99.0.10). Operator config carries only the router VM's
+#   upstream IP now; downstream IPs are constants chosen by the test
+#   fixture to live on the per-environment private switch.
 # ---------------------------------------------------------------------------
 
 function Get-E2ERunnersConfigEntry {
@@ -163,8 +168,8 @@ function Get-E2ERunnersConfigEntry {
     # rather than the first element.
     return , @(
         [ordered]@{
-            vmName         = 'e2e-test-1'
-            ipAddress      = $Config.TestVm.ipAddress
+            vmName         = $script:Vm1Name
+            ipAddress      = $script:Vm1Ip
             deployUsername = 'e2edeploy'
             runnerUsername = 'e2erunner'
             githubUrl      = "https://github.com/$($Config.Owner)/$runnersRepo"

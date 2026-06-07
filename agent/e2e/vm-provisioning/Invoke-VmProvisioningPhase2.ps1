@@ -109,6 +109,7 @@ function Invoke-VmProvisioningPhase2 {
         param($sshClient)
         Invoke-VmReadyAssertions -SshClient $sshClient -VmName $Vm1Def.vmName
         Invoke-StaticNetworkAssertions -SshClient $sshClient -VmDef $Vm1Def
+        Invoke-EgressAssertions -SshClient $sshClient -VmName $Vm1Def.vmName
         Invoke-JdkUninstallAssertions `
             -SshClient     $sshClient `
             -VmName        $Vm1Def.vmName `
@@ -184,6 +185,7 @@ function Invoke-VmProvisioningPhase2 {
         param($sshClient)
         Invoke-VmReadyAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
         Invoke-StaticNetworkAssertions -SshClient $sshClient -VmDef $Vm2Def
+        Invoke-EgressAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
         Invoke-NoJdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
         Invoke-NoDotnetSdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
     }
@@ -259,6 +261,7 @@ function Invoke-VmProvisioningPhase2 {
     Invoke-WithVmSshClient -VmDef $Vm1Def -Assertions {
         param($sshClient)
         Invoke-VmReadyAssertions -SshClient $sshClient -VmName $Vm1Def.vmName
+        Invoke-EgressAssertions -SshClient $sshClient -VmName $Vm1Def.vmName
         Invoke-JdkInstallAssertions `
             -SshClient        $sshClient `
             -VmName           $Vm1Def.vmName `

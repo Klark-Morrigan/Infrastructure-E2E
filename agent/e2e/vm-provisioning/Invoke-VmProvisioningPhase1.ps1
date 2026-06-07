@@ -93,8 +93,22 @@ function Invoke-VmProvisioningPhase1 {
 
     Write-VmProvisionerConfig -Entries @($entry)
 
-    Write-Host 'Phase 1: provisioning VM1 ...' -ForegroundColor Magenta
+    Write-Host 'Phase 1: provisioning router + VM1 ...' -ForegroundColor Magenta
     & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
+
+    # Router-side white-box assertions. Phase 1 is the only place these
+    # run - the router stays up across phases and its entry is
+    # byte-identical in every VmProvisionerConfig write, so phases 2
+    # and 3 do not re-create or reconfigure it. A regression in the
+    # router-seed payload surfaces here, not in confused curl/dig
+    # failures on every workload further down.
+    $routerVmDef = $Vm1Def._RouterVm
+    Write-Host "Phase 1: verifying router state on $($routerVmDef.vmName) ..." `
+        -ForegroundColor Magenta
+    Invoke-WithVmSshClient -VmDef $routerVmDef -Assertions {
+        param($sshClient)
+        Invoke-RouterReadyAssertions -SshClient $sshClient -RouterVmDef $routerVmDef
+    }
 
     Write-Host "Phase 1: verifying post-conditions on $($Vm1Def.vmName) ..." `
         -ForegroundColor Magenta
@@ -104,6 +118,11 @@ function Invoke-VmProvisioningPhase1 {
         Invoke-VmReadyAssertions -SshClient $sshClient -VmName $Vm1Def.vmName
 
         Invoke-StaticNetworkAssertions -SshClient $sshClient -VmDef $Vm1Def
+
+        # Egress through the router. Runs before any opt-in install
+        # assertion so a network regression surfaces before JDK /
+        # dotnet failures that depend on the same egress.
+        Invoke-EgressAssertions -SshClient $sshClient -VmName $Vm1Def.vmName
 
         Invoke-JdkInstallAssertions `
             -SshClient        $sshClient `

@@ -12,14 +12,16 @@
 #   teardown and forget to verify it.
 #
 #   Verifies:
-#     - Both VMs are gone from Hyper-V.
+#     - All three VMs (router + VM1 + VM2) are gone from Hyper-V.
 #     - Per-VM disk artifacts ({vmName}.vhdx under vhdPath,
-#       {vmName}-seed.iso under vmConfigPath) are gone.
+#       {vmName}-seed.iso under vmConfigPath) are gone for each.
 #     - The host-side JDK cache (tarball + lockfile for the versions used
 #       in phases 1 and 3) is still present under vhdPath - the cache is
 #       host-owned, not VM-owned, so deprovision must not touch it.
-#     - The dedicated E2E-VmLAN switch + NAT are gone (exclusive to this
+#     - The per-environment Private switch is gone (exclusive to this
 #       test, so a leftover means teardown failed).
+#     - The External vSwitch is still present - host-shared resource
+#       that other consumers / non-test VMs attach to.
 #
 #   VM identities and paths come from script-scope constants + $Config, so
 #   this function still works when Setup threw before any vmDef existed.
@@ -40,7 +42,7 @@ function Invoke-VmTeardownAssertions {
 
     # VMs gone from Hyper-V. Use the script-level names rather than $vmDef
     # so the check still works when phase 1 threw before returning a vmDef.
-    foreach ($vmName in @($script:Vm1Name, $script:Vm2Name)) {
+    foreach ($vmName in @($script:RouterVmName, $script:Vm1Name, $script:Vm2Name)) {
         if ($null -ne (Get-VM -Name $vmName -ErrorAction SilentlyContinue)) {
             throw "Teardown incomplete: VM '$vmName' still exists in Hyper-V."
         }
@@ -52,7 +54,7 @@ function Invoke-VmTeardownAssertions {
     # Invoke-DiskImageAcquisition.ps1 and generate-seed-iso.ps1). Both
     # are addressed by name so this check works even when a Setup throw
     # left no $vmDef behind.
-    foreach ($vmName in @($script:Vm1Name, $script:Vm2Name)) {
+    foreach ($vmName in @($script:RouterVmName, $script:Vm1Name, $script:Vm2Name)) {
         $vhdxPath = Join-Path $Config.TestVm.vhdPath "$vmName.vhdx"
         if (Test-Path -LiteralPath $vhdxPath) {
             throw "Teardown incomplete: VHDX still present at '$vhdxPath'."
@@ -91,13 +93,28 @@ function Invoke-VmTeardownAssertions {
     }
     Write-Host "  [OK] $provisionerSecretName removed from vault." -ForegroundColor Green
 
-    # E2E-VmLAN switch + NAT are exclusive to this test so no guard is
-    # needed - any leftover here means teardown failed.
-    if ($null -ne (Get-VMSwitch -Name 'E2E-VmLAN' -ErrorAction SilentlyContinue)) {
-        throw "Teardown incomplete: E2E-VmLAN switch still exists."
+    # Per-environment Private switch is exclusive to this test (no
+    # operator workload attaches to PrivateSwitch-E2E) so no guard is
+    # needed - any leftover means teardown failed.
+    if ($null -ne (Get-VMSwitch -Name $script:PrivateSwitchName `
+            -ErrorAction SilentlyContinue)) {
+        throw "Teardown incomplete: Private switch '$script:PrivateSwitchName' " +
+            "still exists."
     }
-    if ($null -ne (Get-NetNat -Name 'E2E-VmLAN-NAT' -ErrorAction SilentlyContinue)) {
-        throw "Teardown incomplete: E2E-VmLAN-NAT rule still exists."
+    Write-Host "  [OK] Private switch removed: $script:PrivateSwitchName" `
+        -ForegroundColor Green
+
+    # External vSwitch must survive teardown - it is host-shared (other
+    # consumers / non-test VMs attach to it) and was not created by
+    # this test in the first place when the operator pre-staged it.
+    # provision.ps1 also takes the "reuse existing External switch"
+    # path when one already exists, so removing it here would be a
+    # regression even if it had been created by an earlier test run.
+    if ($null -eq (Get-VMSwitch -Name $Config.TestVm.externalSwitchName `
+            -ErrorAction SilentlyContinue)) {
+        throw "Host shared resource regression: External vSwitch " +
+            "'$($Config.TestVm.externalSwitchName)' was removed by teardown."
     }
-    Write-Host '  [OK] E2E-VmLAN switch and NAT removed.' -ForegroundColor Green
+    Write-Host "  [OK] External vSwitch intact: $($Config.TestVm.externalSwitchName)" `
+        -ForegroundColor Green
 }

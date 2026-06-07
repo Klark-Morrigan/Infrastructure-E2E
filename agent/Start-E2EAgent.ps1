@@ -379,15 +379,24 @@ if ($MyInvocation.InvocationName -ne '.') {
     #   "RunnersFlow":         "custom-powershell",
     #   "HostTarballCachePath": "C:\\cache\\github-runners",
     #   "TestVm": {
-    #     "ubuntuVersion": "24.04",
-    #     "ipAddress":     "192.168.100.200",
-    #     "subnetMask":    24,
-    #     "gateway":       "192.168.100.1",
-    #     "dns":           "8.8.8.8",
-    #     "vmConfigPath":  "E:\\a_VMs\\Hyper-V\\Config",
-    #     "vhdPath":       "E:\\a_VMs\\Hyper-V\\Disks"
+    #     "ubuntuVersion":       "24.04",
+    #     "routerExternalIp":    "192.168.100.200",
+    #     "externalSubnetMask":  24,
+    #     "externalGateway":     "192.168.100.1",
+    #     "dns":                 "8.8.8.8",
+    #     "externalSwitchName":  "ExternalSwitch-Shared",
+    #     "externalAdapterName": "Ethernet",
+    #     "vmConfigPath":        "E:\\a_VMs\\Hyper-V\\Config",
+    #     "vhdPath":             "E:\\a_VMs\\Hyper-V\\Disks"
     #   }
     # }
+    #
+    # `routerExternalIp` / `externalGateway` / `externalSubnetMask` /
+    # `externalSwitchName` / `externalAdapterName` configure the router
+    # VM the test provisions in front of every workload VM (feature 53
+    # topology). Workload VMs use internal private IPs (10.99.0.10 /
+    # 10.99.0.11 on PrivateSwitch-E2E); only the router's upstream
+    # NIC needs an operator-supplied address.
     # ---------------------------------------------------------------------------
 
     $e2eSecretName = "E2EConfig-$SecretSuffix"

@@ -31,6 +31,8 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 . "$PSScriptRoot\Invoke-BulkFileTransferAssertions.ps1"
 . "$PSScriptRoot\Invoke-EnvVarsAppliedAssertions.ps1"
 . "$PSScriptRoot\Invoke-EnvVarsRemovedAssertions.ps1"
+. "$PSScriptRoot\Invoke-EgressAssertions.ps1"
+. "$PSScriptRoot\Invoke-RouterReadyAssertions.ps1"
 
 # ---------------------------------------------------------------------------
 # Test scenario constants
@@ -50,6 +52,31 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 # ---------------------------------------------------------------------------
 $script:Vm1Name             = 'e2e-test-1'
 $script:Vm2Name             = 'e2e-test-2'
+
+# Router-VM scenario shape. Every workload batch in the post-feature-53
+# topology requires exactly one router VM on the same private switch; the
+# router carries the gateway IP downstream VMs route through. We mint
+# the router once at Setup time and keep it in every phase's
+# VmProvisionerConfig so the provisioner's reconcile path takes the
+# "existing VM" branch on phases 2 and 3 instead of trying to re-create
+# it. Workload IPs are pinned internal to the test (10.99.0.10 / .11);
+# only the router's upstream NIC IP is operator-supplied via
+# $Config.TestVm.routerExternalIp.
+$script:RouterVmName        = 'router-e2e'
+$script:RouterUsername      = 'routeradmin'
+$script:PrivateSwitchName   = 'PrivateSwitch-E2E'
+$script:RouterPrivateIp     = '10.99.0.1'
+$script:PrivateSubnetMask   = '24'
+$script:Vm1Ip               = '10.99.0.10'
+$script:Vm2Ip               = '10.99.0.11'
+
+# Router VmProvisionerConfig entry, minted in Invoke-VmProvisioningSetup.
+# Stashed at script scope so Write-VmProvisionerConfig can prepend it to
+# every phase's array - the per-phase functions only describe workload
+# state. The router credential is generated once at Setup and never
+# rewritten; phases 2 and 3 rewrite the config but the router's row
+# stays byte-identical so the reconciler sees it as unchanged.
+$script:RouterEntry = $null
 
 # JDK pins. Two distinct major versions so the reconciler must observably
 # uninstall the old dir on a version change (different /opt/jdk-temurin-*
@@ -172,32 +199,16 @@ function New-VmProvisioningPassword {
         [Security.Cryptography.RandomNumberGenerator]::GetBytes(18))
 }
 
-# VM2's IP is derived from VM1's by incrementing the last octet. Keeps the
-# operator config (E2EConfig.TestVm.ipAddress) single-valued - the test
-# scenario decides VM2's address, the operator does not pin it.
-function Get-SecondaryVmIpAddress {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string] $PrimaryIpAddress
-    )
-
-    $octets = $PrimaryIpAddress.Split('.')
-    if ($octets.Count -ne 4) {
-        throw "Cannot derive secondary IP - '$PrimaryIpAddress' is not a dotted-quad."
-    }
-    $last = [int] $octets[3]
-    if ($last -ge 254) {
-        throw "Cannot derive secondary IP - last octet of '$PrimaryIpAddress' " +
-            "is $last; incrementing would leave the /24."
-    }
-    $octets[3] = [string]($last + 1)
-    return ($octets -join '.')
-}
-
-# Builds the common VM entry shape. The javaDevKit and files blocks are
-# layered on top by callers so each phase can compose the entry it needs
-# without duplicating the boilerplate fields.
+# Builds the common workload-VM entry shape. The javaDevKit and files
+# blocks are layered on top by callers so each phase can compose the
+# entry it needs without duplicating the boilerplate fields.
+#
+# gateway and dns both point at the router VM's private IP - workload
+# traffic egresses through the router (which MASQUERADEs out its
+# upstream NIC) and DNS queries go to dnsmasq running on the same
+# router. subnetMask is fixed to the per-test private subnet's /24,
+# not operator-supplied: the private network is fully internal to the
+# test fixture.
 function New-VmEntryBase {
     [CmdletBinding()]
     param(
@@ -208,46 +219,98 @@ function New-VmEntryBase {
     )
 
     return [ordered]@{
-        vmName        = $VmName
-        cpuCount      = 2
-        ramGB         = 2
-        diskGB        = 20
-        ubuntuVersion = $Config.TestVm.ubuntuVersion
-        username      = 'e2eadmin'
-        password      = $Password
-        ipAddress     = $IpAddress
-        subnetMask    = $Config.TestVm.subnetMask
-        gateway       = $Config.TestVm.gateway
-        dns           = $Config.TestVm.dns
-        vmConfigPath  = $Config.TestVm.vmConfigPath
-        vhdPath       = $Config.TestVm.vhdPath
-        switchName    = 'E2E-VmLAN'
-        natName       = 'E2E-VmLAN-NAT'
+        vmName            = $VmName
+        cpuCount          = 2
+        ramGB             = 2
+        diskGB            = 20
+        ubuntuVersion     = $Config.TestVm.ubuntuVersion
+        username          = 'e2eadmin'
+        password          = $Password
+        ipAddress         = $IpAddress
+        subnetMask        = $script:PrivateSubnetMask
+        gateway           = $script:RouterPrivateIp
+        dns               = $script:RouterPrivateIp
+        vmConfigPath      = $Config.TestVm.vmConfigPath
+        vhdPath           = $Config.TestVm.vhdPath
+        privateSwitchName = $script:PrivateSwitchName
+    }
+}
+
+# Builds the router-VM entry consumed by provision.ps1's router-seed
+# path (feature 53 step 1). Two NICs: ipAddress on the host's External
+# vSwitch (upstream egress), privateIpAddress on the per-test Private
+# vSwitch (downstream gateway and DNS for workloads). gateway and dns
+# here describe the *upstream* LAN - the router itself needs an
+# upstream resolver to forward to and a default route off the host.
+function New-RouterEntry {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [PSCustomObject] $Config,
+        [Parameter(Mandatory)] [string] $Password
+    )
+
+    return [ordered]@{
+        vmName              = $script:RouterVmName
+        cpuCount            = 1
+        ramGB               = 1
+        diskGB              = 20
+        ubuntuVersion       = $Config.TestVm.ubuntuVersion
+        username            = $script:RouterUsername
+        password            = $Password
+        ipAddress           = $Config.TestVm.routerExternalIp
+        subnetMask          = $Config.TestVm.externalSubnetMask
+        gateway             = $Config.TestVm.externalGateway
+        dns                 = $Config.TestVm.dns
+        vmConfigPath        = $Config.TestVm.vmConfigPath
+        vhdPath             = $Config.TestVm.vhdPath
+        kind                = 'router'
+        externalSwitchName  = $Config.TestVm.externalSwitchName
+        externalAdapterName = $Config.TestVm.externalAdapterName
+        privateSwitchName   = $script:PrivateSwitchName
+        privateIpAddress    = $script:RouterPrivateIp
     }
 }
 
 # VmProvisionerConfig must be a JSON array - ConvertFrom-VmConfigJson
 # rejects a bare object. Centralised so the JSON depth, the Set-Secret
 # parameters, and the array-wrapping live in one place across all phases.
+#
+# The router VM is always prepended to the workload entries. Phases
+# only describe the workload state they care about; the router stays
+# byte-identical across rewrites (Setup mints it once) so the
+# provisioner reconciler sees it as unchanged and takes the no-op
+# branch on phases 2 and 3. Provisioning the router first is implicit
+# in the JSON order - provision.ps1 walks the array; the router is
+# always position 0.
 function Write-VmProvisionerConfig {
     [CmdletBinding()]
     param(
-        # Array of ordered dictionaries / PSCustomObjects, one per VM.
+        # Workload entries (ordered dictionaries / PSCustomObjects). The
+        # router VM is added by this function from $script:RouterEntry;
+        # callers MUST NOT include it themselves.
         [Parameter(Mandatory)]
         [object[]] $Entries
     )
 
+    if ($null -eq $script:RouterEntry) {
+        throw "Write-VmProvisionerConfig: \$script:RouterEntry is not set. " +
+            "Invoke-VmProvisioningSetup must run before any phase."
+    }
+
+    $entriesWithRouter = @($script:RouterEntry) + @($Entries)
+
     Set-Secret `
         -Vault  VmProvisioner `
         -Name   (Get-E2ESecretName 'VmProvisionerConfig') `
-        -Secret (ConvertTo-Json $Entries -Depth 5 -Compress)
+        -Secret (ConvertTo-Json $entriesWithRouter -Depth 5 -Compress)
 }
 
-# Builds the VM1 + VM2 vmDefs once, up front. Passwords are generated
-# here so each phase's rewrite of VmProvisionerConfig reuses the same
-# credentials - changing them mid-scenario would invalidate prior
-# phases' SSH sessions. VM2's IP is derived from VM1's so the operator
-# only pins one IP in E2EConfig.
+# Builds the router + VM1 + VM2 vmDefs once, up front. Passwords are
+# generated here so each phase's rewrite of VmProvisionerConfig reuses
+# the same credentials - changing them mid-scenario would invalidate
+# prior phases' SSH sessions. Workload IPs are constants (10.99.0.10
+# and .11) on the per-test private subnet; only the router's upstream
+# IP is operator-supplied via $Config.TestVm.routerExternalIp.
 function New-PinnedVmDefinitions {
     [CmdletBinding()]
     param(
@@ -255,19 +318,31 @@ function New-PinnedVmDefinitions {
         [PSCustomObject] $Config
     )
 
+    # Router VM def carries the upstream-NIC IP (used as the SSH host),
+    # the username minted at Setup, and the router-only fields the
+    # white-box assertion files read (privateIpAddress for the
+    # downstream-NIC check).
+    $routerDef = [PSCustomObject](New-RouterEntry `
+        -Config   $Config `
+        -Password (New-VmProvisioningPassword))
+
     $vm1Def = [PSCustomObject](New-VmEntryBase `
         -Config    $Config `
         -VmName    $script:Vm1Name `
-        -IpAddress $Config.TestVm.ipAddress `
+        -IpAddress $script:Vm1Ip `
         -Password  (New-VmProvisioningPassword))
 
     $vm2Def = [PSCustomObject](New-VmEntryBase `
         -Config    $Config `
         -VmName    $script:Vm2Name `
-        -IpAddress (Get-SecondaryVmIpAddress -PrimaryIpAddress $Config.TestVm.ipAddress) `
+        -IpAddress $script:Vm2Ip `
         -Password  (New-VmProvisioningPassword))
 
-    return [PSCustomObject]@{ Vm1 = $vm1Def; Vm2 = $vm2Def }
+    return [PSCustomObject]@{
+        RouterVm = $routerDef
+        Vm1      = $vm1Def
+        Vm2      = $vm2Def
+    }
 }
 
 # Opens an SSH client to a VM, runs the supplied script block with the
@@ -423,8 +498,37 @@ function Invoke-VmProvisioningSetup {
 
     $vmDefs = New-PinnedVmDefinitions -Config $Config
 
+    # Stash the router entry so Write-VmProvisionerConfig can prepend it
+    # to every phase's array. The router's NoteProperties carry the SSH
+    # credentials and the load-bearing router-specific fields
+    # (privateIpAddress) the white-box assertions read.
+    $script:RouterEntry = [ordered]@{
+        vmName              = $vmDefs.RouterVm.vmName
+        cpuCount            = $vmDefs.RouterVm.cpuCount
+        ramGB               = $vmDefs.RouterVm.ramGB
+        diskGB              = $vmDefs.RouterVm.diskGB
+        ubuntuVersion       = $vmDefs.RouterVm.ubuntuVersion
+        username            = $vmDefs.RouterVm.username
+        password            = $vmDefs.RouterVm.password
+        ipAddress           = $vmDefs.RouterVm.ipAddress
+        subnetMask          = $vmDefs.RouterVm.subnetMask
+        gateway             = $vmDefs.RouterVm.gateway
+        dns                 = $vmDefs.RouterVm.dns
+        vmConfigPath        = $vmDefs.RouterVm.vmConfigPath
+        vhdPath             = $vmDefs.RouterVm.vhdPath
+        kind                = $vmDefs.RouterVm.kind
+        externalSwitchName  = $vmDefs.RouterVm.externalSwitchName
+        externalAdapterName = $vmDefs.RouterVm.externalAdapterName
+        privateSwitchName   = $vmDefs.RouterVm.privateSwitchName
+        privateIpAddress    = $vmDefs.RouterVm.privateIpAddress
+    }
+
+    # Stash the router def alongside the SecondaryVm so callers reach
+    # it the same way they reach Vm2 - $vmDef._RouterVm.
     Add-Member -InputObject $vmDefs.Vm1 `
         -MemberType NoteProperty -Name '_SecondaryVm' -Value $vmDefs.Vm2 -Force
+    Add-Member -InputObject $vmDefs.Vm1 `
+        -MemberType NoteProperty -Name '_RouterVm' -Value $vmDefs.RouterVm -Force
 
     return $vmDefs.Vm1
 }
