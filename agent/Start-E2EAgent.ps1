@@ -380,9 +380,6 @@ if ($MyInvocation.InvocationName -ne '.') {
     #   "HostTarballCachePath": "C:\\cache\\github-runners",
     #   "TestVm": {
     #     "ubuntuVersion":       "24.04",
-    #     "routerExternalIp":    "192.168.100.200",
-    #     "externalSubnetMask":  24,
-    #     "externalGateway":     "192.168.100.1",
     #     "dns":                 "8.8.8.8",
     #     "externalSwitchName":  "ExternalSwitch-Shared",
     #     "externalAdapterName": "Ethernet",
@@ -391,12 +388,15 @@ if ($MyInvocation.InvocationName -ne '.') {
     #   }
     # }
     #
-    # `routerExternalIp` / `externalGateway` / `externalSubnetMask` /
-    # `externalSwitchName` / `externalAdapterName` configure the router
-    # VM the test provisions in front of every workload VM (feature 53
-    # topology). Workload VMs use internal private IPs (10.99.0.10 /
-    # 10.99.0.11 on PrivateSwitch-E2E); only the router's upstream
-    # NIC needs an operator-supplied address.
+    # The router VM the test provisions in front of every workload VM
+    # (feature 53 topology) takes its upstream IP from DHCP - whatever
+    # LAN the host's External vSwitch is bridged to. No operator IP
+    # values to pin in TestVm; the orchestrator discovers the router's
+    # actual IP via Hyper-V KVP after boot. Workload VMs sit on
+    # PrivateSwitch-E2E at 10.99.0.10 / 10.99.0.11 (constants chosen
+    # by the test fixture, not operator config). `dns` is dnsmasq's
+    # upstream forwarder on the router; `externalSwitchName` /
+    # `externalAdapterName` configure the host-side vSwitch.
     # ---------------------------------------------------------------------------
 
     $e2eSecretName = "E2EConfig-$SecretSuffix"

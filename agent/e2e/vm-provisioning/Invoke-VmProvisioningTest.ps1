@@ -237,11 +237,12 @@ function New-VmEntryBase {
 }
 
 # Builds the router-VM entry consumed by provision.ps1's router-seed
-# path (feature 53 step 1). Two NICs: ipAddress on the host's External
-# vSwitch (upstream egress), privateIpAddress on the per-test Private
-# vSwitch (downstream gateway and DNS for workloads). gateway and dns
-# here describe the *upstream* LAN - the router itself needs an
-# upstream resolver to forward to and a default route off the host.
+# path (feature 53 step 1). Two NICs: ext0 on the host's External
+# vSwitch (upstream egress; gets its address from DHCP - the host's
+# vSwitch can be bridged to any LAN, so pinning a static here would
+# break every time the operator moves networks), priv0 on the per-
+# test Private vSwitch (downstream gateway and DNS for workloads,
+# always static so workloads can be configured against a stable IP).
 function New-RouterEntry {
     [CmdletBinding()]
     param(
@@ -249,6 +250,9 @@ function New-RouterEntry {
         [Parameter(Mandatory)] [string] $Password
     )
 
+    # subnetMask is required for the priv0 NIC; the schema also accepts
+    # it as the static ext0 mask under `externalDhcp: false`, but the
+    # E2E path uses DHCP and the value here only pins priv0.
     return [ordered]@{
         vmName              = $script:RouterVmName
         cpuCount            = 1
@@ -257,9 +261,7 @@ function New-RouterEntry {
         ubuntuVersion       = $Config.TestVm.ubuntuVersion
         username            = $script:RouterUsername
         password            = $Password
-        ipAddress           = $Config.TestVm.routerExternalIp
-        subnetMask          = $Config.TestVm.externalSubnetMask
-        gateway             = $Config.TestVm.externalGateway
+        subnetMask          = $script:PrivateSubnetMask
         dns                 = $Config.TestVm.dns
         vmConfigPath        = $Config.TestVm.vmConfigPath
         vhdPath             = $Config.TestVm.vhdPath
@@ -502,6 +504,16 @@ function Invoke-VmProvisioningSetup {
     # to every phase's array. The router's NoteProperties carry the SSH
     # credentials and the load-bearing router-specific fields
     # (privateIpAddress) the white-box assertions read.
+    #
+    # ipAddress / gateway are intentionally absent: the router VM uses
+    # externalDhcp=true (the schema default) so its upstream IP is
+    # discovered by create-vm.ps1's wait-for-SSH via Hyper-V KVP and
+    # then written back onto the SAME RouterVm object - the workload
+    # tunnel reaches that fresh value via $_RouterVm.ipAddress (object
+    # identity, not a copy). Static-router operators set externalDhcp=
+    # false in their VmProvisionerConfig and the schema picks up
+    # ipAddress / gateway from the input JSON directly; this E2E path
+    # never goes there.
     $script:RouterEntry = [ordered]@{
         vmName              = $vmDefs.RouterVm.vmName
         cpuCount            = $vmDefs.RouterVm.cpuCount
@@ -510,9 +522,7 @@ function Invoke-VmProvisioningSetup {
         ubuntuVersion       = $vmDefs.RouterVm.ubuntuVersion
         username            = $vmDefs.RouterVm.username
         password            = $vmDefs.RouterVm.password
-        ipAddress           = $vmDefs.RouterVm.ipAddress
         subnetMask          = $vmDefs.RouterVm.subnetMask
-        gateway             = $vmDefs.RouterVm.gateway
         dns                 = $vmDefs.RouterVm.dns
         vmConfigPath        = $vmDefs.RouterVm.vmConfigPath
         vhdPath             = $vmDefs.RouterVm.vhdPath

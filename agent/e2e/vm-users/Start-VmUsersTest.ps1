@@ -58,18 +58,9 @@ param(
     # Ubuntu version to provision (router + workload VMs).
     [string] $UbuntuVersion = '24.04',
 
-    # Static IP for the router VM on the upstream LAN. Workload VMs use
-    # internal private IPs (10.99.0.10 / .11) - only the router needs an
-    # operator-supplied upstream address.
-    [string] $RouterExternalIp = '192.168.101.20',
-
-    # Upstream LAN CIDR prefix length.
-    [int] $ExternalSubnetMask = 24,
-
-    # Upstream LAN gateway IP (router's default route).
-    [string] $ExternalGateway = '192.168.101.1',
-
     # DNS resolver the router VM forwards downstream queries to.
+    # ext0 itself DHCPs from the host's External-vSwitch upstream;
+    # see Start-VmProvisioningTest.ps1 for the rationale.
     [string] $Dns = '8.8.8.8',
 
     # Host's External vSwitch the router's upstream NIC attaches to.
@@ -103,9 +94,6 @@ Invoke-VmUsersTest -Config ([PSCustomObject]@{
     WslDistro       = $WslDistro
     TestVm          = [PSCustomObject]@{
         ubuntuVersion       = $UbuntuVersion
-        routerExternalIp    = $RouterExternalIp
-        externalSubnetMask  = $ExternalSubnetMask
-        externalGateway     = $ExternalGateway
         dns                 = $Dns
         externalSwitchName  = $ExternalSwitchName
         externalAdapterName = $ExternalAdapterName

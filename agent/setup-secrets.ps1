@@ -64,9 +64,6 @@ Initialize-MicrosoftPowerShellSecretStoreVault `
 
         Assert-RequiredProperties -Object $config.TestVm -Properties @(
             'ubuntuVersion',
-            'routerExternalIp',
-            'externalSubnetMask',
-            'externalGateway',
             'dns',
             'externalSwitchName',
             'externalAdapterName',

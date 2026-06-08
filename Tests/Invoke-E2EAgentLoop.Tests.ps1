@@ -49,9 +49,6 @@ Describe 'Invoke-E2EAgentLoop' {
             HostTarballCachePath  = 'C:\test\tarball-cache'
             TestVm                = [PSCustomObject]@{
                 ubuntuVersion       = '24.04'
-                routerExternalIp    = '192.168.100.200'
-                externalSubnetMask  = 24
-                externalGateway     = '192.168.100.1'
                 dns                 = '8.8.8.8'
                 externalSwitchName  = 'ExternalSwitch-Shared'
                 externalAdapterName = 'Ethernet'
@@ -169,7 +166,13 @@ Describe 'Invoke-E2EAgentLoop' {
             $Script:_config.RunnersPath             | Should -Be 'C:\test\runners'
             $Script:_config.HostTarballCachePath    | Should -Be 'C:\test\tarball-cache'
             $Script:_config.Owner            | Should -Be 'org'
-            $Script:_config.TestVm.routerExternalIp | Should -Be '192.168.100.200'
+            # TestVm carries the operator-supplied dns + switch info;
+            # router IP / gateway / subnetMask are intentionally absent
+            # (ext0 DHCPs, no operator IPs to pin per Start-E2EAgent
+            # docstring).
+            $Script:_config.TestVm.dns                 | Should -Be '8.8.8.8'
+            $Script:_config.TestVm.externalSwitchName  | Should -Be 'ExternalSwitch-Shared'
+            $Script:_config.TestVm.externalAdapterName | Should -Be 'Ethernet'
         }
 
         It 'posts success after the lifecycle test passes' {
