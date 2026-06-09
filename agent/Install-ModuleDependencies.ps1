@@ -108,4 +108,4 @@ if ($_loaded.Count -ne 1 -or $_loaded[0].Version -ne $_common.Version) {
 # Step 3 - Everything else
 Invoke-ModuleInstall -ModuleName 'Infrastructure.Secrets' -MinimumVersion '3.0.1'
 Invoke-ModuleInstall -ModuleName 'Infrastructure.GitHub'  -MinimumVersion '0.2.0'
-Invoke-ModuleInstall -ModuleName 'Infrastructure.HyperV'  -MinimumVersion '0.10.1'
+Invoke-ModuleInstall -ModuleName 'Infrastructure.HyperV'  -MinimumVersion '0.11.0'

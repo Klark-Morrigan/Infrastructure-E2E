@@ -361,71 +361,20 @@ function Invoke-WithVmSshClient {
 
     # Workload VMs sit on the per-environment private switch the host
     # has no route to (feature 53). Their VM def carries _RouterVm
-    # (stamped by provision.ps1 step 7) - branch on its presence so
-    # the assertion suite reaches workloads through the same jump-host
-    # tunnel pattern the provisioner uses for its post-provisioning
-    # session. Router-itself sessions skip the jump entirely (the
-    # host reaches the router over the External vSwitch directly).
-    $hasRouter = $VmDef.PSObject.Properties['_RouterVm'] -and $VmDef._RouterVm
-
-    $sshClient = $null
-    $jumpClient = $null
-    $forward = $null
+    # (stamped by provision.ps1 step 7) - delegate session construction
+    # to Infrastructure.HyperV's New-VmSshClientWithJump so the test
+    # path and the provisioner's post-provisioning path share the same
+    # jump-vs-direct decision and credential surface. Routers and
+    # pre-feature-53 callers get a direct New-VmSshClient via the
+    # same helper.
+    $sshSession = $null
     try {
-        if ($hasRouter) {
-            $router     = $VmDef._RouterVm
-            $jumpClient = New-VmSshClient `
-                              -IpAddress $router.ipAddress `
-                              -Username  $router.username `
-                              -Password  $router.password
-            # Same TcpListener-on-0 trick the provisioner's
-            # New-VmSshTunnel uses: bind to port 0 to let the kernel
-            # hand back a free ephemeral port, then release before
-            # SSH.NET claims it. The race window is small in practice.
-            $listener = [System.Net.Sockets.TcpListener]::new(
-                [System.Net.IPAddress]::Loopback, 0)
-            $listener.Start()
-            $localPort = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
-            $listener.Stop()
-
-            $forward = [Renci.SshNet.ForwardedPortLocal]::new(
-                '127.0.0.1', [uint32]$localPort,
-                $VmDef.ipAddress, [uint32]22)
-            $jumpClient.AddForwardedPort($forward)
-            $forward.Start()
-
-            # New-VmSshClient targets port 22 only - construct the
-            # SshClient directly here so we can point it at the
-            # forwarded ephemeral port the kernel just handed us.
-            $auth     = [Renci.SshNet.PasswordAuthenticationMethod]::new(
-                $VmDef.username, $VmDef.password)
-            $connInfo = [Renci.SshNet.ConnectionInfo]::new(
-                '127.0.0.1', [int]$localPort, $VmDef.username, @($auth))
-            $connInfo.Timeout = [TimeSpan]::FromSeconds(30)
-            $sshClient = [Renci.SshNet.SshClient]::new($connInfo)
-            $sshClient.Connect()
-        } else {
-            $sshClient = New-VmSshClient `
-                             -IpAddress $VmDef.ipAddress `
-                             -Username  $VmDef.username `
-                             -Password  $VmDef.password
-        }
-        & $Assertions $sshClient
+        $sshSession = New-VmSshClientWithJump -Vm $VmDef
+        & $Assertions $sshSession.Client
     }
     finally {
-        # Tear down in reverse construction order so the workload-side
-        # session closes before the underlying port forward goes away.
-        if ($null -ne $sshClient) {
-            if ($sshClient.IsConnected) { $sshClient.Disconnect() }
-            $sshClient.Dispose()
-        }
-        if ($null -ne $forward) {
-            try { $forward.Stop()    } catch {}
-            try { $forward.Dispose() } catch {}
-        }
-        if ($null -ne $jumpClient) {
-            if ($jumpClient.IsConnected) { $jumpClient.Disconnect() }
-            $jumpClient.Dispose()
+        if ($null -ne $sshSession) {
+            try { $sshSession.Dispose() } catch {}
         }
     }
 }
@@ -590,10 +539,19 @@ function Invoke-VmProvisioningSetup {
     }
 
     # Stash the router def alongside the SecondaryVm so callers reach
-    # it the same way they reach Vm2 - $vmDef._RouterVm.
+    # it the same way they reach Vm2 - $vmDef._RouterVm. Stamp both
+    # Vm1 AND Vm2 with _RouterVm so phase assertions that target
+    # either VM (via Invoke-WithVmSshClient -> New-VmSshClientWithJump)
+    # automatically take the jump-through-router branch. The router
+    # VM def is shared by both workloads: when create-vm.ps1's KVP
+    # discovery (or provision.ps1's existing-router resolution)
+    # writes ipAddress onto the router object, both VMs' _RouterVm
+    # references see the populated value.
     Add-Member -InputObject $vmDefs.Vm1 `
         -MemberType NoteProperty -Name '_SecondaryVm' -Value $vmDefs.Vm2 -Force
     Add-Member -InputObject $vmDefs.Vm1 `
+        -MemberType NoteProperty -Name '_RouterVm' -Value $vmDefs.RouterVm -Force
+    Add-Member -InputObject $vmDefs.Vm2 `
         -MemberType NoteProperty -Name '_RouterVm' -Value $vmDefs.RouterVm -Force
 
     return $vmDefs.Vm1

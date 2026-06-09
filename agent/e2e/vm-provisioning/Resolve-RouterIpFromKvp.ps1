@@ -6,11 +6,11 @@
 
 # ---------------------------------------------------------------------------
 # Resolve-RouterIpFromKvp
-#   Discovers the router VM's upstream NIC IPv4 address via Hyper-V's KVP
-#   integration services and stamps it back onto the supplied router VM
-#   definition as a NoteProperty named 'ipAddress'. A no-op when the def
-#   already carries an ipAddress (static-mode routers, or a re-call after
-#   the discovery already succeeded).
+#   Thin wrapper around Infrastructure.HyperV's Get-VmKvpIpAddress that
+#   stamps the discovered IPv4 back onto the supplied router VM def as
+#   a NoteProperty named 'ipAddress'. A no-op when the def already
+#   carries an ipAddress (static-mode routers, or a re-call after the
+#   discovery already succeeded).
 #
 #   Why the test rediscovers an IP provision.ps1 already knows:
 #     provision.ps1 runs as a child invocation (& "...\provision.ps1"
@@ -22,9 +22,10 @@
 #     (a sentinel file, an env var, a return value contract on
 #     provision.ps1).
 #
-#   The lookup matches the router's *external* switch name to pick the
-#   correct NIC; Hyper-V exposes both adapters (ext0 and priv0) via
-#   KVP, and only the external one carries the upstream LAN IP.
+#   The polling loop, the VM-state guard, the IPv4 filter, and the
+#   deadline error surface all live in the module helper - this file
+#   keeps the "if absent, discover and stamp" contract specific to the
+#   E2E test harness.
 # ---------------------------------------------------------------------------
 function Resolve-RouterIpFromKvp {
     [CmdletBinding()]
@@ -36,16 +37,14 @@ function Resolve-RouterIpFromKvp {
         [Parameter(Mandatory)]
         [object] $RouterVmDef,
 
-        # How long to wait for KVP to report an IPv4. The router's
-        # ext0 lease typically lands within ~30 s of boot, but a slow
-        # / flaky upstream LAN extends that; 5 minutes matches the
+        # Forwarded to Get-VmKvpIpAddress. The router's ext0 lease
+        # typically lands within ~30 s of boot, but a slow / flaky
+        # upstream LAN extends that; 5 minutes matches the
         # provisioner's own discovery budget.
         [Parameter()]
         [int] $TimeoutMinutes = 5,
 
-        # Polling cadence. 2 s avoids hammering Get-VMNetworkAdapter
-        # while still landing within a single SSH connect's wait
-        # budget once the lease arrives.
+        # Forwarded to Get-VmKvpIpAddress.
         [Parameter()]
         [int] $PollIntervalSeconds = 2
     )
@@ -56,43 +55,16 @@ function Resolve-RouterIpFromKvp {
 
     Write-Host "  Resolving router upstream IP via Hyper-V KVP ..." -NoNewline
 
-    $deadline     = (Get-Date).AddMinutes($TimeoutMinutes)
-    $discoveredIp = $null
-
-    while ((Get-Date) -lt $deadline -and -not $discoveredIp) {
-        # KVP only reports on a Running VM, so guard up front - a
-        # stopped VM would loop silently until the deadline.
-        $vmState = (Get-VM -Name $RouterVmDef.vmName).State
-        if ($vmState -ne 'Running') {
-            Write-Host ''
-            throw (
-                "Router VM '$($RouterVmDef.vmName)' is not Running " +
-                "(state: $vmState). Cannot discover its upstream IP via KVP."
-            )
-        }
-
-        $extAdapter = @(Get-VMNetworkAdapter -VMName $RouterVmDef.vmName |
-            Where-Object { $_.SwitchName -eq $RouterVmDef.externalSwitchName })
-        if ($extAdapter.Count -gt 0) {
-            $discoveredIp = @($extAdapter[0].IPAddresses) |
-                Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' } |
-                Select-Object -First 1
-        }
-        if (-not $discoveredIp) {
-            Write-Host '.' -NoNewline
-            Start-Sleep -Seconds $PollIntervalSeconds
-        }
-    }
-
-    if (-not $discoveredIp) {
+    try {
+        $discoveredIp = Get-VmKvpIpAddress `
+                            -VmName              $RouterVmDef.vmName `
+                            -SwitchName          $RouterVmDef.externalSwitchName `
+                            -TimeoutMinutes      $TimeoutMinutes `
+                            -PollIntervalSeconds $PollIntervalSeconds `
+                            -OnPoll              { Write-Host '.' -NoNewline }
+    } catch {
         Write-Host ''
-        throw (
-            "Router VM '$($RouterVmDef.vmName)' did not report an ext0 " +
-            "IP via Hyper-V KVP within $TimeoutMinutes minute(s). The " +
-            "router itself ran post-provisioning successfully, so the " +
-            "External vSwitch is fine - re-check the test harness's " +
-            "Hyper-V module import."
-        )
+        throw
     }
 
     Add-Member -InputObject $RouterVmDef `

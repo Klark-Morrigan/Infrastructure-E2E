@@ -38,24 +38,19 @@ function Assert-RunnerStillOnline {
 
     Write-Host "Re-asserting runner on $($VmDef.vmName) ..." -ForegroundColor Magenta
 
-    $sshClient = $null
+    $sshSession = $null
     try {
-        $sshClient = New-VmSshClient `
-                         -IpAddress $VmDef.ipAddress `
-                         -Username  $VmDef.username `
-                         -Password  $VmDef.password
-
+        $sshSession = New-VmSshClientWithJump -Vm $VmDef
         Invoke-RunnerStillOnlineAssertions `
-            -SshClient    $sshClient `
+            -SshClient    $sshSession.Client `
             -VmName       $VmDef.vmName `
             -RunnerName   $RunnerName `
             -RunnersToken $RunnersToken `
             -GithubUrl    $GithubUrl
     }
     finally {
-        if ($null -ne $sshClient) {
-            if ($sshClient.IsConnected) { $sshClient.Disconnect() }
-            $sshClient.Dispose()
+        if ($null -ne $sshSession) {
+            try { $sshSession.Dispose() } catch {}
         }
     }
 }
@@ -298,13 +293,11 @@ function Invoke-RunnerLifecycleTeardown {
     Write-Host "Verifying runner deregistration: $($VmDef.vmName) at $($VmDef.ipAddress) ..." `
         -ForegroundColor Magenta
 
-    $sshClient = $null
+    $sshSession = $null
 
     try {
-        $sshClient = New-VmSshClient `
-                         -IpAddress $VmDef.ipAddress `
-                         -Username  $VmDef.username `
-                         -Password  $VmDef.password
+        $sshSession = New-VmSshClientWithJump -Vm $VmDef
+        $sshClient  = $sshSession.Client
 
         # Runner service unit must be gone. deregister-runners.ps1 runs
         # svc.sh uninstall which removes the unit file.
@@ -335,9 +328,8 @@ function Invoke-RunnerLifecycleTeardown {
             -ForegroundColor Green
     }
     finally {
-        if ($null -ne $sshClient) {
-            if ($sshClient.IsConnected) { $sshClient.Disconnect() }
-            $sshClient.Dispose()
+        if ($null -ne $sshSession) {
+            try { $sshSession.Dispose() } catch {}
         }
     }
 
@@ -422,10 +414,8 @@ function Invoke-RunnerLifecycleTest {
         $sshClient = $null
 
         try {
-            $sshClient = New-VmSshClient `
-                             -IpAddress $vmDef.ipAddress `
-                             -Username  $vmDef.username `
-                             -Password  $vmDef.password
+            $sshSession = New-VmSshClientWithJump -Vm $vmDef
+            $sshClient  = $sshSession.Client
 
             # Resolve the full systemd unit name. svc.sh names it
             # 'actions.runner.{owner}-{repo}.{runnerName}.service'.
@@ -456,9 +446,8 @@ function Invoke-RunnerLifecycleTest {
             Write-Host '  [OK] runner service active.' -ForegroundColor Green
         }
         finally {
-            if ($null -ne $sshClient) {
-                if ($sshClient.IsConnected) { $sshClient.Disconnect() }
-                $sshClient.Dispose()
+            if ($null -ne $sshSession) {
+                try { $sshSession.Dispose() } catch {}
             }
         }
 
