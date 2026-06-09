@@ -33,6 +33,7 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 . "$PSScriptRoot\Invoke-EnvVarsRemovedAssertions.ps1"
 . "$PSScriptRoot\Invoke-EgressAssertions.ps1"
 . "$PSScriptRoot\Invoke-RouterReadyAssertions.ps1"
+. "$PSScriptRoot\Resolve-RouterIpFromKvp.ps1"
 
 # ---------------------------------------------------------------------------
 # Test scenario constants
@@ -358,18 +359,73 @@ function Invoke-WithVmSshClient {
         [Parameter(Mandatory)] [scriptblock] $Assertions
     )
 
+    # Workload VMs sit on the per-environment private switch the host
+    # has no route to (feature 53). Their VM def carries _RouterVm
+    # (stamped by provision.ps1 step 7) - branch on its presence so
+    # the assertion suite reaches workloads through the same jump-host
+    # tunnel pattern the provisioner uses for its post-provisioning
+    # session. Router-itself sessions skip the jump entirely (the
+    # host reaches the router over the External vSwitch directly).
+    $hasRouter = $VmDef.PSObject.Properties['_RouterVm'] -and $VmDef._RouterVm
+
     $sshClient = $null
+    $jumpClient = $null
+    $forward = $null
     try {
-        $sshClient = New-VmSshClient `
-                         -IpAddress $VmDef.ipAddress `
-                         -Username  $VmDef.username `
-                         -Password  $VmDef.password
+        if ($hasRouter) {
+            $router     = $VmDef._RouterVm
+            $jumpClient = New-VmSshClient `
+                              -IpAddress $router.ipAddress `
+                              -Username  $router.username `
+                              -Password  $router.password
+            # Same TcpListener-on-0 trick the provisioner's
+            # New-VmSshTunnel uses: bind to port 0 to let the kernel
+            # hand back a free ephemeral port, then release before
+            # SSH.NET claims it. The race window is small in practice.
+            $listener = [System.Net.Sockets.TcpListener]::new(
+                [System.Net.IPAddress]::Loopback, 0)
+            $listener.Start()
+            $localPort = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+            $listener.Stop()
+
+            $forward = [Renci.SshNet.ForwardedPortLocal]::new(
+                '127.0.0.1', [uint32]$localPort,
+                $VmDef.ipAddress, [uint32]22)
+            $jumpClient.AddForwardedPort($forward)
+            $forward.Start()
+
+            # New-VmSshClient targets port 22 only - construct the
+            # SshClient directly here so we can point it at the
+            # forwarded ephemeral port the kernel just handed us.
+            $auth     = [Renci.SshNet.PasswordAuthenticationMethod]::new(
+                $VmDef.username, $VmDef.password)
+            $connInfo = [Renci.SshNet.ConnectionInfo]::new(
+                '127.0.0.1', [int]$localPort, $VmDef.username, @($auth))
+            $connInfo.Timeout = [TimeSpan]::FromSeconds(30)
+            $sshClient = [Renci.SshNet.SshClient]::new($connInfo)
+            $sshClient.Connect()
+        } else {
+            $sshClient = New-VmSshClient `
+                             -IpAddress $VmDef.ipAddress `
+                             -Username  $VmDef.username `
+                             -Password  $VmDef.password
+        }
         & $Assertions $sshClient
     }
     finally {
+        # Tear down in reverse construction order so the workload-side
+        # session closes before the underlying port forward goes away.
         if ($null -ne $sshClient) {
             if ($sshClient.IsConnected) { $sshClient.Disconnect() }
             $sshClient.Dispose()
+        }
+        if ($null -ne $forward) {
+            try { $forward.Stop()    } catch {}
+            try { $forward.Dispose() } catch {}
+        }
+        if ($null -ne $jumpClient) {
+            if ($jumpClient.IsConnected) { $jumpClient.Disconnect() }
+            $jumpClient.Dispose()
         }
     }
 }

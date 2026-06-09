@@ -96,6 +96,13 @@ function Invoke-VmProvisioningPhase1 {
     Write-Host 'Phase 1: provisioning router + VM1 ...' -ForegroundColor Magenta
     & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
 
+    # provision.ps1 ran in its own scope and the discovered router IP
+    # never made it back to the test's local _RouterVm reference. Look
+    # it up again via Hyper-V KVP so the assertion path below (and the
+    # workload SSH jump on phases 2 / 3 - same Vm1Def carries forward)
+    # has a populated ipAddress to dial.
+    Resolve-RouterIpFromKvp -RouterVmDef $Vm1Def._RouterVm
+
     # Router-side white-box assertions. Phase 1 is the only place these
     # run - the router stays up across phases and its entry is
     # byte-identical in every VmProvisionerConfig write, so phases 2
