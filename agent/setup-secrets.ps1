@@ -67,6 +67,14 @@ Initialize-MicrosoftPowerShellSecretStoreVault `
             'dns',
             'externalSwitchName',
             'externalAdapterName',
+            # Pinned-static router upstream. Required so the run does
+            # not silently fall back to DHCP - DHCP-mode collides via
+            # shared MAC at the AP on bridged Wi-Fi, and silently
+            # breaks across Wi-Fi network changes on Internal+ICS
+            # (memories: hyperv-external-switch-wifi,
+            # hyperv-internal-plus-ics).
+            'routerExternalIp',
+            'routerExternalGateway',
             'vmConfigPath',
             'vhdPath'
         ) -Context 'E2EConfig.TestVm'
