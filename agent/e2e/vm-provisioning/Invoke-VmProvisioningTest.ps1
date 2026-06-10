@@ -239,11 +239,14 @@ function New-VmEntryBase {
 
 # Builds the router-VM entry consumed by provision.ps1's router-seed
 # path (feature 53 step 1). Two NICs: ext0 on the host's External
-# vSwitch (upstream egress; gets its address from DHCP - the host's
-# vSwitch can be bridged to any LAN, so pinning a static here would
-# break every time the operator moves networks), priv0 on the per-
-# test Private vSwitch (downstream gateway and DNS for workloads,
-# always static so workloads can be configured against a stable IP).
+# vSwitch (upstream egress; STATIC IP from $Config.TestVm.routerExternalIp
+# / routerExternalGateway so the run does not depend on the underlying
+# DHCP server being reachable - originally DHCP-only, but ICS DHCP
+# silently breaks across Wi-Fi network changes per
+# feedback_hyperv_internal_plus_ics memory, and bridged-Wi-Fi DHCP
+# collides via shared MAC at the AP per
+# feedback_hyperv_external_switch_wifi). priv0 on the per-test Private
+# vSwitch (downstream gateway and DNS for workloads, always static).
 function New-RouterEntry {
     [CmdletBinding()]
     param(
@@ -251,9 +254,10 @@ function New-RouterEntry {
         [Parameter(Mandatory)] [string] $Password
     )
 
-    # subnetMask is required for the priv0 NIC; the schema also accepts
-    # it as the static ext0 mask under `externalDhcp: false`, but the
-    # E2E path uses DHCP and the value here only pins priv0.
+    # subnetMask is the universal /24 for both NICs in this test
+    # topology - priv0 always 10.99.0.0/24 (RouterPrivateIp + .10/.11
+    # workloads), ext0 always the Config-supplied router-upstream
+    # subnet (/24 per ICS default 192.168.137.0 / per-operator-LAN).
     return [ordered]@{
         vmName              = $script:RouterVmName
         cpuCount            = 1
@@ -269,6 +273,11 @@ function New-RouterEntry {
         kind                = 'router'
         externalSwitchName  = $Config.TestVm.externalSwitchName
         externalAdapterName = $Config.TestVm.externalAdapterName
+        # Static ext0. externalDhcp=false forces the static path in
+        # Assert-RouterVmField, which then requires ipAddress + gateway.
+        externalDhcp        = $false
+        ipAddress           = $Config.TestVm.routerExternalIp
+        gateway             = $Config.TestVm.routerExternalGateway
         privateSwitchName   = $script:PrivateSwitchName
         privateIpAddress    = $script:RouterPrivateIp
     }
