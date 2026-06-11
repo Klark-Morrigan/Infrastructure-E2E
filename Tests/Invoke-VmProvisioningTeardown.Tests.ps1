@@ -143,6 +143,35 @@ Describe 'Invoke-PreTeardownRuntimeDiagCapture' {
         $script:_routerStampSeen | Should -BeTrue
     }
 
+    It 'tolerates VM defs missing the optional kind field (workload default)' {
+        # The schema treats 'kind' as router-only - workload entries
+        # written by Write-VmProvisionerConfig do not carry it. Under
+        # Strict-Mode -Latest, a bare $vm.kind access throws
+        # "property cannot be found". This test locks in the
+        # PSObject.Properties guard that defaults missing values
+        # to 'workload' so teardown does not fail on a normal config.
+        New-FakeProvisionerTree -Root $script:provRoot
+        Mock Get-Secret {
+            @'
+[
+  { "vmName": "router-e2e", "kind": "router", "vmConfigPath": "C:\\diag" },
+  { "vmName": "e2e-test-1",                   "vmConfigPath": "C:\\diag" }
+]
+'@
+        }
+        Mock Invoke-VmRuntimeDiag { 'stub-folder' }
+
+        Set-StrictMode -Version Latest
+        try {
+            { Invoke-PreTeardownRuntimeDiagCapture -Config $script:config } |
+                Should -Not -Throw
+        } finally {
+            Set-StrictMode -Off
+        }
+
+        Should -Invoke Invoke-VmRuntimeDiag -Times 2
+    }
+
     It 'continues snapshotting subsequent VMs after a per-VM failure' {
         New-FakeProvisionerTree -Root $script:provRoot
         Mock Get-Secret { New-FakeVmsJson }
@@ -163,5 +192,79 @@ Describe 'Invoke-PreTeardownRuntimeDiagCapture' {
         # And the workload snapshot must have been attempted despite
         # the router failure.
         $script:_calls | Should -Contain 'e2e-test-1'
+    }
+}
+
+Describe 'Invoke-VmProvisioningTeardown - diag failure does not cancel deprovision' {
+    # The 2026-06 regression: pre-teardown diag threw on a missing
+    # 'kind' field, the throw propagated past the diag function's
+    # internal try/catch blocks, and the teardown function aborted
+    # before Invoke deprovision.ps1, leaving VHDX files wedged for
+    # the next run. The site-level try/catch in
+    # Invoke-VmProvisioningTeardown is the belt to the diag function's
+    # suspenders - even a brand-new bug in the diag helper must not
+    # cancel destruction.
+
+    BeforeEach {
+        $script:provRoot = Join-Path 'TestDrive:\' ([Guid]::NewGuid().Guid)
+        New-Item -ItemType Directory -Path $script:provRoot | Out-Null
+        # Minimal deprovision.ps1 stub at the path the teardown
+        # function invokes via & "$ProvisionerPath\hyper-v\ubuntu\
+        # deprovision.ps1". The body just records the call so the
+        # test can assert "deprovision ran" without spinning up a
+        # real provisioner.
+        $deprovDir = Join-Path $script:provRoot 'hyper-v\ubuntu'
+        New-Item -ItemType Directory -Path $deprovDir -Force | Out-Null
+        $deprovScript = Join-Path $deprovDir 'deprovision.ps1'
+        Set-Content -Path $deprovScript -Value @'
+param([string] $SecretSuffix)
+$global:_DeprovisionInvoked = $true
+'@
+
+        $script:config = [PSCustomObject]@{ ProvisionerPath = $script:provRoot }
+        $global:_DeprovisionInvoked = $false
+        $script:E2ETestSecretSuffix = 'TEST'
+    }
+
+    It 'still runs deprovision when the diag function throws an unexpected error' {
+        # Replace the diag function with one that throws OUTSIDE its
+        # own try/catch blocks (the bug shape from 2026-06).
+        function global:Invoke-PreTeardownRuntimeDiagCapture {
+            throw 'simulated unexpected diag failure'
+        }
+
+        Mock Remove-Secret { }
+
+        { Invoke-VmProvisioningTeardown -Config $script:config } |
+            Should -Not -Throw
+
+        $global:_DeprovisionInvoked | Should -BeTrue
+    }
+
+    It 'still removes the VmProvisionerConfig secret after a diag throw' {
+        function global:Invoke-PreTeardownRuntimeDiagCapture {
+            throw 'simulated unexpected diag failure'
+        }
+
+        $script:_secretRemoved = $false
+        Mock Remove-Secret { $script:_secretRemoved = $true }
+
+        Invoke-VmProvisioningTeardown -Config $script:config
+
+        $script:_secretRemoved | Should -BeTrue
+    }
+
+    It 'still runs the post-teardown assertions after a diag throw' {
+        function global:Invoke-PreTeardownRuntimeDiagCapture {
+            throw 'simulated unexpected diag failure'
+        }
+
+        $script:_assertionsRan = $false
+        Mock Remove-Secret { }
+        Mock Invoke-VmTeardownAssertions { $script:_assertionsRan = $true }
+
+        Invoke-VmProvisioningTeardown -Config $script:config
+
+        $script:_assertionsRan | Should -BeTrue
     }
 }

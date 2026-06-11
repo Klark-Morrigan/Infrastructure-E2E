@@ -81,11 +81,21 @@ function Invoke-PreTeardownRuntimeDiagCapture {
 
     # Stamp _RouterVm on workloads so the helper's
     # New-VmSshClientWithJump dispatch takes the jump-through-router
-    # branch automatically. Mirrors provision.ps1 step 7.
-    $routerVm = @($vms | Where-Object kind -eq 'router' | Select-Object -First 1)[0]
+    # branch automatically. Mirrors provision.ps1 step 7. Workload
+    # entries written by Write-VmProvisionerConfig do not all carry
+    # a 'kind' field (the schema treats it as router-only), so use
+    # PSObject.Properties to read it safely under Strict-Mode and
+    # default missing values to 'workload'.
+    function Get-VmKind {
+        param([object] $Vm)
+        if ($Vm.PSObject.Properties['kind']) { $Vm.kind } else { 'workload' }
+    }
+
+    $routerVm = @($vms | Where-Object { (Get-VmKind $_) -eq 'router' } |
+                  Select-Object -First 1)[0]
     if ($routerVm) {
         foreach ($vm in $vms) {
-            if ($vm.kind -ne 'router') {
+            if ((Get-VmKind $vm) -ne 'router') {
                 $vm | Add-Member -NotePropertyName _RouterVm `
                                   -NotePropertyValue $routerVm -Force
             }
