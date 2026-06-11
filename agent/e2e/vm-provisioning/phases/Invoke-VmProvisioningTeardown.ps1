@@ -57,7 +57,21 @@ function Invoke-VmProvisioningTeardown {
         [PSCustomObject] $Config
     )
 
-    Invoke-PreTeardownRuntimeDiagCapture -Config $Config
+    # Diag is best-effort by contract - a snapshot is nice to have,
+    # but the destruction work below is required. Wrap the call in a
+    # belt-and-suspenders try/catch so even a brand-new bug in the
+    # diag helper (StrictMode property access, unhandled vault edge
+    # case, helper-dot-source failure) cannot abort deprovision and
+    # leave VHDX files wedged for the next run. The function itself
+    # already swallows expected failure modes (missing helpers, vault
+    # unread, per-VM SSH); this catches the unexpected ones too.
+    try {
+        Invoke-PreTeardownRuntimeDiagCapture -Config $Config
+    } catch {
+        Write-Host ("[diag] pre-teardown capture aborted with an " +
+            "unexpected error: $($_.Exception.Message). Continuing " +
+            "with deprovision.") -ForegroundColor Yellow
+    }
 
     Write-Host 'Deprovisioning VM(s) ...' -ForegroundColor Magenta
     & "$($Config.ProvisionerPath)\hyper-v\ubuntu\deprovision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
