@@ -334,9 +334,26 @@ function New-PinnedVmDefinitions {
     # the username minted at Setup, and the router-only fields the
     # white-box assertion files read (privateIpAddress for the
     # downstream-NIC check).
-    $routerDef = [PSCustomObject](New-RouterEntry `
+    #
+    # Retain the original [ordered]@{} that New-RouterEntry returns
+    # AND its PSCustomObject view so a single source-of-truth flows
+    # to both consumers without hand-copying field lists:
+    #   - $routerDef        : PSCustomObject for white-box assertions
+    #                          and Add-Member sites (test path uses
+    #                          dot-access; provision.ps1 stamps
+    #                          ipAddress on the workload VM defs via
+    #                          their _RouterVm reference).
+    #   - $routerEntry      : [ordered] hashtable used verbatim as
+    #                          $script:RouterEntry by
+    #                          Write-VmProvisionerConfig - same shape
+    #                          serialised to JSON for the vault.
+    # The PSCustomObject and the hashtable are independent objects
+    # (`[PSCustomObject] $h` copies the entries into a new PSObject),
+    # so any Add-Member to $routerDef does not bleed into $routerEntry.
+    $routerEntry = New-RouterEntry `
         -Config   $Config `
-        -Password (New-VmProvisioningPassword))
+        -Password (New-VmProvisioningPassword)
+    $routerDef   = [PSCustomObject] $routerEntry
 
     $vm1Def = [PSCustomObject](New-VmEntryBase `
         -Config    $Config `
@@ -351,9 +368,10 @@ function New-PinnedVmDefinitions {
         -Password  (New-VmProvisioningPassword))
 
     return [PSCustomObject]@{
-        RouterVm = $routerDef
-        Vm1      = $vm1Def
-        Vm2      = $vm2Def
+        RouterVm    = $routerDef
+        RouterEntry = $routerEntry
+        Vm1         = $vm1Def
+        Vm2         = $vm2Def
     }
 }
 
@@ -519,33 +537,15 @@ function Invoke-VmProvisioningSetup {
     # credentials and the load-bearing router-specific fields
     # (privateIpAddress) the white-box assertions read.
     #
-    # ipAddress / gateway are intentionally absent: the router VM uses
-    # externalDhcp=true (the schema default) so its upstream IP is
-    # discovered by create-vm.ps1's wait-for-SSH via Hyper-V KVP and
-    # then written back onto the SAME RouterVm object - the workload
-    # tunnel reaches that fresh value via $_RouterVm.ipAddress (object
-    # identity, not a copy). Static-router operators set externalDhcp=
-    # false in their VmProvisionerConfig and the schema picks up
-    # ipAddress / gateway from the input JSON directly; this E2E path
-    # never goes there.
-    $script:RouterEntry = [ordered]@{
-        vmName              = $vmDefs.RouterVm.vmName
-        cpuCount            = $vmDefs.RouterVm.cpuCount
-        ramGB               = $vmDefs.RouterVm.ramGB
-        diskGB              = $vmDefs.RouterVm.diskGB
-        ubuntuVersion       = $vmDefs.RouterVm.ubuntuVersion
-        username            = $vmDefs.RouterVm.username
-        password            = $vmDefs.RouterVm.password
-        subnetMask          = $vmDefs.RouterVm.subnetMask
-        dns                 = $vmDefs.RouterVm.dns
-        vmConfigPath        = $vmDefs.RouterVm.vmConfigPath
-        vhdPath             = $vmDefs.RouterVm.vhdPath
-        kind                = $vmDefs.RouterVm.kind
-        externalSwitchName  = $vmDefs.RouterVm.externalSwitchName
-        externalAdapterName = $vmDefs.RouterVm.externalAdapterName
-        privateSwitchName   = $vmDefs.RouterVm.privateSwitchName
-        privateIpAddress    = $vmDefs.RouterVm.privateIpAddress
-    }
+    # Single source of truth: $vmDefs.RouterEntry IS the [ordered]
+    # hashtable New-RouterEntry produced. Previously this site
+    # hand-copied each field, which silently dropped any field
+    # New-RouterEntry added later (see the externalDhcp/ipAddress/
+    # gateway addition where the inline copy missed those fields and
+    # the vault ended up with externalDhcp absent, falling back to
+    # the schema's DHCP default). One source means future additions
+    # to New-RouterEntry flow through automatically.
+    $script:RouterEntry = $vmDefs.RouterEntry
 
     # Stash the router def alongside the SecondaryVm so callers reach
     # it the same way they reach Vm2 - $vmDef._RouterVm. Stamp both
