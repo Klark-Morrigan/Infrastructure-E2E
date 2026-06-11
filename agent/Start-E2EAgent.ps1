@@ -271,6 +271,12 @@ function Invoke-E2EAgentLoop {
             Write-Host "Deployment $($deployment.id) found - running E2E tests ..." `
                 -ForegroundColor Green
 
+            # Sourced per deployment so test-code edits land in the
+            # next iteration without a process restart. PowerShell
+            # binds function defs at dot-source time and does not
+            # reload them on its own.
+            . "$PSScriptRoot\e2e\runner-lifecycle\Invoke-RunnerLifecycleTest.ps1"
+
             Set-DeploymentStatus `
                 -Token        $tokenResult.Token `
                 -Owner        $Owner `
@@ -353,11 +359,6 @@ function Invoke-E2EAgentLoop {
 if ($MyInvocation.InvocationName -ne '.') {
 
     . "$PSScriptRoot\Initialize-E2EEnvironment.ps1"
-
-    # Dot-source the lifecycle test so Invoke-RunnerLifecycleTest is available
-    # to the loop function above. This must happen after PowerShell.Common
-    # is loaded because the lifecycle test depends on it.
-    . "$PSScriptRoot\e2e\runner-lifecycle\Invoke-RunnerLifecycleTest.ps1"
 
     # ---------------------------------------------------------------------------
     # Read E2EConfig from vault
