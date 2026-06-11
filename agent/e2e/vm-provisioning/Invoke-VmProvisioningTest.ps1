@@ -500,7 +500,7 @@ function Assert-EtcEnvironmentMtimeAdvanced {
 # Teardown assertions must be defined before Teardown, because
 # Invoke-VmProvisioningTeardown calls Invoke-VmTeardownAssertions at the
 # end of its run.
-. "$PSScriptRoot\assertions\Invoke-VmTeardownAssertions.ps1"
+. "$PSScriptRoot\assertions\lifecycle\Invoke-VmTeardownAssertions.ps1"
 . "$PSScriptRoot\phases\Invoke-VmProvisioningTeardown.ps1"
 
 # ---------------------------------------------------------------------------
