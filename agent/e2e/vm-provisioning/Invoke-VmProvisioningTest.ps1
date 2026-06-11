@@ -13,26 +13,36 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 
 # Assertion helpers. Each lives in its own file so they can be unit-tested in
 # isolation and so this file stays focused on setup/teardown/orchestration.
-. "$PSScriptRoot\Invoke-NoLeftoverTestVmsAssertions.ps1"
-. "$PSScriptRoot\Invoke-VmReadyAssertions.ps1"
-. "$PSScriptRoot\Invoke-StaticNetworkAssertions.ps1"
-. "$PSScriptRoot\Invoke-JdkInstallAssertions.ps1"
-. "$PSScriptRoot\Invoke-JdkUninstallAssertions.ps1"
-. "$PSScriptRoot\Invoke-JdkNoopAssertions.ps1"
-. "$PSScriptRoot\Invoke-JdkVersionChangeAssertions.ps1"
-. "$PSScriptRoot\Invoke-DotnetSdkInstallAssertions.ps1"
-. "$PSScriptRoot\Invoke-DotnetSdkUninstallAssertions.ps1"
-. "$PSScriptRoot\Invoke-DotnetSdkNoopAssertions.ps1"
-. "$PSScriptRoot\Invoke-DotnetSdkVersionChangeAssertions.ps1"
-. "$PSScriptRoot\Invoke-DotnetToolsAssertions.ps1"
-. "$PSScriptRoot\Invoke-NoJdkVmAssertions.ps1"
-. "$PSScriptRoot\Invoke-NoDotnetSdkVmAssertions.ps1"
-. "$PSScriptRoot\Invoke-FileTransferAssertions.ps1"
-. "$PSScriptRoot\Invoke-BulkFileTransferAssertions.ps1"
-. "$PSScriptRoot\Invoke-EnvVarsAppliedAssertions.ps1"
-. "$PSScriptRoot\Invoke-EnvVarsRemovedAssertions.ps1"
-. "$PSScriptRoot\Invoke-EgressAssertions.ps1"
-. "$PSScriptRoot\Invoke-RouterReadyAssertions.ps1"
+# Files are grouped into subfolders by role and domain:
+#   - assertions\jdk\        : reconciler assertions for javaDevKit
+#   - assertions\dotnet\     : reconciler assertions for dotnetSdk + dotnetTools
+#   - assertions\files\      : reconciler assertions for the 'files' field
+#   - assertions\env-vars\   : reconciler assertions for the 'envVars' field
+#   - assertions\network\    : VM/router readiness, netplan, egress
+#   - assertions\lifecycle\  : VM teardown verification + stale-VM guard
+#   - phases\                : phase orchestrators + teardown (dot-sourced below)
+#   - diag\                  : pre-teardown runtime snapshot (dot-sourced from
+#                              phases\Invoke-VmProvisioningTeardown.ps1)
+. "$PSScriptRoot\assertions\lifecycle\Invoke-NoLeftoverTestVmsAssertions.ps1"
+. "$PSScriptRoot\assertions\network\Invoke-VmReadyAssertions.ps1"
+. "$PSScriptRoot\assertions\network\Invoke-StaticNetworkAssertions.ps1"
+. "$PSScriptRoot\assertions\network\Invoke-RouterReadyAssertions.ps1"
+. "$PSScriptRoot\assertions\network\Invoke-EgressAssertions.ps1"
+. "$PSScriptRoot\assertions\jdk\Invoke-JdkInstallAssertions.ps1"
+. "$PSScriptRoot\assertions\jdk\Invoke-JdkUninstallAssertions.ps1"
+. "$PSScriptRoot\assertions\jdk\Invoke-JdkNoopAssertions.ps1"
+. "$PSScriptRoot\assertions\jdk\Invoke-JdkVersionChangeAssertions.ps1"
+. "$PSScriptRoot\assertions\jdk\Invoke-NoJdkVmAssertions.ps1"
+. "$PSScriptRoot\assertions\dotnet\Invoke-DotnetSdkInstallAssertions.ps1"
+. "$PSScriptRoot\assertions\dotnet\Invoke-DotnetSdkUninstallAssertions.ps1"
+. "$PSScriptRoot\assertions\dotnet\Invoke-DotnetSdkNoopAssertions.ps1"
+. "$PSScriptRoot\assertions\dotnet\Invoke-DotnetSdkVersionChangeAssertions.ps1"
+. "$PSScriptRoot\assertions\dotnet\Invoke-DotnetToolsAssertions.ps1"
+. "$PSScriptRoot\assertions\dotnet\Invoke-NoDotnetSdkVmAssertions.ps1"
+. "$PSScriptRoot\assertions\files\Invoke-FileTransferAssertions.ps1"
+. "$PSScriptRoot\assertions\files\Invoke-BulkFileTransferAssertions.ps1"
+. "$PSScriptRoot\assertions\env-vars\Invoke-EnvVarsAppliedAssertions.ps1"
+. "$PSScriptRoot\assertions\env-vars\Invoke-EnvVarsRemovedAssertions.ps1"
 . "$PSScriptRoot\Resolve-RouterIpFromKvp.ps1"
 
 # ---------------------------------------------------------------------------
@@ -483,15 +493,15 @@ function Assert-EtcEnvironmentMtimeAdvanced {
 # (New-VmEntryBase, Write-VmProvisionerConfig, Invoke-WithVmSshClient) and
 # the $script:* constants, so the dot-sources MUST come after the helper
 # and constant definitions in this file.
-. "$PSScriptRoot\Invoke-VmProvisioningPhase1.ps1"
-. "$PSScriptRoot\Invoke-VmProvisioningPhase2.ps1"
-. "$PSScriptRoot\Invoke-VmProvisioningPhase3.ps1"
+. "$PSScriptRoot\phases\Invoke-VmProvisioningPhase1.ps1"
+. "$PSScriptRoot\phases\Invoke-VmProvisioningPhase2.ps1"
+. "$PSScriptRoot\phases\Invoke-VmProvisioningPhase3.ps1"
 
 # Teardown assertions must be defined before Teardown, because
 # Invoke-VmProvisioningTeardown calls Invoke-VmTeardownAssertions at the
 # end of its run.
-. "$PSScriptRoot\Invoke-VmTeardownAssertions.ps1"
-. "$PSScriptRoot\Invoke-VmProvisioningTeardown.ps1"
+. "$PSScriptRoot\assertions\Invoke-VmTeardownAssertions.ps1"
+. "$PSScriptRoot\phases\Invoke-VmProvisioningTeardown.ps1"
 
 # ---------------------------------------------------------------------------
 # Invoke-VmProvisioningSetup
