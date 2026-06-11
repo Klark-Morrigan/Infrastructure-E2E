@@ -112,7 +112,15 @@ function Set-VmUsersForTest {
                 # cmdlet. Same gotcha as bootstrap-controller.ps1's
                 # wsl-invocation fix; see that file for the canonical
                 # explanation.
-                & wsl -d $WslDistro -- ./ops/create-users.sh 2>&1 | Out-Host
+                # -vvv: diagnostic verbosity for the 2026-06 Ansible-via-WSL
+                # path. The portproxy redirect is now in place (provisioner
+                # step 4 + _run-playbook.sh WSL detection), but "Connection
+                # closed by UNKNOWN port 65535" still surfaces after auth+
+                # session-open on BOTH hops. -vvv prints the actual ssh
+                # invocation, stderr, and which hop closed - enough to
+                # localize the remaining failure mode. Remove this flag
+                # once the path is solid.
+                & wsl -d $WslDistro -- ./ops/create-users.sh -vvv 2>&1 | Out-Host
             }
             finally {
                 Pop-Location

@@ -134,7 +134,7 @@ Describe 'Set-VmUsersForTest' {
             # it - but production wsl.exe (a native exe) does receive
             # the '--' verbatim. Assert the surrounding tokens only.
             $joined = $Script:Captured -join ' '
-            $joined | Should -Match '^-d Ubuntu-24\.04(\s+--)?\s+\./ops/create-users\.sh$'
+            $joined | Should -Match '^-d Ubuntu-24\.04(\s+--)?\s+\./ops/create-users\.sh(\s+-vvv)?$'
             $Script:CapturedCwd | Should -Be $Script:AnsiblePath
         }
 
