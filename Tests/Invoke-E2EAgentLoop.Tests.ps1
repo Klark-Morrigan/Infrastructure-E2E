@@ -5,7 +5,7 @@ BeforeAll {
     function Get-PendingDeployment      { param($Token, $Owner, $Repo, $Environment) }
     function Set-DeploymentStatus       { param($Token, $Owner, $Repo, $DeploymentId, $State, $Description, $LogUrl) }
     function Invoke-RunnerLifecycleTest { param($Config) }
-    # Assert-WslHasBash is a PowerShell.Common cmdlet the ansible-flow
+    # Assert-WslHasBash is a Common.PowerShell cmdlet the ansible-flow
     # startup validation calls to catch the docker-desktop-default trap
     # (a no-bash WSL distro). Stub it as a no-op so the unit tests are not
     # forced to actually have WSL installed.

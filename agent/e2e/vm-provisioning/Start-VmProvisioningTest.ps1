@@ -13,7 +13,7 @@
 
     Prerequisites:
       - PowerShell 7+.
-      - PowerShell.Common >= 1.3.3 installed (or will be installed here).
+      - Common.PowerShell >= 1.3.3 installed (or will be installed here).
       - Infrastructure.Secrets installed.
       - Run as Administrator (Hyper-V cmdlets require elevation).
 
@@ -79,7 +79,7 @@ $ErrorActionPreference = 'Stop'
 
 . "$PSScriptRoot\..\..\Initialize-E2EEnvironment.ps1"
 
-# Dot-source the test script after PowerShell.Common is loaded because the
+# Dot-source the test script after Common.PowerShell is loaded because the
 # test depends on Invoke-SshClientCommand and Invoke-ModuleInstall from it.
 . "$PSScriptRoot\Invoke-VmProvisioningTest.ps1"
 

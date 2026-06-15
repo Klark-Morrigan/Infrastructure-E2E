@@ -1,7 +1,7 @@
 <#
 .NOTES
     Do not run this file directly. Dot-sourced by Invoke-RunnerLifecycleTest.ps1
-    after PowerShell.Common (for Invoke-SshClientCommand) and
+    after Common.PowerShell (for Invoke-SshClientCommand) and
     Infrastructure.GitHub (for Invoke-GitHubApi) are loaded.
 #>
 

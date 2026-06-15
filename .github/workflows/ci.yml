@@ -1,6 +1,6 @@
 name: CI
 
-# Delegates to the shared PowerShell CI workflow in PowerShell-Common.
+# Delegates to the shared PowerShell CI workflow in Common-PowerShell.
 # Kept as a local file so pull_request and push triggers work for this repo,
 # and so other workflows can call it via workflow_call.
 on:
@@ -11,4 +11,4 @@ on:
 
 jobs:
   ci:
-    uses: VitaliiAndreev/PowerShell-Common/.github/workflows/ci-powershell.yml@master
+    uses: VitaliiAndreev/Common-PowerShell/.github/workflows/ci-powershell.yml@master

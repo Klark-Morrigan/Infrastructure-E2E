@@ -30,7 +30,7 @@
 
     Prerequisites:
       - setup-secrets.ps1 has been run to populate the E2EConfig vault.
-      - PowerShell.Common >= 1.3.3 installed (or will be installed here).
+      - Common.PowerShell >= 1.3.3 installed (or will be installed here).
       - Infrastructure.Secrets installed.
 
 .EXAMPLE
@@ -208,7 +208,7 @@ function Invoke-E2EAgentLoop {
     # the ansible flow on either layer needs them.
     #
     # WslDistro is verified up-front via Assert-WslHasBash from
-    # PowerShell.Common - that catches the docker-desktop-default trap
+    # Common.PowerShell - that catches the docker-desktop-default trap
     # (no bash) named in the parameter docs, and surfaces a
     # WslMissingBash: error with a remediation hint instead of letting
     # the bridge fail mid-test with a sparse-PATH error.

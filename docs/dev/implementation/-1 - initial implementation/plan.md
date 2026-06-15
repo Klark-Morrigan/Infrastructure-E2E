@@ -3,9 +3,9 @@
 ## Index
 
 - [Step 1 - Repo skeleton + GitHub App setup](#step-1---repo-skeleton--github-app-setup)
-- [Step 2 - Invoke-GitHubApi in PowerShell-Common](#step-2---invoke-githubapi-in-PowerShell-Common)
-- [Step 3 - GitHub App authentication in PowerShell-Common](#step-3---github-app-authentication-in-PowerShell-Common)
-- [Step 4 - Deployments API in PowerShell-Common](#step-4---deployments-api-in-PowerShell-Common)
+- [Step 2 - Invoke-GitHubApi in Common-PowerShell](#step-2---invoke-githubapi-in-Common-PowerShell)
+- [Step 3 - GitHub App authentication in Common-PowerShell](#step-3---github-app-authentication-in-Common-PowerShell)
+- [Step 4 - Deployments API in Common-PowerShell](#step-4---deployments-api-in-Common-PowerShell)
 - [Step 5 - Migrate Infrastructure-GitHubRunners to Invoke-GitHubApi](#step-5---migrate-infrastructure-githubrunners-to-invoke-githubapi)
 - [Step 6 - Polling agent](#step-6---polling-agent)
 - [Step 7 - GitHub Actions workflow](#step-7---github-actions-workflow)
@@ -47,7 +47,7 @@ docs/
 GitHub App registration is a one-time manual step that must happen
 before any code can authenticate - documenting it here ensures it is
 not skipped. GitHub API functions are not scaffolded here because they
-live in `PowerShell-Common` (steps 2, 3, 4).
+live in `Common-PowerShell` (steps 2, 3, 4).
 
 **GitHub App registration (manual, one-time):**
 1. Create app at `github.com/settings/apps/new`
@@ -105,10 +105,10 @@ graph TD
 
 ---
 
-## Step 2 - Invoke-GitHubApi in PowerShell-Common
+## Step 2 - Invoke-GitHubApi in Common-PowerShell
 
 **What:** New function
-`PowerShell.Common\Public\Invoke-GitHubApi.ps1` - a general-purpose
+`Common.PowerShell\Public\Invoke-GitHubApi.ps1` - a general-purpose
 GitHub REST API caller.
 
 Parameters:
@@ -122,7 +122,7 @@ Sets `Authorization: Bearer`, `User-Agent: Infrastructure`, and
 `Content-Type: application/json` on every request. Returns the raw
 `Invoke-RestMethod` response.
 
-Update `PowerShell.Common.psm1` to dot-source the new function.
+Update `Common.PowerShell.psm1` to dot-source the new function.
 The `.psd1` version and `FunctionsToExport` are updated once in step 4
 when all Common additions are complete.
 
@@ -136,12 +136,12 @@ PATs.
 User-Agent, Method, and Body serialization for each combination of
 parameters.
 
-**README update:** Add `Invoke-GitHubApi` to the PowerShell-Common
+**README update:** Add `Invoke-GitHubApi` to the Common-PowerShell
 function reference.
 
 ```mermaid
 graph TD
-    subgraph Common["PowerShell-Common (unpublished)"]
+    subgraph Common["Common-PowerShell (unpublished)"]
         GHA["Invoke-GitHubApi.ps1"]
     end
 
@@ -156,10 +156,10 @@ graph TD
 
 ---
 
-## Step 3 - GitHub App authentication in PowerShell-Common
+## Step 3 - GitHub App authentication in Common-PowerShell
 
 **What:** New function
-`PowerShell.Common\Public\Get-GitHubAppToken.ps1` - given app ID,
+`Common.PowerShell\Public\Get-GitHubAppToken.ps1` - given app ID,
 installation ID, and private key path, returns a short-lived
 installation access token.
 
@@ -170,7 +170,7 @@ Steps:
    `POST /app/installations/{installationId}/access_tokens`
 3. Return `token` and `expires_at` from the response
 
-Update `PowerShell.Common.psm1` to dot-source the new function.
+Update `Common.PowerShell.psm1` to dot-source the new function.
 The `.psd1` version and `FunctionsToExport` are updated in step 4.
 
 **Why:** Authentication is cross-cutting - both the polling agent and
@@ -182,7 +182,7 @@ concerns stay in one place.
 test key; assert `Invoke-GitHubApi` is called with the correct endpoint
 and JWT as Bearer.
 
-**README update:** Add `Get-GitHubAppToken` to the PowerShell-Common
+**README update:** Add `Get-GitHubAppToken` to the Common-PowerShell
 function reference.
 
 ```mermaid
@@ -203,22 +203,22 @@ sequenceDiagram
 
 ---
 
-## Step 4 - Deployments API in PowerShell-Common
+## Step 4 - Deployments API in Common-PowerShell
 
 **Version bump:** `1.2.1` -> `1.3.1`
 
 **What:** Two new functions:
 
-- `PowerShell.Common\Public\Get-PendingDeployment.ps1` - calls
+- `Common.PowerShell\Public\Get-PendingDeployment.ps1` - calls
   `GET /repos/{owner}/{repo}/deployments?environment=e2e-workstation`
   via `Invoke-GitHubApi`, filters to entries with no terminal status
   (`success`, `failure`, `error`, `inactive`), returns the oldest
   pending one or `$null`
-- `PowerShell.Common\Public\Set-DeploymentStatus.ps1` - calls
+- `Common.PowerShell\Public\Set-DeploymentStatus.ps1` - calls
   `POST /repos/{owner}/{repo}/deployments/{id}/statuses` via
   `Invoke-GitHubApi` with state, description, and optional log URL
 
-Update `PowerShell.Common.psm1` to dot-source both new functions.
+Update `Common.PowerShell.psm1` to dot-source both new functions.
 Bump `ModuleVersion` to `1.3.1` in the `.psd1` and add all four new
 functions to `FunctionsToExport`:
 `Invoke-GitHubApi`, `Get-GitHubAppToken`, `Get-PendingDeployment`,
@@ -236,7 +236,7 @@ is needed for all four new functions.
 `Set-DeploymentStatus`.
 
 **README update:** Add `Get-PendingDeployment` and
-`Set-DeploymentStatus` to the PowerShell-Common function reference.
+`Set-DeploymentStatus` to the Common-PowerShell function reference.
 
 ```mermaid
 sequenceDiagram
@@ -265,9 +265,9 @@ sequenceDiagram
 ## Step 5 - Migrate Infrastructure-GitHubRunners to Invoke-GitHubApi
 
 **What:** Replace `Invoke-GitHubRunnersApi.ps1` with calls to
-`Invoke-GitHubApi` from `PowerShell-Common`. Rename `-Pat` to
+`Invoke-GitHubApi` from `Common-PowerShell`. Rename `-Pat` to
 `-Token` throughout the repo. Raise the minimum required
-`PowerShell.Common` version to `1.3.1`.
+`Common.PowerShell` version to `1.3.1`.
 
 Changes:
 1. Delete
@@ -291,7 +291,7 @@ instead of `Invoke-GitHubRunnersApi`; assert `-Token` parameter is
 passed through correctly.
 
 **README update:** Update Infrastructure-GitHubRunners README to note
-`PowerShell.Common >= 1.3.1` as a prerequisite.
+`Common.PowerShell >= 1.3.1` as a prerequisite.
 
 ```mermaid
 graph TD
@@ -306,7 +306,7 @@ graph TD
     end
 
     subgraph After
-        NEW["Invoke-GitHubApi (-Token)\nPowerShell-Common"]
+        NEW["Invoke-GitHubApi (-Token)\nCommon-PowerShell"]
         GRR2["Get-GitHubRunnerRegistration (-Token)"]
         RGR2["Remove-GitHubRunner (-Token)"]
         RRV2["Resolve-RunnerVersion (-Token)"]

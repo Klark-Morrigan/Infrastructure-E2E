@@ -1,6 +1,6 @@
 <#
 .NOTES
-    Do not run this file directly. Dot-source it after PowerShell.Common
+    Do not run this file directly. Dot-source it after Common.PowerShell
     and Infrastructure.Secrets are loaded (Start-E2EAgent.ps1 handles this
     via Invoke-RunnerLifecycleTest -> Invoke-VmUsersTest -> this file).
 #>
@@ -8,7 +8,7 @@
 # Posh-SSH is loaded for its bundled Renci.SshNet.dll. Posh-SSH's own
 # cmdlets are not used - ConnectionInfoGenerator in Posh-SSH 3.x drops
 # algorithm entries, breaking KEX against OpenSSH 9.x (Ubuntu 24.04).
-# SSH.NET is used directly via Invoke-SshClientCommand (PowerShell.Common).
+# SSH.NET is used directly via Invoke-SshClientCommand (Common.PowerShell).
 Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 
 # Assertion helpers. Each lives in its own file so they can be unit-tested in

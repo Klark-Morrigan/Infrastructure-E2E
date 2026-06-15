@@ -1,7 +1,7 @@
 <#
 .NOTES
     Do not run this file directly. Dot-sourced by Invoke-VmProvisioningTest.ps1
-    after PowerShell.Common and Infrastructure.HyperV are loaded (for
+    after Common.PowerShell and Infrastructure.HyperV are loaded (for
     Invoke-SshClientCommand).
 #>
 

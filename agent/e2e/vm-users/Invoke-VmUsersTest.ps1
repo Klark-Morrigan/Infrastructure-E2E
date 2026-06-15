@@ -1,6 +1,6 @@
 <#
 .NOTES
-    Do not run this file directly. Dot-source it after PowerShell.Common
+    Do not run this file directly. Dot-source it after Common.PowerShell
     and Infrastructure.Secrets are loaded (Start-E2EAgent.ps1 handles this
     via Invoke-RunnerLifecycleTest -> this file).
 #>

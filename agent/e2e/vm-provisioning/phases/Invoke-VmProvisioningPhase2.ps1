@@ -1,7 +1,7 @@
 <#
 .NOTES
     Do not run this file directly. Dot-sourced by Invoke-VmProvisioningTest.ps1
-    after PowerShell.Common, the assertion helpers, and the shared
+    after Common.PowerShell, the assertion helpers, and the shared
     orchestrator helpers are loaded.
 #>
 

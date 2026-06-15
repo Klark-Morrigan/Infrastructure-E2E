@@ -1,7 +1,7 @@
 <#
 .NOTES
     Do not run this file directly. Dot-sourced by Invoke-VmProvisioningTest.ps1
-    after PowerShell.Common (for Invoke-SshClientCommand) is loaded.
+    after Common.PowerShell (for Invoke-SshClientCommand) is loaded.
 #>
 
 # ---------------------------------------------------------------------------
