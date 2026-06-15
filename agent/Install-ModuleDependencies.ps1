@@ -89,8 +89,8 @@ if (-not $_nuget -or $_nuget.Version -lt [Version]'2.8.5.201') {
 # the gate decides whether to reinstall; the pin decides what to fetch.
 $_common = Get-Module -ListAvailable -Name Common.PowerShell |
     Sort-Object Version -Descending | Select-Object -First 1
-if (-not $_common -or $_common.Version -lt [Version]'6.2.0') {
-    Install-PowerShellCommonWithRetry -MinimumVersion '6.2.0'
+if (-not $_common -or $_common.Version -lt [Version]'7.0.0') {
+    Install-PowerShellCommonWithRetry -MinimumVersion '7.0.0'
     # Re-query so the comparison below uses the freshly installed version.
     $_common = Get-Module -ListAvailable -Name Common.PowerShell |
         Sort-Object Version -Descending | Select-Object -First 1
