@@ -13,6 +13,9 @@
 - [How to run individual tests](#how-to-run-individual-tests)
 - [How to trigger](#how-to-trigger)
 - [Test coverage](#test-coverage)
+- [Linting and CI](#linting-and-ci)
+  - [Running the lint suite locally](#running-the-lint-suite-locally)
+  - [Known-failing actionlint job](#known-failing-actionlint-job)
 - [Repo structure](#repo-structure)
 
 ---
@@ -400,12 +403,86 @@ focused stack trace rather than a runner error.
 
 ---
 
+## Linting and CI
+
+Two delegating workflows lint this repo's non-PowerShell surfaces on every
+pull request to `master`. Both forward to reusable workflows in
+`Common-Automation`, so the lint logic lives in one place and this repo
+carries only thin caller files:
+
+- [`.github/workflows/ci-yaml.yml`](.github/workflows/ci-yaml.yml) -
+  delegates to Common-Automation's reusable `ci-yaml.yml`, which runs
+  actionlint, action-validator, yamllint, and ansible-lint in parallel.
+  Each job auto-skips when its target surface is absent.
+- [`.github/workflows/ci-bash.yml`](.github/workflows/ci-bash.yml) -
+  delegates to Common-Automation's reusable `ci-bash.yml`, which runs
+  shellcheck, the `check-sh-executable` +x-bit gate, and every `*.bats`
+  suite. This repo's only bash surface is the runner shims under
+  `scripts/`, held to the same strict bar as every other repo.
+
+These lint the YAML and bash surfaces only. The real E2E test suite is
+Pester and is unaffected - it runs via the polling agent and the
+per-layer scripts described above, never through this lint tooling.
+
+### Running the lint suite locally
+
+Three sibling shim commands reproduce the CI surface locally via Git Bash plus
+Docker, so failures surface before the PR rather than in CI. All three point
+Common-Automation's engine at this repo via `COMMON_AUTOMATION_TARGET_REPO`, so
+`Common-Automation` must be a sibling checkout (`..\Common-Automation`).
+
+- [`scripts/run-ci-yaml-and-bash.sh`](scripts/run-ci-yaml-and-bash.sh) is the
+  MAIN local entry: the full local equivalent of this repo's `ci-yaml.yml` +
+  `ci-bash.yml` - it runs the whole lint suite AND the bats tests in one go.
+  Double-clicking [`scripts/run-ci-yaml-and-bash.bat`](scripts/run-ci-yaml-and-bash.bat)
+  is the Explorer launcher for the same flow.
+- To run a single half: [`scripts/run-lint-yaml-and-bash.sh`](scripts/run-lint-yaml-and-bash.sh)
+  runs the LINT half only (shellcheck, actionlint, action-validator, yamllint,
+  ansible-lint), and [`scripts/run-tests-bash.sh`](scripts/run-tests-bash.sh)
+  runs the bats TEST half only. Each has a sibling `.bat` Explorer launcher.
+
+The lint shim is named `run-lint`, not `run-tests`, to stay distinct from this
+repo's real test runner ([`scripts/Run-Tests.ps1`](scripts/Run-Tests.ps1), the
+Pester entry) - these bash shims never touch the Pester tests.
+
+Two supporting files keep the bash tooling CI-clean on a Windows checkout:
+
+- [`scripts/fix-permissions.sh`](scripts/fix-permissions.sh) (and its
+  [`.bat`](scripts/fix-permissions.bat) launcher) re-stages `+x` on every
+  tracked `*.sh` missing it, so the `check-sh-executable` gate stays green
+  after authoring a script on Windows (where new files land mode `0644`).
+- [`.gitattributes`](.gitattributes) pins `*.sh` to LF and `*.bat` to
+  CRLF, so a stray CR on a shebang line cannot break the Linux CI runners.
+
+### Known-failing actionlint job
+
+The pre-existing [`.github/workflows/e2e.yml`](.github/workflows/e2e.yml)
+has actionlint findings (invalid `create-github-app-token` inputs and an
+unsafe `github.head_ref` usage), so the new `ci-yaml` actionlint job is
+currently red. The job is reporting an accurate pre-existing problem; it
+will go green once `e2e.yml` is fixed.
+
+---
+
 ## Repo structure
 
 ```
 .github/
   workflows/
     e2e.yml                        - E2E workflow (manual, scheduled, cross-repo)
+    ci-yaml.yml                    - YAML/Actions lint, delegates to Common-Automation
+    ci-bash.yml                    - Bash lint + bats, delegates to Common-Automation
+.gitattributes                     - Pins *.sh to LF, *.bat to CRLF
+scripts/
+  Run-Tests.ps1                    - Pester test runner (the real test suite)
+  run-ci-yaml-and-bash.sh          - MAIN: full local lint + bats (shim to Common-Automation)
+  run-ci-yaml-and-bash.bat         - Explorer launcher for run-ci-yaml-and-bash.sh
+  run-lint-yaml-and-bash.sh        - Lint half only (shim to Common-Automation)
+  run-lint-yaml-and-bash.bat       - Explorer launcher for run-lint-yaml-and-bash.sh
+  run-tests-bash.sh                - Bats test half only (shim to Common-Automation)
+  run-tests-bash.bat               - Explorer launcher for run-tests-bash.sh
+  fix-permissions.sh               - Re-stages +x on tracked *.sh (shim)
+  fix-permissions.bat              - Explorer launcher for fix-permissions.sh
 agent/
   e2e/
     vm-provisioning/
