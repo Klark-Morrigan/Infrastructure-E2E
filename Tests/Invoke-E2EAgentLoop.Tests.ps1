@@ -10,6 +10,13 @@ BeforeAll {
     # (a no-bash WSL distro). Stub it as a no-op so the unit tests are not
     # forced to actually have WSL installed.
     function Assert-WslHasBash          { param($DistroName) }
+    # When the loop finds a deployment it dot-sources the runner-lifecycle
+    # cascade, which installs Posh-SSH at load time via Invoke-ModuleInstall
+    # (a Common.PowerShell cmdlet). A clean test runspace has no
+    # Common.PowerShell, so that load-time call would otherwise throw
+    # CommandNotFoundException; stub it as a no-op. The loop's own logic,
+    # not module installation, is what these tests exercise.
+    function Invoke-ModuleInstall       { param($ModuleName, $MinimumVersion) }
 
     # Start-E2EAgent.ps1 now declares -SecretSuffix as a mandatory
     # top-level parameter. Dot-sourcing without binding it would trip
