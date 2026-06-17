@@ -107,7 +107,11 @@ if ($_loaded.Count -ne 1 -or $_loaded[0].Version -ne $_common.Version) {
 
 # Step 3 - Everything else
 Invoke-ModuleInstall -ModuleName 'Infrastructure.Secrets' -MinimumVersion '3.0.1'
-Invoke-ModuleInstall -ModuleName 'Infrastructure.GitHub'  -MinimumVersion '0.2.0'
+# 1.1.0 carries Get-PendingDeployment's -CreatedSince cutoff, which the
+# polling loop relies on to avoid the N+1 status fan-out that exhausted the
+# GitHub API rate limit. Pin the minimum so the agent never runs on an older
+# copy that would crash-loop on 403.
+Invoke-ModuleInstall -ModuleName 'Infrastructure.GitHub'  -MinimumVersion '1.1.0'
 Invoke-ModuleInstall -ModuleName 'Infrastructure.HyperV'  -MinimumVersion '0.11.0'
 # Infrastructure.Wsl supplies Invoke-WslShell + Assert-Wsl2Ready /
 # Assert-WslHasBash. The agent's Ansible flow needs all three (one
