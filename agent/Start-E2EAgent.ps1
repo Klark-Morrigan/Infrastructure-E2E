@@ -414,6 +414,7 @@ function Invoke-E2EAgentLoop {
 if ($MyInvocation.InvocationName -ne '.') {
 
     . "$PSScriptRoot\Initialize-E2EEnvironment.ps1"
+    . "$PSScriptRoot\Get-RateLimitBackoffDelay.ps1"
 
     # ---------------------------------------------------------------------------
     # Read E2EConfig from vault
@@ -520,8 +521,21 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
         catch {
             Write-Host "Agent crashed: $($_.Exception.Message)" -ForegroundColor Red
-            Write-Host 'Restarting in 60 seconds ...' -ForegroundColor Yellow
-            Start-Sleep -Seconds 60
+
+            # A rate-limit crash clears only when GitHub's rolling window
+            # resets, so a flat 60s restart would crash-loop against an empty
+            # budget. Sleep until the budget refills (or a longer default),
+            # then resume; genuine crashes keep the original 60s restart.
+            $backoffSeconds = Get-RateLimitBackoffDelay -ErrorRecord $_
+            if ($backoffSeconds -gt 0) {
+                Write-Host ("GitHub rate limit hit - backing off ${backoffSeconds}s " +
+                    'until the budget resets ...') -ForegroundColor Yellow
+                Start-Sleep -Seconds $backoffSeconds
+            }
+            else {
+                Write-Host 'Restarting in 60 seconds ...' -ForegroundColor Yellow
+                Start-Sleep -Seconds 60
+            }
         }
     }
 
