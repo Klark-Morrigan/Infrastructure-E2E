@@ -286,17 +286,72 @@ function Invoke-E2EAgentLoop {
                 -Description  'E2E tests running'
 
             try {
+                # Per-run flow override.
+                #   The calling repo's PR encodes which create/remove
+                #   implementation each layer should exercise in the
+                #   deployment payload (set by .github/workflows/e2e.yml
+                #   from its flow-spec input). A custom-powershell repo's PR
+                #   thus tests its own path while ansible stays the default
+                #   scenario. Absent payload (manual deployments, older
+                #   callers) keeps the session flows read from the vault.
+                #   Parsing/validation runs inside this try so a malformed
+                #   spec posts a 'failure' status instead of crashing the
+                #   agent. Guarded property access is required under
+                #   Set-StrictMode -Latest.
+                $effectiveUsersFlow   = $UsersFlow
+                $effectiveRunnersFlow = $RunnersFlow
+                if ($deployment.PSObject.Properties['payload'] -and $deployment.payload) {
+                    $payload = $deployment.payload
+                    # GitHub returns the payload as a parsed object when it
+                    # was created as JSON; tolerate a raw JSON string too.
+                    if ($payload -is [string]) { $payload = $payload | ConvertFrom-Json }
+                    if ($payload.PSObject.Properties['usersFlow']   -and $payload.usersFlow) {
+                        $effectiveUsersFlow   = $payload.usersFlow
+                    }
+                    if ($payload.PSObject.Properties['runnersFlow'] -and $payload.runnersFlow) {
+                        $effectiveRunnersFlow = $payload.runnersFlow
+                    }
+                    Write-Host ("Flow spec from payload: UsersFlow=$effectiveUsersFlow " +
+                        "RunnersFlow=$effectiveRunnersFlow") -ForegroundColor Cyan
+                }
+
+                # Validate the effective flows. An unknown value fails loud
+                # here rather than as a sparse ValidateSet error deep in a
+                # dispatcher. An 'ansible' effective flow re-asserts the
+                # AnsiblePath/WslDistro prerequisites: the startup check only
+                # covered the session defaults, so a payload that upgrades a
+                # layer to ansible (vault set custom-powershell) must still
+                # have a usable bridge or it would fail mid-test.
+                foreach ($pair in @(
+                        @{ Name = 'usersFlow';   Value = $effectiveUsersFlow },
+                        @{ Name = 'runnersFlow'; Value = $effectiveRunnersFlow })) {
+                    if ($pair.Value -notin @('custom-powershell', 'ansible')) {
+                        throw ("Invalid $($pair.Name) '$($pair.Value)' in deployment " +
+                            "payload; expected 'custom-powershell' or 'ansible'.")
+                    }
+                }
+                if ($effectiveUsersFlow -eq 'ansible' -or $effectiveRunnersFlow -eq 'ansible') {
+                    if (-not $AnsiblePath -or
+                        -not (Test-Path -LiteralPath $AnsiblePath -PathType Container)) {
+                        throw ("Effective flow is 'ansible' but AnsiblePath is " +
+                            "missing or invalid: '$AnsiblePath'.")
+                    }
+                    if (-not $WslDistro) {
+                        throw "Effective flow is 'ansible' but WslDistro is not set."
+                    }
+                }
+
                 Invoke-RunnerLifecycleTest -Config ([PSCustomObject]@{
                     AppId                 = $AppId
                     RunnersInstallationId = $RunnersInstallationId
                     PrivateKeyPath        = $PrivateKeyPath
                     ProvisionerPath       = $ProvisionerPath
                     UsersPath             = $UsersPath
-                    UsersFlow             = $UsersFlow
+                    UsersFlow             = $effectiveUsersFlow
                     AnsiblePath           = $AnsiblePath
                     WslDistro             = $WslDistro
                     RunnersPath           = $RunnersPath
-                    RunnersFlow           = $RunnersFlow
+                    RunnersFlow           = $effectiveRunnersFlow
                     HostTarballCachePath  = $HostTarballCachePath
                     Owner                 = $Owner
                     TestVm                = $TestVm
@@ -422,6 +477,10 @@ if ($MyInvocation.InvocationName -ne '.') {
     # fail-fasts with a named error so the operator adds it to the vault
     # rather than the agent guessing. Strict mode requires guarded
     # property access.
+    # These vault values are the session defaults only; an individual
+    # deployment may override UsersFlow/RunnersFlow for that one run via
+    # its payload (set by the e2e.yml flow-spec input), so each calling
+    # repo's PR exercises the create/remove path it owns.
     $vaultUsersFlow   = $null
     $vaultRunnersFlow = $null
     $vaultAnsiblePath = $null

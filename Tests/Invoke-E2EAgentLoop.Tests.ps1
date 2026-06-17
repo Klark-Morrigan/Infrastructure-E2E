@@ -485,6 +485,137 @@ Describe 'Invoke-E2EAgentLoop' {
     }
 
     # ------------------------------------------------------------------
+    Context 'flow spec from deployment payload' {
+    # ------------------------------------------------------------------
+
+        BeforeEach {
+            Mock Get-GitHubAppToken { $Script:FreshToken }
+            Mock Set-DeploymentStatus {}
+        }
+
+        It 'overrides both session flows with the payload flows for that run' {
+            # BaseParams sets the session defaults to the ansible scenario;
+            # a custom-powershell repo's PR rides its own scenario in the
+            # deployment payload and must win for that deployment.
+            $Script:_pl_config = $null
+            $script:_plCount = 0
+            Mock Get-PendingDeployment {
+                $script:_plCount++
+                if ($script:_plCount -eq 1) {
+                    return [PSCustomObject]@{
+                        id      = 77
+                        payload = [PSCustomObject]@{
+                            usersFlow   = 'custom-powershell'
+                            runnersFlow = 'custom-powershell'
+                        }
+                    }
+                }
+                return $null
+            }
+            Mock Invoke-RunnerLifecycleTest { $Script:_pl_config = $Config }
+
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            $Script:_pl_config.UsersFlow   | Should -Be 'custom-powershell'
+            $Script:_pl_config.RunnersFlow | Should -Be 'custom-powershell'
+        }
+
+        It 'falls back to the session flows when the deployment has no payload' {
+            $Script:_nopl_config = $null
+            $script:_noplCount = 0
+            Mock Get-PendingDeployment {
+                $script:_noplCount++
+                if ($script:_noplCount -eq 1) { return [PSCustomObject]@{ id = 78 } }
+                return $null
+            }
+            Mock Invoke-RunnerLifecycleTest { $Script:_nopl_config = $Config }
+
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            # BaseParams sets UsersFlow=ansible and leaves RunnersFlow at its
+            # parameter default (custom-powershell).
+            $Script:_nopl_config.UsersFlow   | Should -Be 'ansible'
+            $Script:_nopl_config.RunnersFlow | Should -Be 'custom-powershell'
+        }
+
+        It 'applies only the flow present in the payload, keeping the other at the session value' {
+            $Script:_partial_config = $null
+            $script:_partialCount = 0
+            Mock Get-PendingDeployment {
+                $script:_partialCount++
+                if ($script:_partialCount -eq 1) {
+                    return [PSCustomObject]@{
+                        id      = 79
+                        payload = [PSCustomObject]@{ runnersFlow = 'ansible' }
+                    }
+                }
+                return $null
+            }
+            Mock Invoke-RunnerLifecycleTest { $Script:_partial_config = $Config }
+
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            $Script:_partial_config.UsersFlow   | Should -Be 'ansible'   # session default
+            $Script:_partial_config.RunnersFlow | Should -Be 'ansible'   # from payload
+        }
+
+        It 'posts failure for an unknown flow value in the payload instead of crashing' {
+            $script:_badCount = 0
+            Mock Get-PendingDeployment {
+                $script:_badCount++
+                if ($script:_badCount -eq 1) {
+                    return [PSCustomObject]@{
+                        id      = 80
+                        payload = [PSCustomObject]@{ usersFlow = 'legacy' }
+                    }
+                }
+                return $null
+            }
+            Mock Invoke-RunnerLifecycleTest {}
+
+            { Invoke-E2EAgentLoop @Script:BaseParams } | Should -Not -Throw
+
+            Should -Invoke Set-DeploymentStatus -ParameterFilter {
+                $DeploymentId -eq 80 -and $State -eq 'failure'
+            }
+            # The bad spec is rejected before the lifecycle test is reached.
+            Should -Invoke Invoke-RunnerLifecycleTest -Times 0
+        }
+
+        It "posts failure when a payload upgrades a layer to 'ansible' but AnsiblePath is missing" {
+            # The startup check only validated the session defaults. A payload
+            # that flips a custom-powershell session to ansible must re-assert
+            # the bridge prerequisites or it would fail deep in a dispatcher.
+            $script:_upCount = 0
+            Mock Get-PendingDeployment {
+                $script:_upCount++
+                if ($script:_upCount -eq 1) {
+                    return [PSCustomObject]@{
+                        id      = 81
+                        payload = [PSCustomObject]@{ usersFlow = 'ansible' }
+                    }
+                }
+                return $null
+            }
+            Mock Invoke-RunnerLifecycleTest {}
+
+            # Session is custom-powershell with no AnsiblePath, so startup
+            # validation passes; the payload's ansible upgrade is caught
+            # per-run instead.
+            $params = $Script:BaseParams.Clone()
+            $params['UsersFlow'] = 'custom-powershell'
+            $params.Remove('AnsiblePath')
+
+            { Invoke-E2EAgentLoop @params } | Should -Not -Throw
+
+            Should -Invoke Set-DeploymentStatus -ParameterFilter {
+                $DeploymentId -eq 81 -and $State -eq 'failure'
+            }
+            Should -Invoke Invoke-RunnerLifecycleTest -Times 0
+        }
+    }
+
+    # ------------------------------------------------------------------
     Context 'token refresh' {
     # ------------------------------------------------------------------
 

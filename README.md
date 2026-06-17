@@ -168,11 +168,11 @@ following in the `E2EConfig` vault:
   "TimeoutMinutes":      60,
   "ProvisionerPath":     "C:\\a_Code\\Infrastructure-Vm-Provisioner",
   "UsersPath":           "C:\\a_Code\\Infrastructure-Vm-Users",
-  "UsersFlow":           "ansible",                                   // optional - 'ansible' (default) or 'custom-powershell'
-  "AnsiblePath":         "C:\\a_Code\\Infrastructure-VM-Ansible",     // optional - required when UsersFlow=ansible
-  "WslDistro":           "Ubuntu-24.04",                              // optional - required when UsersFlow=ansible; see Infrastructure-VM-Ansible README Troubleshooting
+  "UsersFlow":           "ansible",                                   // optional session default - 'ansible' (default) or 'custom-powershell'; a caller's flow-spec overrides per run
+  "AnsiblePath":         "C:\\a_Code\\Infrastructure-VM-Ansible",     // required when either flow resolves to 'ansible' - the default scenario, so effectively always on a workstation serving these repos' PRs
+  "WslDistro":           "Ubuntu-24.04",                              // required alongside AnsiblePath whenever a flow is 'ansible'; see Infrastructure-VM-Ansible README Troubleshooting
   "RunnersPath":         "C:\\a_Code\\Infrastructure-GitHubRunners",
-  "RunnersFlow":         "custom-powershell",                         // optional - 'custom-powershell' (current default) or 'ansible'
+  "RunnersFlow":         "custom-powershell",                         // optional session default - 'custom-powershell' (default) or 'ansible'; a caller's flow-spec overrides per run
   "HostTarballCachePath": "C:\\cache\\github-runners",
   "TestVm": {
     "ubuntuVersion":  "24.04",
@@ -366,10 +366,28 @@ workflow via `workflow_call` as a required status check. The full
 lifecycle layer always runs regardless of which upstream repo the PR is
 in - so an Ansible role change cannot merge to master without proving
 the new code still reconciles users and brings up an online runner on a
-real VM. Whether the agent runs the Ansible or the PowerShell create
-flow is selected by `UsersFlow` at agent startup, not by which repo
-triggered the workflow. The runner registration flow is selected
-independently by `RunnersFlow`.
+real VM.
+
+Each caller selects which create/remove implementation the run
+exercises through the `flow-spec` input - a JSON object
+`{"usersFlow":"...","runnersFlow":"..."}` with values `ansible` or
+`custom-powershell`. The workflow embeds that JSON in the GitHub
+Deployment payload; the polling agent reads it and overrides its vault
+`UsersFlow` / `RunnersFlow` defaults for that one run, so a repo's PR
+exercises the path it owns:
+
+| Caller repo | `flow-spec` | Tests |
+|---|---|---|
+| `Infrastructure-VM-Ansible` | `{"usersFlow":"ansible","runnersFlow":"ansible"}` | the Ansible create-users + register-runners scripts |
+| `Infrastructure-Vm-Users` | `{"usersFlow":"custom-powershell","runnersFlow":"custom-powershell"}` | the PowerShell users scripts |
+| `Infrastructure-GitHubRunners` | `{"usersFlow":"custom-powershell","runnersFlow":"custom-powershell"}` | the PowerShell runner-registration script |
+| `Infrastructure-Vm-Provisioner` | omitted | the default ansible scenario |
+
+`ansible` is the default scenario: a caller that omits `flow-spec` (and a
+manual `workflow_dispatch` left at its default) runs both layers on the
+Ansible path. A `flow-spec` that names an unknown flow, or that upgrades a
+layer to `ansible` on an agent without `AnsiblePath` / `WslDistro`
+configured, fails the deployment with a named error rather than guessing.
 
 ### Reading results
 

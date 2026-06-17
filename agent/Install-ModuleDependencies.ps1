@@ -109,3 +109,8 @@ if ($_loaded.Count -ne 1 -or $_loaded[0].Version -ne $_common.Version) {
 Invoke-ModuleInstall -ModuleName 'Infrastructure.Secrets' -MinimumVersion '3.0.1'
 Invoke-ModuleInstall -ModuleName 'Infrastructure.GitHub'  -MinimumVersion '0.2.0'
 Invoke-ModuleInstall -ModuleName 'Infrastructure.HyperV'  -MinimumVersion '0.11.0'
+# Infrastructure.Wsl supplies Invoke-WslShell + Assert-Wsl2Ready /
+# Assert-WslHasBash. The agent's Ansible flow needs all three (one
+# shell into WSL per playbook run, plus the readiness gates from
+# Initialize-E2EEnvironment).
+Invoke-ModuleInstall -ModuleName 'Infrastructure.Wsl'     -MinimumVersion '0.1.0'

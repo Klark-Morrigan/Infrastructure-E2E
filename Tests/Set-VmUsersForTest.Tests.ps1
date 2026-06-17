@@ -1,6 +1,13 @@
 BeforeAll {
-    # Dot-source the dispatcher directly. It has no module imports of its
-    # own; Pester runs in a fresh runspace per file.
+    # Stub Limit-RetainedItem (Common.PowerShell module export). The
+    # ansible flow calls it before writing each new verbose log;
+    # tests cover wsl dispatch, not retention behaviour, so a no-op
+    # keeps them focused. The real function has dedicated tests in
+    # the Common.PowerShell repo.
+    function Limit-RetainedItem {
+        param($Directory, $Filter, $MaxItems, $MaxAgeDays, [switch] $FileOnly)
+    }
+
     . "$PSScriptRoot\..\agent\e2e\vm-users\Set-VmUsersForTest.ps1"
 
     # The dispatcher reads $script:E2ETestSecretSuffix, which production
@@ -17,10 +24,17 @@ BeforeAll {
     # the vault) but they are mandatory params so production callers
     # cannot drift away from passing them.
     $Script:VmDef = [PSCustomObject]@{
-        vmName    = 'e2e-test-1'
-        ipAddress = '192.168.101.10'
-        username  = 'op'
-        password  = 'p'
+        vmName       = 'e2e-test-1'
+        ipAddress    = '192.168.101.10'
+        username     = 'op'
+        password     = 'p'
+        # Required by the ansible flow's verbose-log capture (the
+        # dispatcher writes <vmConfigPath>/diagnostics/ansible/
+        # <timestamp>-create-users.log so the per-VM diag root
+        # picks up the transcript too). The custom-powershell flow
+        # ignores it. TestDrive scopes the path to the running
+        # test so the file vanishes when Pester tears down.
+        vmConfigPath = 'TestDrive:\Hyper-V\Config'
     }
     $Script:Entry = [ordered]@{ vmName = 'e2e-test-1'; users = @() }
 }

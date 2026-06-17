@@ -19,7 +19,26 @@ on:
   pull_request:
     branches: [ master ]
   workflow_dispatch:
+    inputs:
+      flow-spec:
+        description: >-
+          JSON selecting which create/remove implementation each layer runs,
+          e.g. {"usersFlow":"ansible","runnersFlow":"ansible"}. Values are
+          'ansible' or 'custom-powershell'. Omit for the ansible scenario.
+        required: false
+        type: string
+        default: '{"usersFlow":"ansible","runnersFlow":"ansible"}'
   workflow_call:
+    inputs:
+      flow-spec:
+        description: >-
+          JSON selecting which create/remove implementation each layer runs.
+          Callers pass {"usersFlow":"...","runnersFlow":"..."} with values
+          'ansible' (default) or 'custom-powershell'. Omitted => ansible, so
+          a caller that does not set it gets the default ansible scenario.
+        required: false
+        type: string
+        default: '{"usersFlow":"ansible","runnersFlow":"ansible"}'
     secrets:
       GH_APP_ID:
         required: true
@@ -69,19 +88,39 @@ jobs:
         id: create-deployment
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
+          # The calling repo selects which create/remove implementation each
+          # layer runs via this flow-spec; it rides to the workstation agent
+          # in the deployment payload. Empty for a pull_request on this repo
+          # (inputs only exist for workflow_call / workflow_dispatch) - the
+          # step defaults it to the ansible scenario below so own-repo PRs
+          # still exercise the primary path.
+          FLOW_SPEC: ${{ inputs.flow-spec }}
         run: |
+          flow_spec="$FLOW_SPEC"
+          if [ -z "$flow_spec" ]; then
+            flow_spec='{"usersFlow":"ansible","runnersFlow":"ansible"}'
+          fi
+          ref=${{ steps.resolve-ref.outputs.ref }}
+          # jq --argjson parses flow_spec as JSON and embeds it as the
+          # deployment payload object; an invalid spec fails the step here
+          # rather than silently reaching the agent. payload travels back to
+          # the polling agent, which reads usersFlow / runnersFlow from it.
           # auto_merge:false - no branch merge is relevant here.
           # required_contexts:[] - bypasses commit-status checks that would
           # otherwise block deployment creation on a repo with branch protection.
-          ref=${{ steps.resolve-ref.outputs.ref }}
-          payload="{\"ref\":\"$ref\",\"environment\":\"e2e-workstation\",\"auto_merge\":false,\"required_contexts\":[]}"
-          deployment_id=$(echo "$payload" | gh api \
+          body=$(jq -nc \
+            --arg ref "$ref" \
+            --argjson payload "$flow_spec" \
+            '{ ref: $ref, environment: "e2e-workstation",
+               auto_merge: false, required_contexts: [],
+               payload: $payload }')
+          deployment_id=$(printf '%s' "$body" | gh api \
             --method POST \
             "repos/Klark-Morrigan/Infrastructure-E2E/deployments" \
             --input - \
             --jq '.id')
           echo "deployment-id=$deployment_id" >> "$GITHUB_OUTPUT"
-          echo "Created deployment $deployment_id"
+          echo "Created deployment $deployment_id with flow spec: $flow_spec"
 
       - name: Wait for terminal status
         env:
