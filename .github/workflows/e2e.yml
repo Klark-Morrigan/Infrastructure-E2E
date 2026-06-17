@@ -56,30 +56,41 @@ jobs:
         id: token
         uses: actions/create-github-app-token@v3
         with:
-          client-id: ${{ secrets.GH_APP_ID }}
+          # app-id accepts the App ID or its Client ID; the GH_APP_ID secret
+          # supplies whichever this App uses.
+          app-id: ${{ secrets.GH_APP_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
           owner: Klark-Morrigan
           repositories: Infrastructure-E2E
 
       - name: Resolve deployment ref
         id: resolve-ref
+        # github context values are passed through env, not inlined into the
+        # script: head_ref is attacker-controllable on a fork PR, so inlining
+        # it risks shell injection (GitHub secure-use guidance). The script
+        # reads the shell vars instead.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REF: ${{ github.head_ref }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           # Cross-repo call: always deploy against master - the caller's branch
-          # does not exist in this repo (detected via github.repository).
-          # pull_request (own repo): use the source branch - github.ref_name
-          # resolves to the synthetic merge ref (e.g. 6/merge) which is not real.
+          # does not exist in this repo (detected via REPOSITORY).
+          # pull_request (own repo): use the source branch - REF_NAME resolves
+          # to the synthetic merge ref (e.g. 6/merge) which is not real.
           # workflow_dispatch: use the branch selected in the GitHub UI.
-          event="${{ github.event_name }}"
+          #
           # When called from another repo via workflow_call, the github context
-          # is inherited from the caller: event_name stays "pull_request" and
-          # head_ref carries the caller's branch, which does not exist here.
+          # is inherited from the caller: EVENT_NAME stays "pull_request" and
+          # HEAD_REF carries the caller's branch, which does not exist here.
           # Detect that case by checking the repository and fall back to master.
-          if [ "${{ github.repository }}" != "Klark-Morrigan/Infrastructure-E2E" ]; then
+          if [ "$REPOSITORY" != "Klark-Morrigan/Infrastructure-E2E" ]; then
             ref="master"
-          elif [ "$event" = "pull_request" ]; then
-            ref="${{ github.head_ref }}"
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
+            ref="$HEAD_REF"
           else
-            ref="${{ github.ref_name }}"
+            ref="$REF_NAME"
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "Deployment ref: $ref"
