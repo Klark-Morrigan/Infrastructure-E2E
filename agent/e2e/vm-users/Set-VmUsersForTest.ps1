@@ -98,29 +98,51 @@ function Set-VmUsersForTest {
             # its normal startup PATH.
             Push-Location $AnsiblePath
             try {
-                # `2>&1 | Out-Host`: the wsl invocation is a native
-                # command, and its stdout/stderr otherwise get collected
-                # into this function's pipeline output. Whoever calls
-                # Set-VmUsersForTest in a subexpression / assignment
-                # context (or upstream of any cmdlet pipe) consumes that
-                # pipeline and silently drops ansible-playbook's output,
-                # leaving the operator to debug an exit code with no
-                # error text. Merge stderr first (2>&1), then write
-                # straight to the host display via Out-Host, bypassing
-                # the function pipeline entirely. `$LASTEXITCODE` is set
-                # by the native command and unaffected by the downstream
-                # cmdlet. Same gotcha as bootstrap-controller.ps1's
-                # wsl-invocation fix; see that file for the canonical
-                # explanation.
-                # -vvv: diagnostic verbosity for the 2026-06 Ansible-via-WSL
-                # path. The portproxy redirect is now in place (provisioner
-                # step 4 + _run-playbook.sh WSL detection), but "Connection
-                # closed by UNKNOWN port 65535" still surfaces after auth+
-                # session-open on BOTH hops. -vvv prints the actual ssh
-                # invocation, stderr, and which hop closed - enough to
-                # localize the remaining failure mode. Remove this flag
-                # once the path is solid.
-                & wsl -d $WslDistro -- ./ops/create-users.sh -vvv 2>&1 | Out-Host
+                # -vvv goes to a file, summary stays on the terminal.
+                # The verbose stream localizes any future SSH-via-WSL
+                # failure (which hop closed, banner exchange, etc.)
+                # without flooding the operator's screen every run.
+                # File path: <vmConfigPath>/diagnostics/ansible/
+                # <timestamp>-create-users.log. Collocated with the
+                # per-VM runtime-diag artefacts so a failed run leaves
+                # the full picture in one place.
+                $timestamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
+                $logDir    = Join-Path $VmDef.vmConfigPath 'diagnostics\ansible'
+                if (-not (Test-Path -LiteralPath $logDir)) {
+                    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+                }
+                # Retention sweep before writing today's log: keep the
+                # last 20 transcripts, or 30 days of them, whichever
+                # leaves fewer. Caps the diagnostics folder at a
+                # bounded size without losing recent failures.
+                # Limit-RetainedItem ships in Common.PowerShell, which
+                # the agent's bootstrap loads at startup.
+                Limit-RetainedItem `
+                    -Directory  $logDir `
+                    -Filter     '*-create-users.log' `
+                    -MaxItems   20 `
+                    -MaxAgeDays 30 `
+                    -FileOnly
+                $logPath = Join-Path $logDir "$timestamp-create-users.log"
+                Write-Host "  Ansible verbose log -> $logPath"
+
+                # Pipeline shape:
+                #   wsl | Tee-Object  (full -vvv goes to disk)
+                #       | Where-Object (filter for the operator-
+                #                       readable summary lines)
+                #       | Out-Host    (display to terminal,
+                #                       bypassing function pipeline)
+                # PLAY / TASK / RECAP / fatal: / ok: / changed: /
+                # failed: / skipped: / unreachable: cover the lines
+                # an operator cares about during a normal run. The
+                # full transcript stays in the file for debugging.
+                $summaryPattern =
+                    '^(PLAY|TASK|PLAY RECAP|fatal:|ok:|changed:|skipped:|failed:|unreachable:|\s*=+\s*$|.*\| (ok|changed|failed|skipping|fatal): \[)'
+
+                & wsl -d $WslDistro -- ./ops/create-users.sh -vvv 2>&1 |
+                    Tee-Object -FilePath $logPath |
+                    Where-Object { $_ -match $summaryPattern } |
+                    Out-Host
             }
             finally {
                 Pop-Location
