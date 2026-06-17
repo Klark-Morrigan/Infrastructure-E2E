@@ -39,7 +39,7 @@ jobs:
         with:
           client-id: ${{ secrets.GH_APP_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          owner: VitaliiAndreev
+          owner: Klark-Morrigan
           repositories: Infrastructure-E2E
 
       - name: Resolve deployment ref
@@ -55,7 +55,7 @@ jobs:
           # is inherited from the caller: event_name stays "pull_request" and
           # head_ref carries the caller's branch, which does not exist here.
           # Detect that case by checking the repository and fall back to master.
-          if [ "${{ github.repository }}" != "VitaliiAndreev/Infrastructure-E2E" ]; then
+          if [ "${{ github.repository }}" != "Klark-Morrigan/Infrastructure-E2E" ]; then
             ref="master"
           elif [ "$event" = "pull_request" ]; then
             ref="${{ github.head_ref }}"
@@ -77,7 +77,7 @@ jobs:
           payload="{\"ref\":\"$ref\",\"environment\":\"e2e-workstation\",\"auto_merge\":false,\"required_contexts\":[]}"
           deployment_id=$(echo "$payload" | gh api \
             --method POST \
-            "repos/VitaliiAndreev/Infrastructure-E2E/deployments" \
+            "repos/Klark-Morrigan/Infrastructure-E2E/deployments" \
             --input - \
             --jq '.id')
           echo "deployment-id=$deployment_id" >> "$GITHUB_OUTPUT"
@@ -97,7 +97,7 @@ jobs:
 
           for i in $(seq 1 $max_polls); do
             state=$(gh api \
-              "repos/VitaliiAndreev/Infrastructure-E2E/deployments/$DEPLOYMENT_ID/statuses" \
+              "repos/Klark-Morrigan/Infrastructure-E2E/deployments/$DEPLOYMENT_ID/statuses" \
               --jq '.[0].state // empty')
 
             echo "Poll $i/$max_polls: state=${state:-(none)}"
