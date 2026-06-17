@@ -11,4 +11,4 @@ on:
 
 jobs:
   ci-docker-host:
-    uses: VitaliiAndreev/Common-PowerShell/.github/workflows/ci-powershell-docker-host.yml@master
+    uses: Klark-Morrigan/Common-PowerShell/.github/workflows/ci-powershell-docker-host.yml@master
