@@ -78,19 +78,16 @@ if (-not $_nuget -or $_nuget.Version -lt [Version]'2.8.5.201') {
         -Scope CurrentUser -Force -ForceBootstrap | Out-Null
 }
 
-# Step 2 - Common.PowerShell (chicken-and-egg bootstrap).
+# Step 2 - Common.PowerShell (provides Invoke-ModuleInstall).
 #
-# The 6.2.0 floor is the first version that ships Assert-WslHasBash,
-# called from Start-E2EAgent.ps1 to fail-fast when the named WSL distro
-# does not have bash. An older 6.x in CurrentUser's module path would
-# pass a looser version check and the agent would crash mid-startup
-# with `The term 'Assert-WslHasBash' is not recognized`. Both the
-# Get-Module gate and the Install-Module pin must move in lockstep -
-# the gate decides whether to reinstall; the pin decides what to fetch.
+# 9.0.1 for Invoke-ModuleInstall's -Global fix: the imports below land in
+# this script's scope, not Common.PowerShell's. The floor also satisfies
+# Infrastructure.Secrets 4.0.0 (needs >= 9.0.0) and Assert-WslHasBash. Keep
+# the Get-Module gate and the Install-Module pin in lockstep.
 $_common = Get-Module -ListAvailable -Name Common.PowerShell |
     Sort-Object Version -Descending | Select-Object -First 1
-if (-not $_common -or $_common.Version -lt [Version]'7.0.0') {
-    Install-PowerShellCommonWithRetry -MinimumVersion '7.0.0'
+if (-not $_common -or $_common.Version -lt [Version]'9.0.1') {
+    Install-PowerShellCommonWithRetry -MinimumVersion '9.0.1'
     # Re-query so the comparison below uses the freshly installed version.
     $_common = Get-Module -ListAvailable -Name Common.PowerShell |
         Sort-Object Version -Descending | Select-Object -First 1
@@ -106,11 +103,14 @@ if ($_loaded.Count -ne 1 -or $_loaded[0].Version -ne $_common.Version) {
 }
 
 # Step 3 - Everything else
-Invoke-ModuleInstall -ModuleName 'Infrastructure.Secrets' -MinimumVersion '3.0.1'
-# 1.1.0 carries Get-PendingDeployment's -CreatedSince cutoff, which the
-# polling loop relies on to avoid the N+1 status fan-out that exhausted the
-# GitHub API rate limit. Pin the minimum so the agent never runs on an older
-# copy that would crash-loop on 403.
+#
+# Secrets 4.0.0 is a hard floor: it depends on Common.PowerShell by name.
+# Secrets <= 3.0.1 instead pulls in the legacy Infrastructure.Common - a
+# duplicate Get-PendingDeployment exporter that shadows
+# Infrastructure.GitHub's -CreatedSince version. Don't relax below 4.0.0.
+Invoke-ModuleInstall -ModuleName 'Infrastructure.Secrets' -MinimumVersion '4.0.0'
+# 1.1.0 provides the -CreatedSince parameter the polling loop passes to
+# Get-PendingDeployment; older copies lack it.
 Invoke-ModuleInstall -ModuleName 'Infrastructure.GitHub'  -MinimumVersion '1.1.0'
 Invoke-ModuleInstall -ModuleName 'Infrastructure.HyperV'  -MinimumVersion '0.11.0'
 # Infrastructure.Wsl supplies Invoke-WslShell + Assert-Wsl2Ready /
