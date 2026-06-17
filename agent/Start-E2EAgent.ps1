@@ -188,6 +188,17 @@ function Invoke-E2EAgentLoop {
         [Parameter(Mandatory)]
         [int] $PollIntervalSeconds,
 
+        # How far back (in hours) Get-PendingDeployment looks when deciding
+        # which deployments are worth a status check. GitHub never deletes
+        # deployments, so status-checking every one each tick is an N+1
+        # fan-out; a short lookback keeps a quiet poll to a single list call.
+        # The only hard requirement is lookback >= the GitHub-side wait
+        # window, so a deployment still being waited on is never skipped:
+        # e2e.yml polls for 30 min before giving up. 1h is the smallest
+        # whole-hour value comfortably above that window. Vault-overridable.
+        [Parameter()]
+        [int] $DeploymentLookbackHours = 1,
+
         # Maximum minutes to poll before giving up and exiting cleanly.
         [Parameter(Mandatory)]
         [int] $TimeoutMinutes,
@@ -261,11 +272,18 @@ function Invoke-E2EAgentLoop {
                 -PrivateKeyPath $PrivateKeyPath
         }
 
+        # Recompute the cutoff each tick so the lookback window tracks the
+        # wall clock rather than freezing at loop entry. Deployments older
+        # than this are skipped without an API call - see the N+1 note on
+        # $DeploymentLookbackHours above.
+        $createdSince = [DateTime]::UtcNow.AddHours(-$DeploymentLookbackHours)
+
         $deployment = Get-PendingDeployment `
-            -Token       $tokenResult.Token `
-            -Owner       $Owner `
-            -Repo        $Repo `
-            -Environment $Environment
+            -Token        $tokenResult.Token `
+            -Owner        $Owner `
+            -Repo         $Repo `
+            -Environment  $Environment `
+            -CreatedSince $createdSince
 
         if ($null -ne $deployment) {
             Write-Host "Deployment $($deployment.id) found - running E2E tests ..." `
@@ -408,7 +426,9 @@ function Invoke-E2EAgentLoop {
 # ---------------------------------------------------------------------------
 # Script body
 #   The guard below prevents this block from running when Start-E2EAgent.ps1
-#   is dot-sourced by Pester tests. Tests only need Invoke-E2EAgentLoop above.
+#   is dot-sourced by Pester tests. Tests only need Invoke-E2EAgentLoop above;
+#   the restart handler's Get-RateLimitBackoffDelay helper is dot-sourced from
+#   its own file inside the guard (a runtime-only dependency, like the others).
 # ---------------------------------------------------------------------------
 
 if ($MyInvocation.InvocationName -ne '.') {
@@ -482,14 +502,22 @@ if ($MyInvocation.InvocationName -ne '.') {
     # deployment may override UsersFlow/RunnersFlow for that one run via
     # its payload (set by the e2e.yml flow-spec input), so each calling
     # repo's PR exercises the create/remove path it owns.
-    $vaultUsersFlow   = $null
-    $vaultRunnersFlow = $null
-    $vaultAnsiblePath = $null
-    $vaultWslDistro   = $null
+    # DeploymentLookbackHours is likewise optional: absent vault payloads
+    # fall back to Invoke-E2EAgentLoop's 1h default. An operator only sets
+    # it to tune the lookback (see the parameter docstring); the default is
+    # safe for normal operation.
+    $vaultUsersFlow              = $null
+    $vaultRunnersFlow            = $null
+    $vaultAnsiblePath            = $null
+    $vaultWslDistro              = $null
+    $vaultDeploymentLookbackHours = $null
     if ($config.PSObject.Properties['UsersFlow'])   { $vaultUsersFlow   = $config.UsersFlow }
     if ($config.PSObject.Properties['RunnersFlow']) { $vaultRunnersFlow = $config.RunnersFlow }
     if ($config.PSObject.Properties['AnsiblePath']) { $vaultAnsiblePath = $config.AnsiblePath }
     if ($config.PSObject.Properties['WslDistro'])   { $vaultWslDistro   = $config.WslDistro }
+    if ($config.PSObject.Properties['DeploymentLookbackHours']) {
+        $vaultDeploymentLookbackHours = $config.DeploymentLookbackHours
+    }
 
     while ([DateTime]::UtcNow -lt $globalDeadline) {
         try {
@@ -513,6 +541,9 @@ if ($MyInvocation.InvocationName -ne '.') {
             if ($vaultRunnersFlow) { $loopParams['RunnersFlow'] = $vaultRunnersFlow }
             if ($vaultAnsiblePath) { $loopParams['AnsiblePath'] = $vaultAnsiblePath }
             if ($vaultWslDistro)   { $loopParams['WslDistro']   = $vaultWslDistro }
+            if ($vaultDeploymentLookbackHours) {
+                $loopParams['DeploymentLookbackHours'] = $vaultDeploymentLookbackHours
+            }
 
             Invoke-E2EAgentLoop @loopParams
         }

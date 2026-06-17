@@ -2,7 +2,7 @@ BeforeAll {
     # Stub every external function the loop calls so tests never hit real
     # infrastructure. All stubs are overridden by Mocks inside each Context.
     function Get-GitHubAppToken         { param($AppId, $InstallationId, $PrivateKeyPath) }
-    function Get-PendingDeployment      { param($Token, $Owner, $Repo, $Environment) }
+    function Get-PendingDeployment      { param($Token, $Owner, $Repo, $Environment, $CreatedSince) }
     function Set-DeploymentStatus       { param($Token, $Owner, $Repo, $DeploymentId, $State, $Description, $LogUrl) }
     function Invoke-RunnerLifecycleTest { param($Config) }
     # Assert-WslHasBash is a Common.PowerShell cmdlet the ansible-flow
@@ -612,6 +612,45 @@ Describe 'Invoke-E2EAgentLoop' {
                 $DeploymentId -eq 81 -and $State -eq 'failure'
             }
             Should -Invoke Invoke-RunnerLifecycleTest -Times 0
+        }
+    }
+
+    # ------------------------------------------------------------------
+    Context 'deployment lookback cutoff' {
+    # ------------------------------------------------------------------
+        # The loop hands Get-PendingDeployment a CreatedSince so it can skip
+        # the status fetch for historical deployments - the fix that stops
+        # the N+1 poll fan-out from exhausting the GitHub rate limit.
+
+        It 'passes a CreatedSince ~DeploymentLookbackHours in the past (default 1h)' {
+            $script:_csValues = [System.Collections.Generic.List[datetime]]::new()
+            Mock Get-GitHubAppToken    { $Script:FreshToken }
+            Mock Get-PendingDeployment { $script:_csValues.Add($CreatedSince); $null }
+            Mock Set-DeploymentStatus  {}
+
+            # BaseParams omits DeploymentLookbackHours, so the 1h default applies.
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            $script:_csValues.Count | Should -BeGreaterThan 0
+            $expected = [DateTime]::UtcNow.AddHours(-1)
+            [Math]::Abs(($script:_csValues[0] - $expected).TotalMinutes) |
+                Should -BeLessThan 5
+        }
+
+        It 'honours a custom DeploymentLookbackHours' {
+            $script:_csValues2 = [System.Collections.Generic.List[datetime]]::new()
+            Mock Get-GitHubAppToken    { $Script:FreshToken }
+            Mock Get-PendingDeployment { $script:_csValues2.Add($CreatedSince); $null }
+            Mock Set-DeploymentStatus  {}
+
+            $params = $Script:BaseParams.Clone()
+            $params['DeploymentLookbackHours'] = 2
+            Invoke-E2EAgentLoop @params
+
+            $script:_csValues2.Count | Should -BeGreaterThan 0
+            $expected = [DateTime]::UtcNow.AddHours(-2)
+            [Math]::Abs(($script:_csValues2[0] - $expected).TotalMinutes) |
+                Should -BeLessThan 5
         }
     }
 
