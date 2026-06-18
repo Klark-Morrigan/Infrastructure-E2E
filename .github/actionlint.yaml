@@ -1,0 +1,20 @@
+---
+# actionlint configuration.
+#
+# Suppresses two false positives against actions/create-github-app-token
+# in e2e.yml. The live action @v3 (resolves to v3.2.0, the latest major)
+# renamed its 'app-id' input to 'client-id'; using 'client-id' is the
+# correct, non-deprecated form and removes the runtime "Input 'app-id'
+# has been deprecated" warning. actionlint 1.7.12 (itself the latest
+# release) still ships a stale bundled snapshot of the action's inputs
+# that predates 'client-id', so it wrongly reports the old 'app-id' as a
+# missing required input and 'client-id' as unknown. Both pins are
+# already current, so until actionlint refreshes its embedded metadata
+# the only fix is to ignore these two action-scoped messages. Remove
+# once the pinned actionlint ships create-github-app-token metadata that
+# includes 'client-id'.
+paths:
+  .github/workflows/e2e.yml:
+    ignore:
+      - 'missing input "app-id" which is required by action "actions/create-github-app-token'
+      - 'input "client-id" is not defined in action "actions/create-github-app-token'
