@@ -28,6 +28,7 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 . "$PSScriptRoot\assertions\network\Invoke-StaticNetworkAssertions.ps1"
 . "$PSScriptRoot\assertions\network\Invoke-RouterReadyAssertions.ps1"
 . "$PSScriptRoot\assertions\network\Invoke-EgressAssertions.ps1"
+. "$PSScriptRoot\assertions\network\Get-EgressFailureDiagnostics.ps1"
 . "$PSScriptRoot\assertions\jdk\Invoke-JdkInstallAssertions.ps1"
 . "$PSScriptRoot\assertions\jdk\Invoke-JdkUninstallAssertions.ps1"
 . "$PSScriptRoot\assertions\jdk\Invoke-JdkNoopAssertions.ps1"

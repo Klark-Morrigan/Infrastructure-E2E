@@ -25,9 +25,27 @@
 #   JSON documents, so a successful exit code is sufficient evidence
 #   the egress path is healthy.
 #
-#   Throws on the first failure with a message naming the VM and the
-#   endpoint that broke. The outer try/finally in the calling phase
-#   still runs teardown.
+#   Retries: --retry 3 --retry-delay 3 --retry-all-errors. The egress
+#   targets are real production CDNs (api.nuget.org sits behind Azure
+#   Front Door, whose edge IPs drain and rotate); a single un-retried
+#   curl turns a transient connect failure to a draining edge - or a
+#   stale dnsmasq A-record pointing at one - into a red E2E. The router
+#   datapath is exercised by every retry, so a genuine NAT/DNS/TLS
+#   regression still fails all 4 attempts and surfaces; only same-IP
+#   blips are absorbed. --retry-all-errors (not just --retry-connrefused)
+#   is required because the observed failure mode is curl exit 7
+#   "Couldn't connect", which plain --retry ignores.
+#
+#   On final failure the path is probed once more for diagnostics -
+#   `getent hosts` (the IP dnsmasq actually returned, i.e. DNS-side)
+#   plus a verbose curl tail (connect vs TLS, i.e. datapath-side) - and
+#   the result is folded into the thrown message so the next reader can
+#   tell a stale/dead destination IP from a real router regression
+#   without re-deriving it by hand.
+#
+#   Throws on the first endpoint that stays broken, naming the VM and
+#   the endpoint. The outer try/finally in the calling phase still runs
+#   teardown.
 # ---------------------------------------------------------------------------
 
 function Invoke-EgressAssertions {
@@ -45,11 +63,13 @@ function Invoke-EgressAssertions {
     foreach ($endpoint in $endpoints) {
         $r = Invoke-SshClientCommand `
             -SshClient $SshClient `
-            -Command  "curl -fsS --max-time 30 '$endpoint' -o /dev/null"
+            -Command  ("curl -fsS --max-time 30 --retry 3 --retry-delay 3 " +
+                       "--retry-all-errors '$endpoint' -o /dev/null")
         if ($r.ExitStatus -ne 0) {
+            $diag = Get-EgressFailureDiagnostics -SshClient $SshClient -Endpoint $endpoint
             throw "Egress from $VmName to $endpoint failed " +
                 "(exit $($r.ExitStatus)): $($r.Error). " +
-                "Likely router NAT / DNS / TLS regression."
+                "Likely router NAT / DNS / TLS regression.`n$diag"
         }
         Write-Host "  [OK] egress to $endpoint" -ForegroundColor Green
     }
