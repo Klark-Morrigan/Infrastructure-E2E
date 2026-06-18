@@ -56,9 +56,10 @@ jobs:
         id: token
         uses: actions/create-github-app-token@v3
         with:
-          # app-id accepts the App ID or its Client ID; the GH_APP_ID secret
-          # supplies whichever this App uses.
-          app-id: ${{ secrets.GH_APP_ID }}
+          # client-id accepts the App ID or its Client ID (both are valid
+          # GitHub App JWT issuers); the GH_APP_ID secret supplies whichever
+          # this App uses.
+          client-id: ${{ secrets.GH_APP_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
           owner: Klark-Morrigan
           repositories: Infrastructure-E2E
