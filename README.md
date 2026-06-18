@@ -13,6 +13,9 @@
 - [How to run individual tests](#how-to-run-individual-tests)
 - [How to trigger](#how-to-trigger)
 - [Test coverage](#test-coverage)
+- [Linting and CI](#linting-and-ci)
+  - [Running the lint suite locally](#running-the-lint-suite-locally)
+  - [Known-failing actionlint job](#known-failing-actionlint-job)
 - [Repo structure](#repo-structure)
 
 ---
@@ -59,7 +62,7 @@ PowerShell 7+ (`pwsh`).
   - `VmUsers` (owned by `Infrastructure-Vm-Users`)
   - `GitHubRunners` (owned by `Infrastructure-GitHubRunners`)
   - `E2EConfig` (owned by this repo - see [GitHub App setup](#github-app-setup))
-- `PowerShell.Common` >= `3.1.0` installed from PSGallery
+- `Common.PowerShell` >= `3.1.0` installed from PSGallery
 - When `UsersFlow=ansible` (the default since feature 02 of
   `Infrastructure-VM-Ansible`) or `RunnersFlow=ansible` (opt-in during
   the first validation cycle; the default-flip happens in a follow-up
@@ -165,11 +168,11 @@ following in the `E2EConfig` vault:
   "TimeoutMinutes":      60,
   "ProvisionerPath":     "C:\\a_Code\\Infrastructure-Vm-Provisioner",
   "UsersPath":           "C:\\a_Code\\Infrastructure-Vm-Users",
-  "UsersFlow":           "ansible",                                   // optional - 'ansible' (default) or 'custom-powershell'
-  "AnsiblePath":         "C:\\a_Code\\Infrastructure-VM-Ansible",     // optional - required when UsersFlow=ansible
-  "WslDistro":           "Ubuntu-24.04",                              // optional - required when UsersFlow=ansible; see Infrastructure-VM-Ansible README Troubleshooting
+  "UsersFlow":           "ansible",                                   // optional session default - 'ansible' (default) or 'custom-powershell'; a caller's flow-spec overrides per run
+  "AnsiblePath":         "C:\\a_Code\\Infrastructure-VM-Ansible",     // required when either flow resolves to 'ansible' - the default scenario, so effectively always on a workstation serving these repos' PRs
+  "WslDistro":           "Ubuntu-24.04",                              // required alongside AnsiblePath whenever a flow is 'ansible'; see Infrastructure-VM-Ansible README Troubleshooting
   "RunnersPath":         "C:\\a_Code\\Infrastructure-GitHubRunners",
-  "RunnersFlow":         "custom-powershell",                         // optional - 'custom-powershell' (current default) or 'ansible'
+  "RunnersFlow":         "custom-powershell",                         // optional session default - 'custom-powershell' (default) or 'ansible'; a caller's flow-spec overrides per run
   "HostTarballCachePath": "C:\\cache\\github-runners",
   "TestVm": {
     "ubuntuVersion":  "24.04",
@@ -363,10 +366,28 @@ workflow via `workflow_call` as a required status check. The full
 lifecycle layer always runs regardless of which upstream repo the PR is
 in - so an Ansible role change cannot merge to master without proving
 the new code still reconciles users and brings up an online runner on a
-real VM. Whether the agent runs the Ansible or the PowerShell create
-flow is selected by `UsersFlow` at agent startup, not by which repo
-triggered the workflow. The runner registration flow is selected
-independently by `RunnersFlow`.
+real VM.
+
+Each caller selects which create/remove implementation the run
+exercises through the `flow-spec` input - a JSON object
+`{"usersFlow":"...","runnersFlow":"..."}` with values `ansible` or
+`custom-powershell`. The workflow embeds that JSON in the GitHub
+Deployment payload; the polling agent reads it and overrides its vault
+`UsersFlow` / `RunnersFlow` defaults for that one run, so a repo's PR
+exercises the path it owns:
+
+| Caller repo | `flow-spec` | Tests |
+|---|---|---|
+| `Infrastructure-VM-Ansible` | `{"usersFlow":"ansible","runnersFlow":"ansible"}` | the Ansible create-users + register-runners scripts |
+| `Infrastructure-Vm-Users` | `{"usersFlow":"custom-powershell","runnersFlow":"custom-powershell"}` | the PowerShell users scripts |
+| `Infrastructure-GitHubRunners` | `{"usersFlow":"custom-powershell","runnersFlow":"custom-powershell"}` | the PowerShell runner-registration script |
+| `Infrastructure-Vm-Provisioner` | omitted | the default ansible scenario |
+
+`ansible` is the default scenario: a caller that omits `flow-spec` (and a
+manual `workflow_dispatch` left at its default) runs both layers on the
+Ansible path. A `flow-spec` that names an unknown flow, or that upgrades a
+layer to `ansible` on an agent without `AnsiblePath` / `WslDistro`
+configured, fails the deployment with a named error rather than guessing.
 
 ### Reading results
 
@@ -400,12 +421,86 @@ focused stack trace rather than a runner error.
 
 ---
 
+## Linting and CI
+
+Two delegating workflows lint this repo's non-PowerShell surfaces on every
+pull request to `master`. Both forward to reusable workflows in
+`Common-Automation`, so the lint logic lives in one place and this repo
+carries only thin caller files:
+
+- [`.github/workflows/ci-yaml.yml`](.github/workflows/ci-yaml.yml) -
+  delegates to Common-Automation's reusable `ci-yaml.yml`, which runs
+  actionlint, action-validator, yamllint, and ansible-lint in parallel.
+  Each job auto-skips when its target surface is absent.
+- [`.github/workflows/ci-bash.yml`](.github/workflows/ci-bash.yml) -
+  delegates to Common-Automation's reusable `ci-bash.yml`, which runs
+  shellcheck, the `check-sh-executable` +x-bit gate, and every `*.bats`
+  suite. This repo's only bash surface is the runner shims under
+  `scripts/`, held to the same strict bar as every other repo.
+
+These lint the YAML and bash surfaces only. The real E2E test suite is
+Pester and is unaffected - it runs via the polling agent and the
+per-layer scripts described above, never through this lint tooling.
+
+### Running the lint suite locally
+
+Three sibling shim commands reproduce the CI surface locally via Git Bash plus
+Docker, so failures surface before the PR rather than in CI. All three point
+Common-Automation's engine at this repo via `COMMON_AUTOMATION_TARGET_REPO`, so
+`Common-Automation` must be a sibling checkout (`..\Common-Automation`).
+
+- [`scripts/run-ci-yaml-and-bash.sh`](scripts/run-ci-yaml-and-bash.sh) is the
+  MAIN local entry: the full local equivalent of this repo's `ci-yaml.yml` +
+  `ci-bash.yml` - it runs the whole lint suite AND the bats tests in one go.
+  Double-clicking [`scripts/run-ci-yaml-and-bash.bat`](scripts/run-ci-yaml-and-bash.bat)
+  is the Explorer launcher for the same flow.
+- To run a single half: [`scripts/run-lint-yaml-and-bash.sh`](scripts/run-lint-yaml-and-bash.sh)
+  runs the LINT half only (shellcheck, actionlint, action-validator, yamllint,
+  ansible-lint), and [`scripts/run-tests-bash.sh`](scripts/run-tests-bash.sh)
+  runs the bats TEST half only. Each has a sibling `.bat` Explorer launcher.
+
+The lint shim is named `run-lint`, not `run-tests`, to stay distinct from this
+repo's real test runner ([`scripts/Run-Tests.ps1`](scripts/Run-Tests.ps1), the
+Pester entry) - these bash shims never touch the Pester tests.
+
+Two supporting files keep the bash tooling CI-clean on a Windows checkout:
+
+- [`scripts/fix-permissions.sh`](scripts/fix-permissions.sh) (and its
+  [`.bat`](scripts/fix-permissions.bat) launcher) re-stages `+x` on every
+  tracked `*.sh` missing it, so the `check-sh-executable` gate stays green
+  after authoring a script on Windows (where new files land mode `0644`).
+- [`.gitattributes`](.gitattributes) pins `*.sh` to LF and `*.bat` to
+  CRLF, so a stray CR on a shebang line cannot break the Linux CI runners.
+
+### Known-failing actionlint job
+
+The pre-existing [`.github/workflows/e2e.yml`](.github/workflows/e2e.yml)
+has actionlint findings (invalid `create-github-app-token` inputs and an
+unsafe `github.head_ref` usage), so the new `ci-yaml` actionlint job is
+currently red. The job is reporting an accurate pre-existing problem; it
+will go green once `e2e.yml` is fixed.
+
+---
+
 ## Repo structure
 
 ```
 .github/
   workflows/
     e2e.yml                        - E2E workflow (manual, scheduled, cross-repo)
+    ci-yaml.yml                    - YAML/Actions lint, delegates to Common-Automation
+    ci-bash.yml                    - Bash lint + bats, delegates to Common-Automation
+.gitattributes                     - Pins *.sh to LF, *.bat to CRLF
+scripts/
+  Run-Tests.ps1                    - Pester test runner (the real test suite)
+  run-ci-yaml-and-bash.sh          - MAIN: full local lint + bats (shim to Common-Automation)
+  run-ci-yaml-and-bash.bat         - Explorer launcher for run-ci-yaml-and-bash.sh
+  run-lint-yaml-and-bash.sh        - Lint half only (shim to Common-Automation)
+  run-lint-yaml-and-bash.bat       - Explorer launcher for run-lint-yaml-and-bash.sh
+  run-tests-bash.sh                - Bats test half only (shim to Common-Automation)
+  run-tests-bash.bat               - Explorer launcher for run-tests-bash.sh
+  fix-permissions.sh               - Re-stages +x on tracked *.sh (shim)
+  fix-permissions.bat              - Explorer launcher for fix-permissions.sh
 agent/
   e2e/
     vm-provisioning/

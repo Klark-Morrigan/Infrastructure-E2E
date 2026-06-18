@@ -25,12 +25,14 @@
     occurs (vault unreachable, GitHub API failure), the loop restarts after a
     60-second pause so transient failures do not require operator intervention.
 
-    The token is refreshed automatically when it is within 5 minutes of expiry
-    so a long poll wait does not produce a stale-token failure mid-test.
+    The token is refreshed automatically when it is within 5 minutes of expiry -
+    both at the top of each poll tick and again immediately before the terminal
+    status post, so neither a long poll wait nor a lifecycle run that outlasts
+    the token's 1-hour life produces a stale-token (401) failure.
 
     Prerequisites:
       - setup-secrets.ps1 has been run to populate the E2EConfig vault.
-      - PowerShell.Common >= 1.3.3 installed (or will be installed here).
+      - Common.PowerShell >= 1.3.3 installed (or will be installed here).
       - Infrastructure.Secrets installed.
 
 .EXAMPLE
@@ -58,306 +60,24 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ---------------------------------------------------------------------------
-# Invoke-E2EAgentLoop
-#   Core polling loop. Runs until $Deadline, processing every pending
-#   deployment in the order returned by Get-PendingDeployment (oldest
-#   first). After each deployment (pass or fail) the loop re-polls
-#   immediately to drain the queue before sleeping again.
-#
-#   Lifecycle test failures do not propagate - the deployment is marked
-#   'failure' on GitHub and polling resumes. Structural errors (token
-#   refresh, GitHub API) propagate to the caller for restart handling.
-#
-#   Isolated from the vault-reading bootstrap so it can be unit-tested
-#   without a real vault. $Deadline is injectable for tests; production
-#   code passes [DateTime]::MinValue and lets the function compute it
-#   from $TimeoutMinutes.
-# ---------------------------------------------------------------------------
-
-function Invoke-E2EAgentLoop {
-    [CmdletBinding()]
-    param(
-        # GitHub App credentials - used to obtain both the deployment token
-        # (E2EInstallationId) and passed through to the lifecycle test for
-        # runner token acquisition (RunnersInstallationId).
-        [Parameter(Mandatory)]
-        [int] $AppId,
-
-        # Installation ID for the Infrastructure-E2E repo.
-        # Used to obtain a token with deployments:write permission.
-        [Parameter(Mandatory)]
-        [int] $E2EInstallationId,
-
-        # Installation ID for the Infrastructure-GitHubRunners repo.
-        # Passed to the lifecycle test so it can mint a token scoped to
-        # administration:write on that repo only.
-        [Parameter(Mandatory)]
-        [int] $RunnersInstallationId,
-
-        # Local path to the GitHub App RSA private key (.pem).
-        [Parameter(Mandatory)]
-        [string] $PrivateKeyPath,
-
-        # Absolute path to the Infrastructure-Vm-Provisioner repo root on
-        # the workstation. Passed to the lifecycle test so it can call
-        # provision.ps1 and deprovision.ps1.
-        [Parameter(Mandatory)]
-        [string] $ProvisionerPath,
-
-        # Absolute path to the Infrastructure-Vm-Users repo root on the
-        # workstation. Passed to the lifecycle test so it can call
-        # create-users.ps1 (when UsersFlow=custom-powershell) and
-        # remove-users.ps1 (always - the teardown half stays on the
-        # Vm-Users path for both flows until feature 03 ships).
-        [Parameter(Mandatory)]
-        [string] $UsersPath,
-
-        # Selects which create-users implementation the test layer
-        # dispatches to. 'ansible' is the post-feature-02 default;
-        # 'custom-powershell' opts back in to the original Vm-Users path
-        # for parallel validation. Both are permanent first-class peers.
-        [Parameter()]
-        [ValidateSet('custom-powershell', 'ansible')]
-        [string] $UsersFlow = 'ansible',
-
-        # Selects which register-runners implementation the runner
-        # lifecycle test dispatches to. 'custom-powershell' (the current
-        # default) keeps invoking Infrastructure-GitHubRunners'
-        # register-runners.ps1. 'ansible' opts in to
-        # Infrastructure-VM-Ansible's ops/register-runners.sh. The
-        # default stays on custom-powershell for one full release cycle
-        # while the Ansible path validates on real hardware; the
-        # default-flip happens in a follow-up bump.
-        [Parameter()]
-        [ValidateSet('custom-powershell', 'ansible')]
-        [string] $RunnersFlow = 'custom-powershell',
-
-        # Absolute path to the Infrastructure-VM-Ansible repo root on the
-        # workstation. Required when either UsersFlow=ansible (the users
-        # flow default) or RunnersFlow=ansible. Both flows share the same
-        # repo and the same WSL distro because the one Infrastructure-
-        # VM-Ansible checkout houses ops/create-users.sh,
-        # ops/register-runners.sh, and ops/_run-playbook.sh. The loop
-        # validates the path exists below before the first VM is built
-        # so a misconfigured agent fails at startup, not mid-test.
-        [Parameter()]
-        [string] $AnsiblePath,
-
-        # Name of the WSL distro to run the Ansible bridge inside. Passed
-        # via `wsl -d <name>` so the agent does not depend on the
-        # workstation's WSL default - Docker Desktop's installer silently
-        # changes the default to its no-bash `docker-desktop` engine
-        # distro, which broke this code path until the explicit -d was
-        # added. Required when UsersFlow=ansible (the default).
-        [Parameter()]
-        [string] $WslDistro,
-
-        # Absolute path to the Infrastructure-GitHubRunners repo root on
-        # the workstation. Passed to the lifecycle test so it can call
-        # register-runners.ps1 and deregister-runners.ps1.
-        [Parameter(Mandatory)]
-        [string] $RunnersPath,
-
-        # Local directory on the workstation where the actions/runner tarball
-        # is cached between test runs. Passed to the lifecycle test so it can
-        # pre-seed the VM cache without downloading through the Hyper-V NAT.
-        [Parameter(Mandatory)]
-        [string] $HostTarballCachePath,
-
-        # Operator-specific VM config for the E2E test VM. Contains the
-        # workstation-specific values (IP, gateway, paths) that cannot be
-        # hardcoded. Written to the VmProvisioner vault at test startup.
-        [Parameter(Mandatory)]
-        [PSCustomObject] $TestVm,
-
-        # GitHub organisation or user that owns the E2E repo.
-        [Parameter(Mandatory)]
-        [string] $Owner,
-
-        # Name of the E2E repository (without the owner prefix).
-        [Parameter(Mandatory)]
-        [string] $Repo,
-
-        # Deployment environment name to poll.
-        # Must match the 'environment' field set when the workflow creates
-        # the deployment.
-        [Parameter(Mandatory)]
-        [string] $Environment,
-
-        # Seconds to wait between polls when no deployment is found.
-        [Parameter(Mandatory)]
-        [int] $PollIntervalSeconds,
-
-        # Maximum minutes to poll before giving up and exiting cleanly.
-        [Parameter(Mandatory)]
-        [int] $TimeoutMinutes,
-
-        # Injectable deadline for unit tests. Pass [DateTime]::MinValue
-        # (the default) to have the function compute it from $TimeoutMinutes.
-        [Parameter()]
-        [DateTime] $Deadline = [DateTime]::MinValue
-    )
-
-    if ($Deadline -eq [DateTime]::MinValue) {
-        $Deadline = [DateTime]::UtcNow.AddMinutes($TimeoutMinutes)
-    }
-
-    # Fail-fast: validate AnsiblePath and WslDistro at startup so a
-    # misconfigured session does not build a VM and only then discover
-    # the bridge is unreachable. custom-powershell ignores both; only
-    # the ansible flow on either layer needs them.
-    #
-    # WslDistro is verified up-front via Assert-WslHasBash from
-    # PowerShell.Common - that catches the docker-desktop-default trap
-    # (no bash) named in the parameter docs, and surfaces a
-    # WslMissingBash: error with a remediation hint instead of letting
-    # the bridge fail mid-test with a sparse-PATH error.
-    $ansibleFlows = @()
-    if ($UsersFlow   -eq 'ansible') { $ansibleFlows += 'UsersFlow' }
-    if ($RunnersFlow -eq 'ansible') { $ansibleFlows += 'RunnersFlow' }
-    if ($ansibleFlows.Count -gt 0) {
-        $flowList = $ansibleFlows -join '/'
-        if (-not $AnsiblePath) {
-            throw "${flowList}='ansible' requires -AnsiblePath."
-        }
-        if (-not (Test-Path -LiteralPath $AnsiblePath -PathType Container)) {
-            throw "AnsiblePath '$AnsiblePath' does not exist or is not a directory."
-        }
-        if (-not $WslDistro) {
-            throw "${flowList}='ansible' requires -WslDistro."
-        }
-        Assert-WslHasBash -DistroName $WslDistro
-    }
-
-    # Derive display value from the resolved Deadline so injected deadlines
-    # (e.g. in tests) show accurate output rather than the TimeoutMinutes param.
-    $totalMinutes = [int]($Deadline - [DateTime]::UtcNow).TotalMinutes
-
-    Write-Host "E2E agent started. Polling '$Environment' in $Owner/$Repo." `
-        -ForegroundColor Cyan
-    Write-Host "Poll interval: ${PollIntervalSeconds}s   Timeout: ${totalMinutes}min" `
-        -ForegroundColor Cyan
-
-    # Acquire the initial deployment token. The token lasts 1 hour; the
-    # refresh block inside the loop handles long poll waits near that boundary.
-    $tokenResult = Get-GitHubAppToken `
-        -AppId          $AppId `
-        -InstallationId $E2EInstallationId `
-        -PrivateKeyPath $PrivateKeyPath
-
-    while ([DateTime]::UtcNow -lt $Deadline) {
-        # Refresh the deployment token if fewer than 5 minutes remain.
-        # GitHub rejects tokens past their expiry, so proactive refresh
-        # prevents a mid-poll authentication failure.
-        # ExpiresAt may be a DateTime (ConvertFrom-Json auto-converts ISO 8601)
-        # or a string. A direct cast handles both; Parse with the default
-        # culture fails when DateTime.ToString() uses locale-specific format.
-        $expiry = [DateTimeOffset] $tokenResult.ExpiresAt
-        if ($expiry.UtcDateTime -lt [DateTime]::UtcNow.AddMinutes(5)) {
-            Write-Host 'Token nearing expiry - refreshing ...' -ForegroundColor Yellow
-            $tokenResult = Get-GitHubAppToken `
-                -AppId          $AppId `
-                -InstallationId $E2EInstallationId `
-                -PrivateKeyPath $PrivateKeyPath
-        }
-
-        $deployment = Get-PendingDeployment `
-            -Token       $tokenResult.Token `
-            -Owner       $Owner `
-            -Repo        $Repo `
-            -Environment $Environment
-
-        if ($null -ne $deployment) {
-            Write-Host "Deployment $($deployment.id) found - running E2E tests ..." `
-                -ForegroundColor Green
-
-            Set-DeploymentStatus `
-                -Token        $tokenResult.Token `
-                -Owner        $Owner `
-                -Repo         $Repo `
-                -DeploymentId $deployment.id `
-                -State        'in_progress' `
-                -Description  'E2E tests running'
-
-            try {
-                Invoke-RunnerLifecycleTest -Config ([PSCustomObject]@{
-                    AppId                 = $AppId
-                    RunnersInstallationId = $RunnersInstallationId
-                    PrivateKeyPath        = $PrivateKeyPath
-                    ProvisionerPath       = $ProvisionerPath
-                    UsersPath             = $UsersPath
-                    UsersFlow             = $UsersFlow
-                    AnsiblePath           = $AnsiblePath
-                    WslDistro             = $WslDistro
-                    RunnersPath           = $RunnersPath
-                    RunnersFlow           = $RunnersFlow
-                    HostTarballCachePath  = $HostTarballCachePath
-                    Owner                 = $Owner
-                    TestVm                = $TestVm
-                })
-
-                Set-DeploymentStatus `
-                    -Token        $tokenResult.Token `
-                    -Owner        $Owner `
-                    -Repo         $Repo `
-                    -DeploymentId $deployment.id `
-                    -State        'success' `
-                    -Description  'All E2E tests passed'
-
-                Write-Host 'E2E tests passed.' -ForegroundColor Green
-            }
-            catch {
-                # GitHub caps deployment status descriptions at 140 characters.
-                $msg = $_.Exception.Message
-                $description = if ($msg.Length -gt 140) { $msg.Substring(0, 137) + '...' } else { $msg }
-
-                try {
-                    Set-DeploymentStatus `
-                        -Token        $tokenResult.Token `
-                        -Owner        $Owner `
-                        -Repo         $Repo `
-                        -DeploymentId $deployment.id `
-                        -State        'failure' `
-                        -Description  $description
-                }
-                catch {
-                    Write-Host "Warning: failed to post failure status to GitHub: $($_.Exception.Message)" `
-                        -ForegroundColor Yellow
-                }
-
-                Write-Host "E2E tests failed: $msg" -ForegroundColor Red
-                continue
-            }
-
-            continue
-        }
-
-        $remaining = [Math]::Max(0, [int]($Deadline - [DateTime]::UtcNow).TotalMinutes)
-        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] No pending deployment. " `
-            + "${remaining}min remaining. Waiting ${PollIntervalSeconds}s ..." `
-            -ForegroundColor DarkGray
-
-        Start-Sleep -Seconds $PollIntervalSeconds
-    }
-
-    Write-Host "Agent timed out after $totalMinutes minutes - no deployment found." `
-        -ForegroundColor Yellow
-}
-
-# ---------------------------------------------------------------------------
 # Script body
 #   The guard below prevents this block from running when Start-E2EAgent.ps1
-#   is dot-sourced by Pester tests. Tests only need Invoke-E2EAgentLoop above.
+#   is dot-sourced by Pester tests. Every function this script needs lives in
+#   its own file (one-function-per-file convention) and is dot-sourced here
+#   inside the guard - the tests dot-source those files directly, so none of
+#   them need to load at parse time. Invoke-E2EAgentLoop is the entry point;
+#   Get-RefreshedDeploymentToken is its token helper; the rest serve the
+#   restart handler below.
 # ---------------------------------------------------------------------------
 
 if ($MyInvocation.InvocationName -ne '.') {
 
     . "$PSScriptRoot\Initialize-E2EEnvironment.ps1"
-
-    # Dot-source the lifecycle test so Invoke-RunnerLifecycleTest is available
-    # to the loop function above. This must happen after PowerShell.Common
-    # is loaded because the lifecycle test depends on it.
-    . "$PSScriptRoot\e2e\runner-lifecycle\Invoke-RunnerLifecycleTest.ps1"
+    . "$PSScriptRoot\Get-RefreshedDeploymentToken.ps1"
+    . "$PSScriptRoot\Invoke-E2EAgentLoop.ps1"
+    . "$PSScriptRoot\Get-RateLimitBackoffDelay.ps1"
+    . "$PSScriptRoot\Test-GitHubAuthError.ps1"
+    . "$PSScriptRoot\Resolve-AgentCrashAction.ps1"
 
     # ---------------------------------------------------------------------------
     # Read E2EConfig from vault
@@ -379,15 +99,24 @@ if ($MyInvocation.InvocationName -ne '.') {
     #   "RunnersFlow":         "custom-powershell",
     #   "HostTarballCachePath": "C:\\cache\\github-runners",
     #   "TestVm": {
-    #     "ubuntuVersion": "24.04",
-    #     "ipAddress":     "192.168.100.200",
-    #     "subnetMask":    24,
-    #     "gateway":       "192.168.100.1",
-    #     "dns":           "8.8.8.8",
-    #     "vmConfigPath":  "E:\\a_VMs\\Hyper-V\\Config",
-    #     "vhdPath":       "E:\\a_VMs\\Hyper-V\\Disks"
+    #     "ubuntuVersion":       "24.04",
+    #     "dns":                 "8.8.8.8",
+    #     "externalSwitchName":  "ExternalSwitch-Shared",
+    #     "externalAdapterName": "Ethernet",
+    #     "vmConfigPath":        "E:\\a_VMs\\Hyper-V\\Config",
+    #     "vhdPath":             "E:\\a_VMs\\Hyper-V\\Disks"
     #   }
     # }
+    #
+    # The router VM the test provisions in front of every workload VM
+    # (feature 53 topology) takes its upstream IP from DHCP - whatever
+    # LAN the host's External vSwitch is bridged to. No operator IP
+    # values to pin in TestVm; the orchestrator discovers the router's
+    # actual IP via Hyper-V KVP after boot. Workload VMs sit on
+    # PrivateSwitch-E2E at 10.99.0.10 / 10.99.0.11 (constants chosen
+    # by the test fixture, not operator config). `dns` is dnsmasq's
+    # upstream forwarder on the router; `externalSwitchName` /
+    # `externalAdapterName` configure the host-side vSwitch.
     # ---------------------------------------------------------------------------
 
     $e2eSecretName = "E2EConfig-$SecretSuffix"
@@ -412,14 +141,26 @@ if ($MyInvocation.InvocationName -ne '.') {
     # fail-fasts with a named error so the operator adds it to the vault
     # rather than the agent guessing. Strict mode requires guarded
     # property access.
-    $vaultUsersFlow   = $null
-    $vaultRunnersFlow = $null
-    $vaultAnsiblePath = $null
-    $vaultWslDistro   = $null
+    # These vault values are the session defaults only; an individual
+    # deployment may override UsersFlow/RunnersFlow for that one run via
+    # its payload (set by the e2e.yml flow-spec input), so each calling
+    # repo's PR exercises the create/remove path it owns.
+    # DeploymentLookbackHours is likewise optional: absent vault payloads
+    # fall back to Invoke-E2EAgentLoop's 1h default. An operator only sets
+    # it to tune the lookback (see the parameter docstring); the default is
+    # safe for normal operation.
+    $vaultUsersFlow              = $null
+    $vaultRunnersFlow            = $null
+    $vaultAnsiblePath            = $null
+    $vaultWslDistro              = $null
+    $vaultDeploymentLookbackHours = $null
     if ($config.PSObject.Properties['UsersFlow'])   { $vaultUsersFlow   = $config.UsersFlow }
     if ($config.PSObject.Properties['RunnersFlow']) { $vaultRunnersFlow = $config.RunnersFlow }
     if ($config.PSObject.Properties['AnsiblePath']) { $vaultAnsiblePath = $config.AnsiblePath }
     if ($config.PSObject.Properties['WslDistro'])   { $vaultWslDistro   = $config.WslDistro }
+    if ($config.PSObject.Properties['DeploymentLookbackHours']) {
+        $vaultDeploymentLookbackHours = $config.DeploymentLookbackHours
+    }
 
     while ([DateTime]::UtcNow -lt $globalDeadline) {
         try {
@@ -443,6 +184,9 @@ if ($MyInvocation.InvocationName -ne '.') {
             if ($vaultRunnersFlow) { $loopParams['RunnersFlow'] = $vaultRunnersFlow }
             if ($vaultAnsiblePath) { $loopParams['AnsiblePath'] = $vaultAnsiblePath }
             if ($vaultWslDistro)   { $loopParams['WslDistro']   = $vaultWslDistro }
+            if ($vaultDeploymentLookbackHours) {
+                $loopParams['DeploymentLookbackHours'] = $vaultDeploymentLookbackHours
+            }
 
             Invoke-E2EAgentLoop @loopParams
         }
@@ -451,8 +195,36 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
         catch {
             Write-Host "Agent crashed: $($_.Exception.Message)" -ForegroundColor Red
-            Write-Host 'Restarting in 60 seconds ...' -ForegroundColor Yellow
-            Start-Sleep -Seconds 60
+
+            # The routing decision lives in Resolve-AgentCrashAction (unit-
+            # tested); this block only performs the chosen side effect.
+            $crashAction = Resolve-AgentCrashAction -ErrorRecord $_
+            switch ($crashAction.Action) {
+                'Backoff' {
+                    # Rate-limit crash: the budget only refills when GitHub's
+                    # rolling window resets, so sleep that long before resuming
+                    # rather than crash-looping against an empty budget.
+                    Write-Host ('GitHub rate limit hit - backing off ' +
+                        "$($crashAction.DelaySeconds)s until the budget resets ...") `
+                        -ForegroundColor Yellow
+                    Start-Sleep -Seconds $crashAction.DelaySeconds
+                }
+                'Stop' {
+                    # 401 / permission-403 will not self-heal on retry - looping
+                    # would just burn the API budget against a config error.
+                    # Stop loudly so the operator fixes the App credentials /
+                    # Owner in the vault and relaunches.
+                    Write-Host ('GitHub authentication failed - the App credentials or ' +
+                        'the configured Owner are wrong. Fix the vault config, then ' +
+                        'restart the agent. Stopping.') -ForegroundColor Red
+                    return
+                }
+                'Restart' {
+                    Write-Host "Restarting in $($crashAction.DelaySeconds) seconds ..." `
+                        -ForegroundColor Yellow
+                    Start-Sleep -Seconds $crashAction.DelaySeconds
+                }
+            }
         }
     }
 

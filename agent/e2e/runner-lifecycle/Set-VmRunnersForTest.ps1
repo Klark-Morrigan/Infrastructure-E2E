@@ -124,6 +124,23 @@ function Set-VmRunnersForTest {
             # finally block clears it whether wsl threw or returned.
             Push-Location $AnsiblePath
             $env:GH_TOKEN = $Token
+            # Windows env vars do NOT cross into `wsl -- ...` unless their
+            # names are listed in WSLENV. register-runners.sh reads
+            # GH_TOKEN from its Linux environment; without this forwarding
+            # the variable set above is invisible inside WSL, so the script
+            # falls into its interactive `read 'GitHub token:'` prompt and
+            # hangs the unattended agent forever. Mirror the SECRET_SUFFIX/u
+            # forwarding in Initialize-E2EEnvironment.ps1 (the token is a
+            # value, not a path -> /u). Saved and restored in finally so the
+            # per-invocation forwarding does not accumulate across tests.
+            $priorWslEnv = $env:WSLENV
+            if ($env:WSLENV) {
+                if ($env:WSLENV -notlike '*GH_TOKEN*') {
+                    $env:WSLENV = "$env:WSLENV`:GH_TOKEN/u"
+                }
+            } else {
+                $env:WSLENV = 'GH_TOKEN/u'
+            }
             try {
                 # `2>&1 | Out-Host`: the wsl invocation is a native
                 # command, and its stdout/stderr otherwise get collected
@@ -142,6 +159,14 @@ function Set-VmRunnersForTest {
                 # token never lingers in the agent process env after this
                 # invocation returns.
                 Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
+                # Restore WSLENV to its pre-invocation state. A $null prior
+                # value means WSLENV did not exist before, so remove it
+                # rather than setting it to an empty string.
+                if ($null -eq $priorWslEnv) {
+                    Remove-Item Env:WSLENV -ErrorAction SilentlyContinue
+                } else {
+                    $env:WSLENV = $priorWslEnv
+                }
                 Pop-Location
             }
             if ($LASTEXITCODE -ne 0) {

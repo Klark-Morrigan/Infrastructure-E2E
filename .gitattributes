@@ -1,0 +1,14 @@
+# Pin line endings regardless of the operator's core.autocrlf setting.
+# This repo gained bash tooling (scripts/run-lint.sh,
+# scripts/fix-permissions.sh) and reusable-workflow YAML that all run
+# on Linux CI runners; a stray CR on a shebang line produces
+#   env: 'bash\r': No such file or directory
+# exit 127 - silently introduced by `git checkout` on a Windows
+# workstation with autocrlf=true. text=auto + eol=lf makes git
+# normalise text files to LF in the working tree no matter what the
+# operator's global git config says.
+* text=auto eol=lf
+
+# Batch files are the only Windows-side executables in the repo;
+# cmd.exe requires CRLF, so pin them explicitly.
+*.bat text eol=crlf

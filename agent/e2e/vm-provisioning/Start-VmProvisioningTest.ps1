@@ -13,17 +13,21 @@
 
     Prerequisites:
       - PowerShell 7+.
-      - PowerShell.Common >= 1.3.3 installed (or will be installed here).
+      - Common.PowerShell >= 1.3.3 installed (or will be installed here).
       - Infrastructure.Secrets installed.
       - Run as Administrator (Hyper-V cmdlets require elevation).
 
 .EXAMPLE
-    # Run with all defaults (standard VmLAN setup):
+    # Run with all defaults: ICS-on-Internal switch named
+    # ExternalSwitch-Shared, router VM pinned to 192.168.137.10
+    # with gateway 192.168.137.1 (the ICS-assigned host vNIC).
     .\agent\e2e\vm-provisioning\Start-VmProvisioningTest.ps1
 
 .EXAMPLE
-    # Override the VM IP if the default is already in use:
-    .\agent\e2e\vm-provisioning\Start-VmProvisioningTest.ps1 -IpAddress 192.168.100.11
+    # Bridged-Ethernet External vSwitch instead of ICS - pin the
+    # router to a free address on the LAN, gateway to the LAN gateway.
+    .\agent\e2e\vm-provisioning\Start-VmProvisioningTest.ps1 `
+        -RouterExternalIp 192.168.1.50 -RouterExternalGateway 192.168.1.1
 #>
 
 [CmdletBinding()]
@@ -31,25 +35,42 @@ param(
     # Absolute path to the Infrastructure-Vm-Provisioner repo root.
     [string] $ProvisionerPath = 'C:\a_Code\Infrastructure-Vm-Provisioner',
 
-    # Ubuntu version to provision.
+    # Ubuntu version to provision (router + workload VMs).
     [string] $UbuntuVersion = '24.04',
 
-    # Static IP to assign to the test VM on the dedicated E2E-VmLAN subnet.
-    [string] $IpAddress = '192.168.101.10',
-
-    # E2E-VmLAN CIDR prefix length.
-    [int] $SubnetMask = 24,
-
-    # E2E-VmLAN gateway IP.
-    [string] $Gateway = '192.168.101.1',
-
-    # DNS server for the test VM.
+    # DNS resolver the router VM forwards downstream queries to.
     [string] $Dns = '8.8.8.8',
+
+    # Host's External vSwitch the router's upstream NIC attaches to.
+    # Created on demand if absent (bound to -ExternalAdapterName).
+    [string] $ExternalSwitchName = 'ExternalSwitch-Shared',
+
+    # Physical adapter the External vSwitch binds to when created.
+    # Ignored at runtime if the switch already exists - e.g. when
+    # the switch is Internal+ICS, this is purely cosmetic.
+    [string] $ExternalAdapterName = 'Ethernet',
+
+    # Static IP the router VM's ext0 gets. Pinned (not DHCP) so the
+    # run does not depend on the upstream DHCP server being healthy:
+    # bridged-Wi-Fi External MAC-collides via shared MAC at the AP,
+    # and Internal+ICS DHCP silently breaks across Wi-Fi network
+    # changes (see feedback_hyperv_external_switch_wifi and
+    # feedback_hyperv_internal_plus_ics memories). The default
+    # matches the ICS-on-Internal subnet (192.168.137.0/24) with
+    # the host vNIC at .1 and the router at .10 - safely outside
+    # the ICS DHCP pool (.20-.254) so a stray DHCP client cannot
+    # collide.
+    [string] $RouterExternalIp = '192.168.137.10',
+
+    # Default gateway router VM uses for ext0 egress. With ICS this
+    # is the host vNIC's hardcoded 192.168.137.1; with a bridged
+    # Ethernet External vSwitch this should be the LAN gateway.
+    [string] $RouterExternalGateway = '192.168.137.1',
 
     # Workstation path for Hyper-V VM config files.
     [string] $VmConfigPath = 'E:\a_VMs\Hyper-V\Config',
 
-    # Workstation path for the test VM VHDX.
+    # Workstation path for the test VHDX files.
     [string] $VhdPath = 'E:\a_VMs\Hyper-V\Disks'
 )
 
@@ -58,19 +79,20 @@ $ErrorActionPreference = 'Stop'
 
 . "$PSScriptRoot\..\..\Initialize-E2EEnvironment.ps1"
 
-# Dot-source the test script after PowerShell.Common is loaded because the
+# Dot-source the test script after Common.PowerShell is loaded because the
 # test depends on Invoke-SshClientCommand and Invoke-ModuleInstall from it.
 . "$PSScriptRoot\Invoke-VmProvisioningTest.ps1"
 
 Invoke-VmProvisioningTest -Config ([PSCustomObject]@{
     ProvisionerPath = $ProvisionerPath
     TestVm          = [PSCustomObject]@{
-        ubuntuVersion = $UbuntuVersion
-        ipAddress     = $IpAddress
-        subnetMask    = $SubnetMask
-        gateway       = $Gateway
-        dns           = $Dns
-        vmConfigPath  = $VmConfigPath
-        vhdPath       = $VhdPath
+        ubuntuVersion         = $UbuntuVersion
+        dns                   = $Dns
+        externalSwitchName    = $ExternalSwitchName
+        externalAdapterName   = $ExternalAdapterName
+        routerExternalIp      = $RouterExternalIp
+        routerExternalGateway = $RouterExternalGateway
+        vmConfigPath          = $VmConfigPath
+        vhdPath               = $VhdPath
     }
 })

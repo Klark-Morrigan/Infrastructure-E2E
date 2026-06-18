@@ -190,6 +190,68 @@ exit 0
             (Test-Path Env:GH_TOKEN) | Should -BeFalse
         }
 
+        It 'forwards GH_TOKEN into WSL via WSLENV at invocation time' {
+            # The regression this guards: $env:GH_TOKEN alone does not
+            # cross into `wsl -- ...`; the name must be in WSLENV or the
+            # bridge never sees it and blocks on its interactive prompt.
+            $Script:CapturedWslEnv = $null
+            function wsl {
+                $Script:CapturedWslEnv = $env:WSLENV
+                $global:LASTEXITCODE   = 0
+            }
+
+            Set-VmRunnersForTest `
+                -RunnersFlow  'ansible' `
+                -RunnersPath  $Script:RunnersPath `
+                -AnsiblePath  $Script:AnsiblePath `
+                -WslDistro    'Ubuntu-24.04' `
+                -Token        $Script:Token `
+                -SecretSuffix $Script:SecretSuffix `
+                -VmDef        $Script:VmDef `
+                -Entry        $Script:Entry
+
+            $Script:CapturedWslEnv | Should -Match 'GH_TOKEN'
+        }
+
+        It 'restores WSLENV to absent when it was unset before the run' {
+            function wsl { $global:LASTEXITCODE = 0 }
+
+            Remove-Item Env:WSLENV -ErrorAction SilentlyContinue
+            Set-VmRunnersForTest `
+                -RunnersFlow  'ansible' `
+                -RunnersPath  $Script:RunnersPath `
+                -AnsiblePath  $Script:AnsiblePath `
+                -WslDistro    'Ubuntu-24.04' `
+                -Token        $Script:Token `
+                -SecretSuffix $Script:SecretSuffix `
+                -VmDef        $Script:VmDef `
+                -Entry        $Script:Entry
+
+            (Test-Path Env:WSLENV) | Should -BeFalse
+        }
+
+        It 'restores a pre-existing WSLENV after the run' {
+            function wsl { $global:LASTEXITCODE = 0 }
+
+            $env:WSLENV = 'SECRET_SUFFIX/u'
+            try {
+                Set-VmRunnersForTest `
+                    -RunnersFlow  'ansible' `
+                    -RunnersPath  $Script:RunnersPath `
+                    -AnsiblePath  $Script:AnsiblePath `
+                    -WslDistro    'Ubuntu-24.04' `
+                    -Token        $Script:Token `
+                    -SecretSuffix $Script:SecretSuffix `
+                    -VmDef        $Script:VmDef `
+                    -Entry        $Script:Entry
+
+                $env:WSLENV | Should -Be 'SECRET_SUFFIX/u'
+            }
+            finally {
+                Remove-Item Env:WSLENV -ErrorAction SilentlyContinue
+            }
+        }
+
         It 'throws when AnsiblePath is missing' {
             { Set-VmRunnersForTest `
                 -RunnersFlow  'ansible' `

@@ -2,23 +2,28 @@ BeforeAll {
     # Stub every external function the loop calls so tests never hit real
     # infrastructure. All stubs are overridden by Mocks inside each Context.
     function Get-GitHubAppToken         { param($AppId, $InstallationId, $PrivateKeyPath) }
-    function Get-PendingDeployment      { param($Token, $Owner, $Repo, $Environment) }
+    function Get-PendingDeployment      { param($Token, $Owner, $Repo, $Environment, $CreatedSince) }
     function Set-DeploymentStatus       { param($Token, $Owner, $Repo, $DeploymentId, $State, $Description, $LogUrl) }
     function Invoke-RunnerLifecycleTest { param($Config) }
-    # Assert-WslHasBash is a PowerShell.Common cmdlet the ansible-flow
+    # Assert-WslHasBash is a Common.PowerShell cmdlet the ansible-flow
     # startup validation calls to catch the docker-desktop-default trap
     # (a no-bash WSL distro). Stub it as a no-op so the unit tests are not
     # forced to actually have WSL installed.
     function Assert-WslHasBash          { param($DistroName) }
+    # When the loop finds a deployment it dot-sources the runner-lifecycle
+    # cascade, which installs Posh-SSH at load time via Invoke-ModuleInstall
+    # (a Common.PowerShell cmdlet). A clean test runspace has no
+    # Common.PowerShell, so that load-time call would otherwise throw
+    # CommandNotFoundException; stub it as a no-op. The loop's own logic,
+    # not module installation, is what these tests exercise.
+    function Invoke-ModuleInstall       { param($ModuleName, $MinimumVersion) }
 
-    # Start-E2EAgent.ps1 now declares -SecretSuffix as a mandatory
-    # top-level parameter. Dot-sourcing without binding it would trip
-    # the parameter binder before the function-definition body runs.
-    # The script's "main" body has its own dot-source guard
-    # ($MyInvocation.InvocationName -ne '.'), so the dummy value is
-    # never read - only the parameter slot needs to be satisfied so
-    # Invoke-E2EAgentLoop becomes defined in the test scope.
-    . "$PSScriptRoot\..\agent\Start-E2EAgent.ps1" -SecretSuffix 'tests'
+    # Source the function under test and the token helper it calls directly
+    # (one-function-per-file convention), rather than the whole
+    # Start-E2EAgent.ps1 entry script - the loop logic is what these tests
+    # exercise, not the vault-reading bootstrap.
+    . "$PSScriptRoot\..\agent\Get-RefreshedDeploymentToken.ps1"
+    . "$PSScriptRoot\..\agent\Invoke-E2EAgentLoop.ps1"
 }
 
 Describe 'Invoke-E2EAgentLoop' {
@@ -48,13 +53,12 @@ Describe 'Invoke-E2EAgentLoop' {
             RunnersPath           = 'C:\test\runners'
             HostTarballCachePath  = 'C:\test\tarball-cache'
             TestVm                = [PSCustomObject]@{
-                ubuntuVersion = '24.04'
-                ipAddress     = '192.168.100.200'
-                subnetMask    = 24
-                gateway       = '192.168.100.1'
-                dns           = '8.8.8.8'
-                vmConfigPath  = 'E:\a_VMs\Hyper-V\Config'
-                vhdPath       = 'E:\a_VMs\Hyper-V\Disks'
+                ubuntuVersion       = '24.04'
+                dns                 = '8.8.8.8'
+                externalSwitchName  = 'ExternalSwitch-Shared'
+                externalAdapterName = 'Ethernet'
+                vmConfigPath        = 'E:\a_VMs\Hyper-V\Config'
+                vhdPath             = 'E:\a_VMs\Hyper-V\Disks'
             }
             Owner                 = 'org'
             Repo                  = 'repo'
@@ -167,7 +171,13 @@ Describe 'Invoke-E2EAgentLoop' {
             $Script:_config.RunnersPath             | Should -Be 'C:\test\runners'
             $Script:_config.HostTarballCachePath    | Should -Be 'C:\test\tarball-cache'
             $Script:_config.Owner            | Should -Be 'org'
-            $Script:_config.TestVm.ipAddress | Should -Be '192.168.100.200'
+            # TestVm carries the operator-supplied dns + switch info;
+            # router IP / gateway / subnetMask are intentionally absent
+            # (ext0 DHCPs, no operator IPs to pin per Start-E2EAgent
+            # docstring).
+            $Script:_config.TestVm.dns                 | Should -Be '8.8.8.8'
+            $Script:_config.TestVm.externalSwitchName  | Should -Be 'ExternalSwitch-Shared'
+            $Script:_config.TestVm.externalAdapterName | Should -Be 'Ethernet'
         }
 
         It 'posts success after the lifecycle test passes' {
@@ -300,6 +310,44 @@ Describe 'Invoke-E2EAgentLoop' {
             # The agent must not crash - it continues to drain any queued
             # deployments and picks up new ones after the failure.
             { Invoke-E2EAgentLoop @Script:BaseParams } | Should -Not -Throw
+        }
+    }
+
+    # ------------------------------------------------------------------
+    Context 'in_progress status post failure' {
+    # ------------------------------------------------------------------
+        # The in_progress post lives inside the per-deployment try, so a
+        # status write that fails (e.g. a 401 from a stale token / wrong
+        # Owner) fails just that deployment - the loop must mark it failed
+        # and keep going, not rethrow and crash the agent.
+
+        BeforeEach {
+            $script:_ipCount = 0
+            Mock Get-GitHubAppToken { $Script:FreshToken }
+            Mock Get-PendingDeployment {
+                $script:_ipCount++
+                if ($script:_ipCount -eq 1) { return [PSCustomObject]@{ id = 9 } }
+                return $null
+            }
+            # Throw on the in_progress write; let the later 'failure' write succeed.
+            Mock Set-DeploymentStatus { if ($State -eq 'in_progress') { throw 'simulated 401' } }
+            Mock Invoke-RunnerLifecycleTest {}
+        }
+
+        It 'does not rethrow when the in_progress post fails' {
+            { Invoke-E2EAgentLoop @Script:BaseParams } | Should -Not -Throw
+        }
+
+        It 'posts failure for the deployment whose in_progress post failed' {
+            Invoke-E2EAgentLoop @Script:BaseParams
+            Should -Invoke Set-DeploymentStatus -ParameterFilter {
+                $DeploymentId -eq 9 -and $State -eq 'failure'
+            }
+        }
+
+        It 'does not run the lifecycle test when the in_progress post failed' {
+            Invoke-E2EAgentLoop @Script:BaseParams
+            Should -Invoke Invoke-RunnerLifecycleTest -Times 0
         }
     }
 
@@ -480,6 +528,176 @@ Describe 'Invoke-E2EAgentLoop' {
     }
 
     # ------------------------------------------------------------------
+    Context 'flow spec from deployment payload' {
+    # ------------------------------------------------------------------
+
+        BeforeEach {
+            Mock Get-GitHubAppToken { $Script:FreshToken }
+            Mock Set-DeploymentStatus {}
+        }
+
+        It 'overrides both session flows with the payload flows for that run' {
+            # BaseParams sets the session defaults to the ansible scenario;
+            # a custom-powershell repo's PR rides its own scenario in the
+            # deployment payload and must win for that deployment.
+            $Script:_pl_config = $null
+            $script:_plCount = 0
+            Mock Get-PendingDeployment {
+                $script:_plCount++
+                if ($script:_plCount -eq 1) {
+                    return [PSCustomObject]@{
+                        id      = 77
+                        payload = [PSCustomObject]@{
+                            usersFlow   = 'custom-powershell'
+                            runnersFlow = 'custom-powershell'
+                        }
+                    }
+                }
+                return $null
+            }
+            Mock Invoke-RunnerLifecycleTest { $Script:_pl_config = $Config }
+
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            $Script:_pl_config.UsersFlow   | Should -Be 'custom-powershell'
+            $Script:_pl_config.RunnersFlow | Should -Be 'custom-powershell'
+        }
+
+        It 'falls back to the session flows when the deployment has no payload' {
+            $Script:_nopl_config = $null
+            $script:_noplCount = 0
+            Mock Get-PendingDeployment {
+                $script:_noplCount++
+                if ($script:_noplCount -eq 1) { return [PSCustomObject]@{ id = 78 } }
+                return $null
+            }
+            Mock Invoke-RunnerLifecycleTest { $Script:_nopl_config = $Config }
+
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            # BaseParams sets UsersFlow=ansible and leaves RunnersFlow at its
+            # parameter default (custom-powershell).
+            $Script:_nopl_config.UsersFlow   | Should -Be 'ansible'
+            $Script:_nopl_config.RunnersFlow | Should -Be 'custom-powershell'
+        }
+
+        It 'applies only the flow present in the payload, keeping the other at the session value' {
+            $Script:_partial_config = $null
+            $script:_partialCount = 0
+            Mock Get-PendingDeployment {
+                $script:_partialCount++
+                if ($script:_partialCount -eq 1) {
+                    return [PSCustomObject]@{
+                        id      = 79
+                        payload = [PSCustomObject]@{ runnersFlow = 'ansible' }
+                    }
+                }
+                return $null
+            }
+            Mock Invoke-RunnerLifecycleTest { $Script:_partial_config = $Config }
+
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            $Script:_partial_config.UsersFlow   | Should -Be 'ansible'   # session default
+            $Script:_partial_config.RunnersFlow | Should -Be 'ansible'   # from payload
+        }
+
+        It 'posts failure for an unknown flow value in the payload instead of crashing' {
+            $script:_badCount = 0
+            Mock Get-PendingDeployment {
+                $script:_badCount++
+                if ($script:_badCount -eq 1) {
+                    return [PSCustomObject]@{
+                        id      = 80
+                        payload = [PSCustomObject]@{ usersFlow = 'legacy' }
+                    }
+                }
+                return $null
+            }
+            Mock Invoke-RunnerLifecycleTest {}
+
+            { Invoke-E2EAgentLoop @Script:BaseParams } | Should -Not -Throw
+
+            Should -Invoke Set-DeploymentStatus -ParameterFilter {
+                $DeploymentId -eq 80 -and $State -eq 'failure'
+            }
+            # The bad spec is rejected before the lifecycle test is reached.
+            Should -Invoke Invoke-RunnerLifecycleTest -Times 0
+        }
+
+        It "posts failure when a payload upgrades a layer to 'ansible' but AnsiblePath is missing" {
+            # The startup check only validated the session defaults. A payload
+            # that flips a custom-powershell session to ansible must re-assert
+            # the bridge prerequisites or it would fail deep in a dispatcher.
+            $script:_upCount = 0
+            Mock Get-PendingDeployment {
+                $script:_upCount++
+                if ($script:_upCount -eq 1) {
+                    return [PSCustomObject]@{
+                        id      = 81
+                        payload = [PSCustomObject]@{ usersFlow = 'ansible' }
+                    }
+                }
+                return $null
+            }
+            Mock Invoke-RunnerLifecycleTest {}
+
+            # Session is custom-powershell with no AnsiblePath, so startup
+            # validation passes; the payload's ansible upgrade is caught
+            # per-run instead.
+            $params = $Script:BaseParams.Clone()
+            $params['UsersFlow'] = 'custom-powershell'
+            $params.Remove('AnsiblePath')
+
+            { Invoke-E2EAgentLoop @params } | Should -Not -Throw
+
+            Should -Invoke Set-DeploymentStatus -ParameterFilter {
+                $DeploymentId -eq 81 -and $State -eq 'failure'
+            }
+            Should -Invoke Invoke-RunnerLifecycleTest -Times 0
+        }
+    }
+
+    # ------------------------------------------------------------------
+    Context 'deployment lookback cutoff' {
+    # ------------------------------------------------------------------
+        # The loop hands Get-PendingDeployment a CreatedSince so it can skip
+        # the status fetch for historical deployments - the fix that stops
+        # the N+1 poll fan-out from exhausting the GitHub rate limit.
+
+        It 'passes a CreatedSince ~DeploymentLookbackHours in the past (default 1h)' {
+            $script:_csValues = [System.Collections.Generic.List[datetime]]::new()
+            Mock Get-GitHubAppToken    { $Script:FreshToken }
+            Mock Get-PendingDeployment { $script:_csValues.Add($CreatedSince); $null }
+            Mock Set-DeploymentStatus  {}
+
+            # BaseParams omits DeploymentLookbackHours, so the 1h default applies.
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            $script:_csValues.Count | Should -BeGreaterThan 0
+            $expected = [DateTime]::UtcNow.AddHours(-1)
+            [Math]::Abs(($script:_csValues[0] - $expected).TotalMinutes) |
+                Should -BeLessThan 5
+        }
+
+        It 'honours a custom DeploymentLookbackHours' {
+            $script:_csValues2 = [System.Collections.Generic.List[datetime]]::new()
+            Mock Get-GitHubAppToken    { $Script:FreshToken }
+            Mock Get-PendingDeployment { $script:_csValues2.Add($CreatedSince); $null }
+            Mock Set-DeploymentStatus  {}
+
+            $params = $Script:BaseParams.Clone()
+            $params['DeploymentLookbackHours'] = 2
+            Invoke-E2EAgentLoop @params
+
+            $script:_csValues2.Count | Should -BeGreaterThan 0
+            $expected = [DateTime]::UtcNow.AddHours(-2)
+            [Math]::Abs(($script:_csValues2[0] - $expected).TotalMinutes) |
+                Should -BeLessThan 5
+        }
+    }
+
+    # ------------------------------------------------------------------
     Context 'token refresh' {
     # ------------------------------------------------------------------
 
@@ -594,6 +812,92 @@ Describe 'Invoke-E2EAgentLoop' {
 
             # Called only once at startup - no refresh needed.
             Should -Invoke Get-GitHubAppToken -Times 1
+        }
+    }
+
+    # ------------------------------------------------------------------
+    Context 'terminal status token refresh' {
+    # ------------------------------------------------------------------
+        # Regression guard: a lifecycle run can outlast the token's 1-hour
+        # life, so the deployment token must be re-checked for expiry
+        # immediately before the success/failure post - otherwise the
+        # terminal write 401s on a stale token. These tests assert a
+        # refresh call sits directly before each terminal post by mocking
+        # the helper as a pass-through recorder (the real expiry logic is
+        # covered by the 'Get-RefreshedDeploymentToken' Describe below).
+
+        It 'refreshes the token immediately before posting success' {
+            $Script:_order = [System.Collections.Generic.List[string]]::new()
+            $script:_tsCount = 0
+            Mock Get-GitHubAppToken { $Script:FreshToken }
+            Mock Get-RefreshedDeploymentToken { $Script:_order.Add('refresh'); $TokenResult }
+            Mock Get-PendingDeployment {
+                $script:_tsCount++
+                if ($script:_tsCount -eq 1) { return [PSCustomObject]@{ id = 1 } }
+                return $null
+            }
+            Mock Set-DeploymentStatus       { $Script:_order.Add("status:$State") }
+            Mock Invoke-RunnerLifecycleTest {}
+
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            $successIdx = $Script:_order.IndexOf('status:success')
+            $successIdx | Should -BeGreaterThan 0
+            $Script:_order[$successIdx - 1] | Should -Be 'refresh'
+        }
+
+        It 'refreshes the token immediately before posting failure' {
+            $Script:_orderF = [System.Collections.Generic.List[string]]::new()
+            $script:_tsCountF = 0
+            Mock Get-GitHubAppToken { $Script:FreshToken }
+            Mock Get-RefreshedDeploymentToken { $Script:_orderF.Add('refresh'); $TokenResult }
+            Mock Get-PendingDeployment {
+                $script:_tsCountF++
+                if ($script:_tsCountF -eq 1) { return [PSCustomObject]@{ id = 1 } }
+                return $null
+            }
+            Mock Set-DeploymentStatus       { $Script:_orderF.Add("status:$State") }
+            Mock Invoke-RunnerLifecycleTest { throw 'lifecycle failed' }
+
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            $failureIdx = $Script:_orderF.IndexOf('status:failure')
+            $failureIdx | Should -BeGreaterThan 0
+            $Script:_orderF[$failureIdx - 1] | Should -Be 'refresh'
+        }
+
+        It 'posts the terminal status with the token returned by the refresh' {
+            # Proves the re-assignment takes effect: a refresh that returns a
+            # new token must be the one the success post uses, not the stale
+            # pre-test token.
+            $script:_tsCount2 = 0
+            Mock Get-GitHubAppToken { $Script:FreshToken }
+            # Pass-through at loop top (keeps 'tok'); swap to a fresh token
+            # only on the pre-post call so we can assert the post uses it.
+            $script:_refreshCalls = 0
+            Mock Get-RefreshedDeploymentToken {
+                $script:_refreshCalls++
+                if ($script:_refreshCalls -ge 2) {
+                    return [PSCustomObject]@{
+                        Token     = 'post_fresh_tok'
+                        ExpiresAt = [DateTimeOffset]::UtcNow.AddMinutes(55).ToString('o')
+                    }
+                }
+                return $TokenResult
+            }
+            Mock Get-PendingDeployment {
+                $script:_tsCount2++
+                if ($script:_tsCount2 -eq 1) { return [PSCustomObject]@{ id = 1 } }
+                return $null
+            }
+            Mock Set-DeploymentStatus {}
+            Mock Invoke-RunnerLifecycleTest {}
+
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            Should -Invoke Set-DeploymentStatus -ParameterFilter {
+                $State -eq 'success' -and $Token -eq 'post_fresh_tok'
+            }
         }
     }
 }

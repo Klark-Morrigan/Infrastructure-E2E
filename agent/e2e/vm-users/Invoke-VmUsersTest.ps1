@@ -1,6 +1,6 @@
 <#
 .NOTES
-    Do not run this file directly. Dot-source it after PowerShell.Common
+    Do not run this file directly. Dot-source it after Common.PowerShell
     and Infrastructure.Secrets are loaded (Start-E2EAgent.ps1 handles this
     via Invoke-RunnerLifecycleTest -> this file).
 #>
@@ -47,22 +47,17 @@ function Assert-VmUsersStillIntact {
 
     Write-Host "Re-asserting users on $($VmDef.vmName) ..." -ForegroundColor Magenta
 
-    $sshClient = $null
+    $sshSession = $null
     try {
-        $sshClient = New-VmSshClient `
-                         -IpAddress $VmDef.ipAddress `
-                         -Username  $VmDef.username `
-                         -Password  $VmDef.password
-
+        $sshSession = New-VmSshClientWithJump -Vm $VmDef
         Invoke-VmUsersStillIntactAssertions `
-            -SshClient $sshClient `
+            -SshClient $sshSession.Client `
             -VmName    $VmDef.vmName `
             -Entry     $Entry
     }
     finally {
-        if ($null -ne $sshClient) {
-            if ($sshClient.IsConnected) { $sshClient.Disconnect() }
-            $sshClient.Dispose()
+        if ($null -ne $sshSession) {
+            try { $sshSession.Dispose() } catch {}
         }
     }
 }
@@ -165,16 +160,20 @@ function Invoke-VmUsersSetup {
     # it exits 0 regardless. Without this check, a skipped VM produces
     # misleading "user not found" errors in the assertion phase rather than
     # a clear setup failure here.
+    #
+    # New-VmSshClientWithJump owns the direct-vs-jump branch on
+    # $vmDef._RouterVm so this check works for both legacy single-switch
+    # workloads and feature-53 NAT topologies without any branching at
+    # the call site.
     Write-Host "Verifying SSH reachable after user reconciliation: $($vmDef.ipAddress) ..." `
         -ForegroundColor Magenta
+    $setupSshSession  = $null
     $setupSshClient   = $null
     $dnsReady         = $false
     $dnsDiagnostics   = $null
     try {
-        $setupSshClient = New-VmSshClient `
-                              -IpAddress $vmDef.ipAddress `
-                              -Username  $vmDef.username `
-                              -Password  $vmDef.password
+        $setupSshSession = New-VmSshClientWithJump -Vm $vmDef
+        $setupSshClient  = $setupSshSession.Client
         Write-Host '  [OK] VM reachable via SSH after user reconciliation.' `
             -ForegroundColor Green
 
@@ -226,9 +225,10 @@ sudo journalctl -u systemd-resolved -n 20 --no-pager || true
             "users may not have been reconciled. Inner: $($_.Exception.Message)"
     }
     finally {
-        if ($null -ne $setupSshClient) {
-            if ($setupSshClient.IsConnected) { $setupSshClient.Disconnect() }
-            $setupSshClient.Dispose()
+        # Session owns both the workload client AND (when jumped) the
+        # tunnel; Dispose() tears them down in the right order.
+        if ($null -ne $setupSshSession) {
+            try { $setupSshSession.Dispose() } catch {}
         }
     }
 
@@ -300,13 +300,11 @@ function Invoke-VmUsersTeardown {
         Write-Host "Verifying user removal: $($VmDef.vmName) at $($VmDef.ipAddress) ..." `
             -ForegroundColor Magenta
 
-        $sshClient = $null
+        $sshSession = $null
 
         try {
-            $sshClient = New-VmSshClient `
-                             -IpAddress $VmDef.ipAddress `
-                             -Username  $VmDef.username `
-                             -Password  $VmDef.password
+            $sshSession = New-VmSshClientWithJump -Vm $VmDef
+            $sshClient  = $sshSession.Client
 
             foreach ($user in $Entry.users) {
                 $username = $user.username
@@ -366,9 +364,8 @@ function Invoke-VmUsersTeardown {
             }
         }
         finally {
-            if ($null -ne $sshClient) {
-                if ($sshClient.IsConnected) { $sshClient.Disconnect() }
-                $sshClient.Dispose()
+            if ($null -ne $sshSession) {
+                try { $sshSession.Dispose() } catch {}
             }
         }
 
@@ -406,13 +403,11 @@ function Invoke-VmUsersTest {
         Write-Host "Verifying users: $($vmDef.vmName) at $($vmDef.ipAddress) ..." `
             -ForegroundColor Magenta
 
-        $sshClient = $null
+        $sshSession = $null
 
         try {
-            $sshClient = New-VmSshClient `
-                             -IpAddress $vmDef.ipAddress `
-                             -Username  $vmDef.username `
-                             -Password  $vmDef.password
+            $sshSession = New-VmSshClientWithJump -Vm $vmDef
+            $sshClient  = $sshSession.Client
 
             $entry = Get-E2EUsersTestEntry
 
@@ -510,9 +505,8 @@ function Invoke-VmUsersTest {
             }
         }
         finally {
-            if ($null -ne $sshClient) {
-                if ($sshClient.IsConnected) { $sshClient.Disconnect() }
-                $sshClient.Dispose()
+            if ($null -ne $sshSession) {
+                try { $sshSession.Dispose() } catch {}
             }
         }
 

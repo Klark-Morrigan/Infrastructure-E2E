@@ -19,7 +19,26 @@ on:
   pull_request:
     branches: [ master ]
   workflow_dispatch:
+    inputs:
+      flow-spec:
+        description: >-
+          JSON selecting which create/remove implementation each layer runs,
+          e.g. {"usersFlow":"ansible","runnersFlow":"ansible"}. Values are
+          'ansible' or 'custom-powershell'. Omit for the ansible scenario.
+        required: false
+        type: string
+        default: '{"usersFlow":"ansible","runnersFlow":"ansible"}'
   workflow_call:
+    inputs:
+      flow-spec:
+        description: >-
+          JSON selecting which create/remove implementation each layer runs.
+          Callers pass {"usersFlow":"...","runnersFlow":"..."} with values
+          'ansible' (default) or 'custom-powershell'. Omitted => ansible, so
+          a caller that does not set it gets the default ansible scenario.
+        required: false
+        type: string
+        default: '{"usersFlow":"ansible","runnersFlow":"ansible"}'
     secrets:
       GH_APP_ID:
         required: true
@@ -37,30 +56,42 @@ jobs:
         id: token
         uses: actions/create-github-app-token@v3
         with:
+          # client-id accepts the App ID or its Client ID (both are valid
+          # GitHub App JWT issuers); the GH_APP_ID secret supplies whichever
+          # this App uses.
           client-id: ${{ secrets.GH_APP_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          owner: VitaliiAndreev
+          owner: Klark-Morrigan
           repositories: Infrastructure-E2E
 
       - name: Resolve deployment ref
         id: resolve-ref
+        # github context values are passed through env, not inlined into the
+        # script: head_ref is attacker-controllable on a fork PR, so inlining
+        # it risks shell injection (GitHub secure-use guidance). The script
+        # reads the shell vars instead.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REF: ${{ github.head_ref }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           # Cross-repo call: always deploy against master - the caller's branch
-          # does not exist in this repo (detected via github.repository).
-          # pull_request (own repo): use the source branch - github.ref_name
-          # resolves to the synthetic merge ref (e.g. 6/merge) which is not real.
+          # does not exist in this repo (detected via REPOSITORY).
+          # pull_request (own repo): use the source branch - REF_NAME resolves
+          # to the synthetic merge ref (e.g. 6/merge) which is not real.
           # workflow_dispatch: use the branch selected in the GitHub UI.
-          event="${{ github.event_name }}"
+          #
           # When called from another repo via workflow_call, the github context
-          # is inherited from the caller: event_name stays "pull_request" and
-          # head_ref carries the caller's branch, which does not exist here.
+          # is inherited from the caller: EVENT_NAME stays "pull_request" and
+          # HEAD_REF carries the caller's branch, which does not exist here.
           # Detect that case by checking the repository and fall back to master.
-          if [ "${{ github.repository }}" != "VitaliiAndreev/Infrastructure-E2E" ]; then
+          if [ "$REPOSITORY" != "Klark-Morrigan/Infrastructure-E2E" ]; then
             ref="master"
-          elif [ "$event" = "pull_request" ]; then
-            ref="${{ github.head_ref }}"
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
+            ref="$HEAD_REF"
           else
-            ref="${{ github.ref_name }}"
+            ref="$REF_NAME"
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "Deployment ref: $ref"
@@ -69,19 +100,39 @@ jobs:
         id: create-deployment
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
+          # The calling repo selects which create/remove implementation each
+          # layer runs via this flow-spec; it rides to the workstation agent
+          # in the deployment payload. Empty for a pull_request on this repo
+          # (inputs only exist for workflow_call / workflow_dispatch) - the
+          # step defaults it to the ansible scenario below so own-repo PRs
+          # still exercise the primary path.
+          FLOW_SPEC: ${{ inputs.flow-spec }}
         run: |
+          flow_spec="$FLOW_SPEC"
+          if [ -z "$flow_spec" ]; then
+            flow_spec='{"usersFlow":"ansible","runnersFlow":"ansible"}'
+          fi
+          ref=${{ steps.resolve-ref.outputs.ref }}
+          # jq --argjson parses flow_spec as JSON and embeds it as the
+          # deployment payload object; an invalid spec fails the step here
+          # rather than silently reaching the agent. payload travels back to
+          # the polling agent, which reads usersFlow / runnersFlow from it.
           # auto_merge:false - no branch merge is relevant here.
           # required_contexts:[] - bypasses commit-status checks that would
           # otherwise block deployment creation on a repo with branch protection.
-          ref=${{ steps.resolve-ref.outputs.ref }}
-          payload="{\"ref\":\"$ref\",\"environment\":\"e2e-workstation\",\"auto_merge\":false,\"required_contexts\":[]}"
-          deployment_id=$(echo "$payload" | gh api \
+          body=$(jq -nc \
+            --arg ref "$ref" \
+            --argjson payload "$flow_spec" \
+            '{ ref: $ref, environment: "e2e-workstation",
+               auto_merge: false, required_contexts: [],
+               payload: $payload }')
+          deployment_id=$(printf '%s' "$body" | gh api \
             --method POST \
-            "repos/VitaliiAndreev/Infrastructure-E2E/deployments" \
+            "repos/Klark-Morrigan/Infrastructure-E2E/deployments" \
             --input - \
             --jq '.id')
           echo "deployment-id=$deployment_id" >> "$GITHUB_OUTPUT"
-          echo "Created deployment $deployment_id"
+          echo "Created deployment $deployment_id with flow spec: $flow_spec"
 
       - name: Wait for terminal status
         env:
@@ -97,7 +148,7 @@ jobs:
 
           for i in $(seq 1 $max_polls); do
             state=$(gh api \
-              "repos/VitaliiAndreev/Infrastructure-E2E/deployments/$DEPLOYMENT_ID/statuses" \
+              "repos/Klark-Morrigan/Infrastructure-E2E/deployments/$DEPLOYMENT_ID/statuses" \
               --jq '.[0].state // empty')
 
             echo "Poll $i/$max_polls: state=${state:-(none)}"

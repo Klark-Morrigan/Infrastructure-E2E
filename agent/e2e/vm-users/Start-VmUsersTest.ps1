@@ -13,17 +13,19 @@
 
     Prerequisites:
       - PowerShell 7+.
-      - PowerShell.Common >= 1.3.3 installed (or will be installed here).
+      - Common.PowerShell >= 1.3.3 installed (or will be installed here).
       - Infrastructure.Secrets installed.
       - Run as Administrator (Hyper-V cmdlets require elevation).
 
 .EXAMPLE
-    # Run with all defaults (standard VmLAN setup):
+    # Run with all defaults (workstation has ExternalSwitch-Shared bound
+    # to the 'Ethernet' adapter; router upstream IP 192.168.101.20).
     .\agent\e2e\vm-users\Start-VmUsersTest.ps1
 
 .EXAMPLE
-    # Override the VM IP if the default is already in use:
-    .\agent\e2e\vm-users\Start-VmUsersTest.ps1 -IpAddress 192.168.101.11
+    # Override the router's upstream IP if 192.168.101.20 is already in use.
+    .\agent\e2e\vm-users\Start-VmUsersTest.ps1 -RouterExternalIp 192.168.100.50 `
+        -ExternalGateway 192.168.100.1
 #>
 
 [CmdletBinding()]
@@ -53,25 +55,24 @@ param(
     # changes to its no-bash 'docker-desktop' engine distro).
     [string] $WslDistro = 'Ubuntu-24.04',
 
-    # Ubuntu version to provision.
+    # Ubuntu version to provision (router + workload VMs).
     [string] $UbuntuVersion = '24.04',
 
-    # Static IP to assign to the test VM on the dedicated E2E-VmLAN subnet.
-    [string] $IpAddress = '192.168.101.10',
-
-    # E2E-VmLAN CIDR prefix length.
-    [int] $SubnetMask = 24,
-
-    # E2E-VmLAN gateway IP.
-    [string] $Gateway = '192.168.101.1',
-
-    # DNS server for the test VM.
+    # DNS resolver the router VM forwards downstream queries to.
+    # ext0 itself DHCPs from the host's External-vSwitch upstream;
+    # see Start-VmProvisioningTest.ps1 for the rationale.
     [string] $Dns = '8.8.8.8',
+
+    # Host's External vSwitch the router's upstream NIC attaches to.
+    [string] $ExternalSwitchName = 'ExternalSwitch-Shared',
+
+    # Physical adapter the External vSwitch binds to when created.
+    [string] $ExternalAdapterName = 'Ethernet',
 
     # Workstation path for Hyper-V VM config files.
     [string] $VmConfigPath = 'E:\a_VMs\Hyper-V\Config',
 
-    # Workstation path for the test VM VHDX.
+    # Workstation path for the test VHDX files.
     [string] $VhdPath = 'E:\a_VMs\Hyper-V\Disks'
 )
 
@@ -80,7 +81,7 @@ $ErrorActionPreference = 'Stop'
 
 . "$PSScriptRoot\..\..\Initialize-E2EEnvironment.ps1"
 
-# Dot-source the test script after PowerShell.Common is loaded because
+# Dot-source the test script after Common.PowerShell is loaded because
 # the test depends on Invoke-SshClientCommand and Invoke-ModuleInstall
 # from it.
 . "$PSScriptRoot\Invoke-VmUsersTest.ps1"
@@ -92,12 +93,11 @@ Invoke-VmUsersTest -Config ([PSCustomObject]@{
     AnsiblePath     = $AnsiblePath
     WslDistro       = $WslDistro
     TestVm          = [PSCustomObject]@{
-        ubuntuVersion = $UbuntuVersion
-        ipAddress     = $IpAddress
-        subnetMask    = $SubnetMask
-        gateway       = $Gateway
-        dns           = $Dns
-        vmConfigPath  = $VmConfigPath
-        vhdPath       = $VhdPath
+        ubuntuVersion       = $UbuntuVersion
+        dns                 = $Dns
+        externalSwitchName  = $ExternalSwitchName
+        externalAdapterName = $ExternalAdapterName
+        vmConfigPath        = $VmConfigPath
+        vhdPath             = $VhdPath
     }
 })
