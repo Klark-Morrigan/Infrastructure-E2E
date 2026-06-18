@@ -435,6 +435,7 @@ if ($MyInvocation.InvocationName -ne '.') {
 
     . "$PSScriptRoot\Initialize-E2EEnvironment.ps1"
     . "$PSScriptRoot\Get-RateLimitBackoffDelay.ps1"
+    . "$PSScriptRoot\Test-GitHubAuthError.ps1"
 
     # ---------------------------------------------------------------------------
     # Read E2EConfig from vault
@@ -562,6 +563,16 @@ if ($MyInvocation.InvocationName -ne '.') {
                 Write-Host ("GitHub rate limit hit - backing off ${backoffSeconds}s " +
                     'until the budget resets ...') -ForegroundColor Yellow
                 Start-Sleep -Seconds $backoffSeconds
+            }
+            elseif (Test-GitHubAuthError -ErrorRecord $_) {
+                # 401 / permission-403 will not self-heal on retry - looping
+                # every 60s just burns the API budget against a config error
+                # until the rate limit trips. Stop loudly so the operator
+                # fixes the App credentials / Owner in the vault and relaunches.
+                Write-Host ('GitHub authentication failed - the App credentials or the ' +
+                    'configured Owner are wrong. Fix the vault config, then restart the ' +
+                    'agent. Stopping.') -ForegroundColor Red
+                return
             }
             else {
                 Write-Host 'Restarting in 60 seconds ...' -ForegroundColor Yellow
