@@ -472,6 +472,19 @@ Two supporting files keep the bash tooling CI-clean on a Windows checkout:
 - [`.gitattributes`](.gitattributes) pins `*.sh` to LF and `*.bat` to
   CRLF, so a stray CR on a shebang line cannot break the Linux CI runners.
 
+### Publishing release tags
+
+This repo's workflows ([`e2e.yml`](.github/workflows/e2e.yml),
+[`ci-yaml.yml`](.github/workflows/ci-yaml.yml), [`ci-bash.yml`](.github/workflows/ci-bash.yml))
+are reusable (`workflow_call`), so consumers pin them by tag. Running
+[`scripts/publish-version-tags.sh`](scripts/publish-version-tags.sh) `v1.2.3`
+(or double-clicking [`scripts/publish-version-tags.bat`](scripts/publish-version-tags.bat))
+delegates to Common-Automation's engine, which places the immutable `vX.Y.Z`
+tag and force-moves the floating `vX` tag onto the current tip of
+`origin/master` - never the local checkout. With no version argument the
+engine prompts for one. Like the lint shims it relies on `Common-Automation`
+being a sibling checkout (`..\Common-Automation`).
+
 ### Known-failing actionlint job
 
 The pre-existing [`.github/workflows/e2e.yml`](.github/workflows/e2e.yml)
@@ -499,6 +512,8 @@ scripts/
   run-lint-yaml-and-bash.bat       - Explorer launcher for run-lint-yaml-and-bash.sh
   run-tests-bash.sh                - Bats test half only (shim to Common-Automation)
   run-tests-bash.bat               - Explorer launcher for run-tests-bash.sh
+  publish-version-tags.sh          - Publishes vX.Y.Z + floating vX release tags (shim to Common-Automation)
+  publish-version-tags.bat         - Explorer launcher for publish-version-tags.sh
   fix-permissions.sh               - Re-stages +x on tracked *.sh (shim)
   fix-permissions.bat              - Explorer launcher for fix-permissions.sh
 agent/
