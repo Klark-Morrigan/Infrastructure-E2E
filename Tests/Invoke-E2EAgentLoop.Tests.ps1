@@ -316,6 +316,44 @@ Describe 'Invoke-E2EAgentLoop' {
     }
 
     # ------------------------------------------------------------------
+    Context 'in_progress status post failure' {
+    # ------------------------------------------------------------------
+        # The in_progress post lives inside the per-deployment try, so a
+        # status write that fails (e.g. a 401 from a stale token / wrong
+        # Owner) fails just that deployment - the loop must mark it failed
+        # and keep going, not rethrow and crash the agent.
+
+        BeforeEach {
+            $script:_ipCount = 0
+            Mock Get-GitHubAppToken { $Script:FreshToken }
+            Mock Get-PendingDeployment {
+                $script:_ipCount++
+                if ($script:_ipCount -eq 1) { return [PSCustomObject]@{ id = 9 } }
+                return $null
+            }
+            # Throw on the in_progress write; let the later 'failure' write succeed.
+            Mock Set-DeploymentStatus { if ($State -eq 'in_progress') { throw 'simulated 401' } }
+            Mock Invoke-RunnerLifecycleTest {}
+        }
+
+        It 'does not rethrow when the in_progress post fails' {
+            { Invoke-E2EAgentLoop @Script:BaseParams } | Should -Not -Throw
+        }
+
+        It 'posts failure for the deployment whose in_progress post failed' {
+            Invoke-E2EAgentLoop @Script:BaseParams
+            Should -Invoke Set-DeploymentStatus -ParameterFilter {
+                $DeploymentId -eq 9 -and $State -eq 'failure'
+            }
+        }
+
+        It 'does not run the lifecycle test when the in_progress post failed' {
+            Invoke-E2EAgentLoop @Script:BaseParams
+            Should -Invoke Invoke-RunnerLifecycleTest -Times 0
+        }
+    }
+
+    # ------------------------------------------------------------------
     Context 'queue drain - multiple pending deployments' {
     # ------------------------------------------------------------------
 

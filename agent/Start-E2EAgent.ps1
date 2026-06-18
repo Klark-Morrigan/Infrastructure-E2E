@@ -295,15 +295,19 @@ function Invoke-E2EAgentLoop {
             # reload them on its own.
             . "$PSScriptRoot\e2e\runner-lifecycle\Invoke-RunnerLifecycleTest.ps1"
 
-            Set-DeploymentStatus `
-                -Token        $tokenResult.Token `
-                -Owner        $Owner `
-                -Repo         $Repo `
-                -DeploymentId $deployment.id `
-                -State        'in_progress' `
-                -Description  'E2E tests running'
-
             try {
+                # Post in_progress inside the try so a status-write failure
+                # (e.g. a 401 from a stale token / wrong Owner) marks this
+                # deployment failed and lets the loop continue, instead of
+                # escaping to the restart handler and crash-looping the agent.
+                Set-DeploymentStatus `
+                    -Token        $tokenResult.Token `
+                    -Owner        $Owner `
+                    -Repo         $Repo `
+                    -DeploymentId $deployment.id `
+                    -State        'in_progress' `
+                    -Description  'E2E tests running'
+
                 # Per-run flow override.
                 #   The calling repo's PR encodes which create/remove
                 #   implementation each layer should exercise in the
