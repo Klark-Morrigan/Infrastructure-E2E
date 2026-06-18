@@ -436,6 +436,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     . "$PSScriptRoot\Initialize-E2EEnvironment.ps1"
     . "$PSScriptRoot\Get-RateLimitBackoffDelay.ps1"
     . "$PSScriptRoot\Test-GitHubAuthError.ps1"
+    . "$PSScriptRoot\Resolve-AgentCrashAction.ps1"
 
     # ---------------------------------------------------------------------------
     # Read E2EConfig from vault
@@ -554,29 +555,34 @@ if ($MyInvocation.InvocationName -ne '.') {
         catch {
             Write-Host "Agent crashed: $($_.Exception.Message)" -ForegroundColor Red
 
-            # A rate-limit crash clears only when GitHub's rolling window
-            # resets, so a flat 60s restart would crash-loop against an empty
-            # budget. Sleep until the budget refills (or a longer default),
-            # then resume; genuine crashes keep the original 60s restart.
-            $backoffSeconds = Get-RateLimitBackoffDelay -ErrorRecord $_
-            if ($backoffSeconds -gt 0) {
-                Write-Host ("GitHub rate limit hit - backing off ${backoffSeconds}s " +
-                    'until the budget resets ...') -ForegroundColor Yellow
-                Start-Sleep -Seconds $backoffSeconds
-            }
-            elseif (Test-GitHubAuthError -ErrorRecord $_) {
-                # 401 / permission-403 will not self-heal on retry - looping
-                # every 60s just burns the API budget against a config error
-                # until the rate limit trips. Stop loudly so the operator
-                # fixes the App credentials / Owner in the vault and relaunches.
-                Write-Host ('GitHub authentication failed - the App credentials or the ' +
-                    'configured Owner are wrong. Fix the vault config, then restart the ' +
-                    'agent. Stopping.') -ForegroundColor Red
-                return
-            }
-            else {
-                Write-Host 'Restarting in 60 seconds ...' -ForegroundColor Yellow
-                Start-Sleep -Seconds 60
+            # The routing decision lives in Resolve-AgentCrashAction (unit-
+            # tested); this block only performs the chosen side effect.
+            $crashAction = Resolve-AgentCrashAction -ErrorRecord $_
+            switch ($crashAction.Action) {
+                'Backoff' {
+                    # Rate-limit crash: the budget only refills when GitHub's
+                    # rolling window resets, so sleep that long before resuming
+                    # rather than crash-looping against an empty budget.
+                    Write-Host ('GitHub rate limit hit - backing off ' +
+                        "$($crashAction.DelaySeconds)s until the budget resets ...") `
+                        -ForegroundColor Yellow
+                    Start-Sleep -Seconds $crashAction.DelaySeconds
+                }
+                'Stop' {
+                    # 401 / permission-403 will not self-heal on retry - looping
+                    # would just burn the API budget against a config error.
+                    # Stop loudly so the operator fixes the App credentials /
+                    # Owner in the vault and relaunches.
+                    Write-Host ('GitHub authentication failed - the App credentials or ' +
+                        'the configured Owner are wrong. Fix the vault config, then ' +
+                        'restart the agent. Stopping.') -ForegroundColor Red
+                    return
+                }
+                'Restart' {
+                    Write-Host "Restarting in $($crashAction.DelaySeconds) seconds ..." `
+                        -ForegroundColor Yellow
+                    Start-Sleep -Seconds $crashAction.DelaySeconds
+                }
             }
         }
     }
