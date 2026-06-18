@@ -18,14 +18,12 @@ BeforeAll {
     # not module installation, is what these tests exercise.
     function Invoke-ModuleInstall       { param($ModuleName, $MinimumVersion) }
 
-    # Start-E2EAgent.ps1 now declares -SecretSuffix as a mandatory
-    # top-level parameter. Dot-sourcing without binding it would trip
-    # the parameter binder before the function-definition body runs.
-    # The script's "main" body has its own dot-source guard
-    # ($MyInvocation.InvocationName -ne '.'), so the dummy value is
-    # never read - only the parameter slot needs to be satisfied so
-    # Invoke-E2EAgentLoop becomes defined in the test scope.
-    . "$PSScriptRoot\..\agent\Start-E2EAgent.ps1" -SecretSuffix 'tests'
+    # Source the function under test and the token helper it calls directly
+    # (one-function-per-file convention), rather than the whole
+    # Start-E2EAgent.ps1 entry script - the loop logic is what these tests
+    # exercise, not the vault-reading bootstrap.
+    . "$PSScriptRoot\..\agent\Get-RefreshedDeploymentToken.ps1"
+    . "$PSScriptRoot\..\agent\Invoke-E2EAgentLoop.ps1"
 }
 
 Describe 'Invoke-E2EAgentLoop' {
@@ -814,6 +812,92 @@ Describe 'Invoke-E2EAgentLoop' {
 
             # Called only once at startup - no refresh needed.
             Should -Invoke Get-GitHubAppToken -Times 1
+        }
+    }
+
+    # ------------------------------------------------------------------
+    Context 'terminal status token refresh' {
+    # ------------------------------------------------------------------
+        # Regression guard: a lifecycle run can outlast the token's 1-hour
+        # life, so the deployment token must be re-checked for expiry
+        # immediately before the success/failure post - otherwise the
+        # terminal write 401s on a stale token. These tests assert a
+        # refresh call sits directly before each terminal post by mocking
+        # the helper as a pass-through recorder (the real expiry logic is
+        # covered by the 'Get-RefreshedDeploymentToken' Describe below).
+
+        It 'refreshes the token immediately before posting success' {
+            $Script:_order = [System.Collections.Generic.List[string]]::new()
+            $script:_tsCount = 0
+            Mock Get-GitHubAppToken { $Script:FreshToken }
+            Mock Get-RefreshedDeploymentToken { $Script:_order.Add('refresh'); $TokenResult }
+            Mock Get-PendingDeployment {
+                $script:_tsCount++
+                if ($script:_tsCount -eq 1) { return [PSCustomObject]@{ id = 1 } }
+                return $null
+            }
+            Mock Set-DeploymentStatus       { $Script:_order.Add("status:$State") }
+            Mock Invoke-RunnerLifecycleTest {}
+
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            $successIdx = $Script:_order.IndexOf('status:success')
+            $successIdx | Should -BeGreaterThan 0
+            $Script:_order[$successIdx - 1] | Should -Be 'refresh'
+        }
+
+        It 'refreshes the token immediately before posting failure' {
+            $Script:_orderF = [System.Collections.Generic.List[string]]::new()
+            $script:_tsCountF = 0
+            Mock Get-GitHubAppToken { $Script:FreshToken }
+            Mock Get-RefreshedDeploymentToken { $Script:_orderF.Add('refresh'); $TokenResult }
+            Mock Get-PendingDeployment {
+                $script:_tsCountF++
+                if ($script:_tsCountF -eq 1) { return [PSCustomObject]@{ id = 1 } }
+                return $null
+            }
+            Mock Set-DeploymentStatus       { $Script:_orderF.Add("status:$State") }
+            Mock Invoke-RunnerLifecycleTest { throw 'lifecycle failed' }
+
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            $failureIdx = $Script:_orderF.IndexOf('status:failure')
+            $failureIdx | Should -BeGreaterThan 0
+            $Script:_orderF[$failureIdx - 1] | Should -Be 'refresh'
+        }
+
+        It 'posts the terminal status with the token returned by the refresh' {
+            # Proves the re-assignment takes effect: a refresh that returns a
+            # new token must be the one the success post uses, not the stale
+            # pre-test token.
+            $script:_tsCount2 = 0
+            Mock Get-GitHubAppToken { $Script:FreshToken }
+            # Pass-through at loop top (keeps 'tok'); swap to a fresh token
+            # only on the pre-post call so we can assert the post uses it.
+            $script:_refreshCalls = 0
+            Mock Get-RefreshedDeploymentToken {
+                $script:_refreshCalls++
+                if ($script:_refreshCalls -ge 2) {
+                    return [PSCustomObject]@{
+                        Token     = 'post_fresh_tok'
+                        ExpiresAt = [DateTimeOffset]::UtcNow.AddMinutes(55).ToString('o')
+                    }
+                }
+                return $TokenResult
+            }
+            Mock Get-PendingDeployment {
+                $script:_tsCount2++
+                if ($script:_tsCount2 -eq 1) { return [PSCustomObject]@{ id = 1 } }
+                return $null
+            }
+            Mock Set-DeploymentStatus {}
+            Mock Invoke-RunnerLifecycleTest {}
+
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            Should -Invoke Set-DeploymentStatus -ParameterFilter {
+                $State -eq 'success' -and $Token -eq 'post_fresh_tok'
+            }
         }
     }
 }
