@@ -1,8 +1,8 @@
-name: CI (Docker host)
+name: ci-powershell-docker-host
 
 # Delegates to the shared Docker host CI workflow in Common-PowerShell.
 # Kept as a local file so pull_request triggers work for this repo,
-# and so tag.yml can call it via workflow_call.
+# and so other workflows can call it via workflow_call.
 on:
   pull_request:
     branches: [ main, master ]
@@ -10,5 +10,5 @@ on:
   workflow_dispatch:
 
 jobs:
-  ci-docker-host:
+  ci-powershell-docker-host:
     uses: Klark-Morrigan/Common-PowerShell/.github/workflows/ci-powershell-docker-host.yml@master
