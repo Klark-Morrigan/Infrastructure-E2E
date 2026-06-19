@@ -17,7 +17,6 @@ name: E2E
 
 on:
   pull_request:
-    branches: [ master ]
   workflow_dispatch:
     inputs:
       flow-spec:

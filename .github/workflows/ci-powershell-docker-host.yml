@@ -5,7 +5,6 @@ name: ci-powershell-docker-host
 # and so other workflows can call it via workflow_call.
 on:
   pull_request:
-    branches: [ main, master ]
   workflow_call:
   workflow_dispatch:
 
