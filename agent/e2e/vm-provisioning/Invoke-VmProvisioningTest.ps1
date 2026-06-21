@@ -222,6 +222,13 @@ function New-VmProvisioningPassword {
 # test fixture.
 function New-VmEntryBase {
     [CmdletBinding()]
+    # $Password is forwarded verbatim into the provisioner REST payload's
+    # plaintext 'password' field; a SecureString cannot round-trip into a
+    # JSON body, so the conversion would add ceremony without cutting
+    # exposure. Suppressed at the parameter, the rule stays live elsewhere.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingPlainTextForPassword', 'Password',
+        Justification = 'Forwarded as plaintext into the provisioner REST payload')]
     param(
         [Parameter(Mandatory)] [PSCustomObject] $Config,
         [Parameter(Mandatory)] [string] $VmName,
@@ -257,6 +264,12 @@ function New-VmEntryBase {
 # vSwitch (downstream gateway and DNS for workloads, always static).
 function New-RouterEntry {
     [CmdletBinding()]
+    # See New-VmEntryBase: $Password reaches the provisioner only as a
+    # plaintext REST field, so SecureString would add ceremony without
+    # cutting exposure. Suppressed at the parameter; the rule stays live.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingPlainTextForPassword', 'Password',
+        Justification = 'Forwarded as plaintext into the provisioner REST payload')]
     param(
         [Parameter(Mandatory)] [PSCustomObject] $Config,
         [Parameter(Mandatory)] [string] $Password
