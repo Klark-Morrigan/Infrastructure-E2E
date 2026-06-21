@@ -26,7 +26,6 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 . "$PSScriptRoot\assertions\lifecycle\Invoke-NoLeftoverTestVmsAssertions.ps1"
 . "$PSScriptRoot\assertions\network\Invoke-VmReadyAssertions.ps1"
 . "$PSScriptRoot\assertions\network\Invoke-StaticNetworkAssertions.ps1"
-. "$PSScriptRoot\assertions\network\Invoke-RouterReadyAssertions.ps1"
 . "$PSScriptRoot\assertions\network\Invoke-EgressAssertions.ps1"
 . "$PSScriptRoot\assertions\network\Get-EgressFailureDiagnostics.ps1"
 . "$PSScriptRoot\assertions\jdk\Invoke-JdkInstallAssertions.ps1"
@@ -251,12 +250,10 @@ function New-VmEntryBase {
 # Builds the router-VM entry consumed by provision.ps1's router-seed
 # path (feature 53 step 1). Two NICs: ext0 on the host's External
 # vSwitch (upstream egress; STATIC IP from $Config.TestVm.routerExternalIp
-# / routerExternalGateway so the run does not depend on the underlying
-# DHCP server being reachable - originally DHCP-only, but ICS DHCP
-# silently breaks across Wi-Fi network changes per
-# feedback_hyperv_internal_plus_ics memory, and bridged-Wi-Fi DHCP
-# collides via shared MAC at the AP per
-# feedback_hyperv_external_switch_wifi). priv0 on the per-test Private
+# / routerExternalGateway so the run does not depend on a reachable DHCP
+# server: ICS DHCP silently breaks across Wi-Fi network changes, and
+# bridged-Wi-Fi DHCP collides via shared MAC at the AP). priv0 on the
+# per-test Private
 # vSwitch (downstream gateway and DNS for workloads, always static).
 function New-RouterEntry {
     [CmdletBinding()]

@@ -54,8 +54,7 @@ param(
     # run does not depend on the upstream DHCP server being healthy:
     # bridged-Wi-Fi External MAC-collides via shared MAC at the AP,
     # and Internal+ICS DHCP silently breaks across Wi-Fi network
-    # changes (see feedback_hyperv_external_switch_wifi and
-    # feedback_hyperv_internal_plus_ics memories). The default
+    # changes. The default
     # matches the ICS-on-Internal subnet (192.168.137.0/24) with
     # the host vNIC at .1 and the router at .10 - safely outside
     # the ICS DHCP pool (.20-.254) so a stray DHCP client cannot
