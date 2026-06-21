@@ -383,8 +383,8 @@ function Invoke-E2EAgentLoop {
         }
 
         $remaining = [Math]::Max(0, [int]($Deadline - [DateTime]::UtcNow).TotalMinutes)
-        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] No pending deployment. " `
-            + "${remaining}min remaining. Waiting ${PollIntervalSeconds}s ..." `
+        Write-Host ("[$(Get-Date -Format 'HH:mm:ss')] No pending deployment. " +
+            "${remaining}min remaining. Waiting ${PollIntervalSeconds}s ...") `
             -ForegroundColor DarkGray
 
         Start-Sleep -Seconds $PollIntervalSeconds
