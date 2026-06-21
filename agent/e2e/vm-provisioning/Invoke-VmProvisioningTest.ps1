@@ -409,7 +409,7 @@ function Invoke-WithVmSshClient {
     }
     finally {
         if ($null -ne $sshSession) {
-            try { $sshSession.Dispose() } catch {}
+            try { $sshSession.Dispose() } catch { Write-Verbose "Ignoring SSH session dispose failure: $($_.Exception.Message)" }
         }
     }
 }
