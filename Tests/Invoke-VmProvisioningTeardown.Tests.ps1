@@ -210,19 +210,22 @@ Describe 'Invoke-VmProvisioningTeardown - diag failure does not cancel deprovisi
         New-Item -ItemType Directory -Path $script:provRoot | Out-Null
         # Minimal deprovision.ps1 stub at the path the teardown
         # function invokes via & "$ProvisionerPath\hyper-v\ubuntu\
-        # deprovision.ps1". The body just records the call so the
-        # test can assert "deprovision ran" without spinning up a
-        # real provisioner.
+        # deprovision.ps1". The body records the call by dropping a
+        # marker file beside itself ($PSScriptRoot resolves to the
+        # stub's own dir at invocation), letting the test assert
+        # "deprovision ran" via Test-Path. The stub runs in its own
+        # script scope, so a marker file - not a cross-script global -
+        # is the signal channel back to the test.
         $deprovDir = Join-Path $script:provRoot 'hyper-v\ubuntu'
         New-Item -ItemType Directory -Path $deprovDir -Force | Out-Null
         $deprovScript = Join-Path $deprovDir 'deprovision.ps1'
         Set-Content -Path $deprovScript -Value @'
 param([string] $SecretSuffix)
-$global:_DeprovisionInvoked = $true
+Set-Content -Path (Join-Path $PSScriptRoot 'deprovision-invoked.marker') -Value 'invoked'
 '@
+        $script:deprovMarker = Join-Path $deprovDir 'deprovision-invoked.marker'
 
         $script:config = [PSCustomObject]@{ ProvisionerPath = $script:provRoot }
-        $global:_DeprovisionInvoked = $false
         $script:E2ETestSecretSuffix = 'TEST'
     }
 
@@ -238,7 +241,7 @@ $global:_DeprovisionInvoked = $true
         { Invoke-VmProvisioningTeardown -Config $script:config } |
             Should -Not -Throw
 
-        $global:_DeprovisionInvoked | Should -BeTrue
+        Test-Path -LiteralPath $script:deprovMarker | Should -BeTrue
     }
 
     It 'still removes the VmProvisionerConfig secret after a diag throw' {

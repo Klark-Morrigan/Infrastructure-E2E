@@ -98,24 +98,16 @@ function Invoke-VmProvisioningPhase1 {
 
     # provision.ps1 ran in its own scope and the discovered router IP
     # never made it back to the test's local _RouterVm reference. Look
-    # it up again via Hyper-V KVP so the assertion path below (and the
-    # workload SSH jump on phases 2 / 3 - same Vm1Def carries forward)
-    # has a populated ipAddress to dial.
+    # it up again via Hyper-V KVP so the workload SSH jump (this phase's
+    # post-condition checks below, and phases 2 / 3 - the same Vm1Def
+    # carries forward) has a populated ipAddress to dial.
     Resolve-RouterIpFromKvp -RouterVmDef $Vm1Def._RouterVm
 
-    # Router-side white-box assertions. Phase 1 is the only place these
-    # run - the router stays up across phases and its entry is
-    # byte-identical in every VmProvisionerConfig write, so phases 2
-    # and 3 do not re-create or reconfigure it. A regression in the
-    # router-seed payload surfaces here, not in confused curl/dig
-    # failures on every workload further down.
-    $routerVmDef = $Vm1Def._RouterVm
-    Write-Host "Phase 1: verifying router state on $($routerVmDef.vmName) ..." `
-        -ForegroundColor Magenta
-    Invoke-WithVmSshClient -VmDef $routerVmDef -Assertions {
-        param($sshClient)
-        Invoke-RouterReadyAssertions -SshClient $sshClient -RouterVmDef $routerVmDef
-    }
+    # Router-side white-box checks (forwarding, nftables/dnsmasq, NAT
+    # rules, priv0 IP) are no longer asserted here: provision.ps1's
+    # Assert-RouterReady runs them during provisioning and fails the run
+    # if the router is not ready, so this suite inherits that coverage by
+    # invoking provision.ps1 above rather than re-probing the router.
 
     Write-Host "Phase 1: verifying post-conditions on $($Vm1Def.vmName) ..." `
         -ForegroundColor Magenta

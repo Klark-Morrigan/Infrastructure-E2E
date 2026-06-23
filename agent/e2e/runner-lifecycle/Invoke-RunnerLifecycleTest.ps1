@@ -50,7 +50,7 @@ function Assert-RunnerStillOnline {
     }
     finally {
         if ($null -ne $sshSession) {
-            try { $sshSession.Dispose() } catch {}
+            try { $sshSession.Dispose() } catch { Write-Verbose "Ignoring SSH session dispose failure: $($_.Exception.Message)" }
         }
     }
 }
@@ -329,7 +329,7 @@ function Invoke-RunnerLifecycleTeardown {
     }
     finally {
         if ($null -ne $sshSession) {
-            try { $sshSession.Dispose() } catch {}
+            try { $sshSession.Dispose() } catch { Write-Verbose "Ignoring SSH session dispose failure: $($_.Exception.Message)" }
         }
     }
 
@@ -447,7 +447,7 @@ function Invoke-RunnerLifecycleTest {
         }
         finally {
             if ($null -ne $sshSession) {
-                try { $sshSession.Dispose() } catch {}
+                try { $sshSession.Dispose() } catch { Write-Verbose "Ignoring SSH session dispose failure: $($_.Exception.Message)" }
             }
         }
 
@@ -580,10 +580,10 @@ function Invoke-RunnerLifecycleTest {
             catch { Write-Warning "Best-effort deprovisioning failed: $($_.Exception.Message)" }
 
             try { Remove-Secret -Vault VmUsers -Name (Get-E2ESecretName 'VmUsersConfig') -ErrorAction SilentlyContinue }
-            catch {}
+            catch { Write-Warning "Best-effort secret removal failed: $($_.Exception.Message)" }
 
             try { Remove-Secret -Vault GitHubRunners -Name (Get-E2ESecretName 'GitHubRunnersConfig') -ErrorAction SilentlyContinue }
-            catch {}
+            catch { Write-Warning "Best-effort secret removal failed: $($_.Exception.Message)" }
         }
     }
 }

@@ -57,7 +57,7 @@ function Assert-VmUsersStillIntact {
     }
     finally {
         if ($null -ne $sshSession) {
-            try { $sshSession.Dispose() } catch {}
+            try { $sshSession.Dispose() } catch { Write-Verbose "Ignoring SSH session dispose failure: $($_.Exception.Message)" }
         }
     }
 }
@@ -228,7 +228,7 @@ sudo journalctl -u systemd-resolved -n 20 --no-pager || true
         # Session owns both the workload client AND (when jumped) the
         # tunnel; Dispose() tears them down in the right order.
         if ($null -ne $setupSshSession) {
-            try { $setupSshSession.Dispose() } catch {}
+            try { $setupSshSession.Dispose() } catch { Write-Verbose "Ignoring SSH session dispose failure: $($_.Exception.Message)" }
         }
     }
 
@@ -365,7 +365,7 @@ function Invoke-VmUsersTeardown {
         }
         finally {
             if ($null -ne $sshSession) {
-                try { $sshSession.Dispose() } catch {}
+                try { $sshSession.Dispose() } catch { Write-Verbose "Ignoring SSH session dispose failure: $($_.Exception.Message)" }
             }
         }
 
@@ -506,7 +506,7 @@ function Invoke-VmUsersTest {
         }
         finally {
             if ($null -ne $sshSession) {
-                try { $sshSession.Dispose() } catch {}
+                try { $sshSession.Dispose() } catch { Write-Verbose "Ignoring SSH session dispose failure: $($_.Exception.Message)" }
             }
         }
 
@@ -565,7 +565,7 @@ function Invoke-VmUsersTest {
             try {
                 Remove-Secret -Vault VmUsers -Name (Get-E2ESecretName 'VmUsersConfig') -ErrorAction SilentlyContinue
             }
-            catch {}
+            catch { Write-Warning "Best-effort secret removal failed: $($_.Exception.Message)" }
         }
     }
 }
