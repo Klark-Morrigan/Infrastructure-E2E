@@ -2,12 +2,12 @@
 .NOTES
     Dispatcher for the create-side of the vm-users E2E layer. Selects
     between the bespoke PowerShell flow (Infrastructure-Vm-Users) and the
-    Ansible flow (Infrastructure-VM-Ansible). Both flows reconcile the
+    Ansible flow (Common-Ansible). Both flows reconcile the
     same on-VM state from the same VmUsersConfig vault entry; the test
     layer treats them as first-class peers.
 
     The teardown half stays on remove-users.ps1 for both flows for now -
-    feature 03 in Infrastructure-VM-Ansible introduces the symmetric
+    feature 03 in Common-Ansible introduces the symmetric
     remove-side fork. Until then the PowerShell removal script handles
     users created by either flow (it deletes Linux accounts by name).
 
@@ -40,7 +40,7 @@ function Set-VmUsersForTest {
         [Parameter(Mandatory)]
         [string] $UsersPath,
 
-        # Infrastructure-VM-Ansible repo root. Required when
+        # Common-Ansible repo root. Required when
         # UsersFlow=ansible; ignored otherwise. The dispatcher validates
         # presence at call time so a misconfigured session fails here
         # rather than at the underlying wsl invocation.

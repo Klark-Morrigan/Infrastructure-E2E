@@ -19,7 +19,7 @@
 # Remove-side dispatcher: symmetric peer of Set-VmUsersForTest, selecting
 # the same UsersFlow. Replaces the inline remove-users.ps1 invocation
 # that used to live in Invoke-VmUsersTeardown. Lets the Ansible
-# remove-users.sh path (feature 03 of Infrastructure-VM-Ansible) run
+# remove-users.sh path (feature 03 of Common-Ansible) run
 # under UsersFlow=ansible while custom-powershell keeps the legacy
 # Vm-Users path as a first-class peer.
 . "$PSScriptRoot\Remove-VmUsersForTest.ps1"

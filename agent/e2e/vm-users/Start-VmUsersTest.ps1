@@ -43,10 +43,10 @@ param(
     [ValidateSet('custom-powershell', 'ansible')]
     [string] $UsersFlow = 'ansible',
 
-    # Absolute path to the Infrastructure-VM-Ansible repo root. Required
+    # Absolute path to the Common-Ansible repo root. Required
     # when -UsersFlow ansible (the default); ignored otherwise. The
     # dispatcher fails fast when it is missing under UsersFlow=ansible.
-    [string] $AnsiblePath = 'C:\a_Code\Infrastructure-VM-Ansible',
+    [string] $AnsiblePath = 'C:\a_Code\Common-Ansible',
 
     # Name of the WSL distro the Ansible bridge runs inside. Required
     # when -UsersFlow ansible (the default); ignored otherwise. Passed

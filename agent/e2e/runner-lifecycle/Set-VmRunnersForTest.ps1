@@ -3,14 +3,14 @@
     Dispatcher for the register-side of the runner-lifecycle E2E layer.
     Selects between the bespoke PowerShell flow
     (Infrastructure-GitHubRunners\hyper-v\ubuntu\register-runners.ps1) and
-    the Ansible flow (Infrastructure-VM-Ansible's
+    the Ansible flow (Common-Ansible's
     ops/register-runners.sh). Both flows reconcile the same on-VM state
     from the same GitHubRunnersConfig vault entry; the test layer treats
     them as first-class peers.
 
     The deregister half stays on
     Infrastructure-GitHubRunners\hyper-v\ubuntu\deregister-runners.ps1 for
-    both flows until feature 09 in Infrastructure-VM-Ansible introduces
+    both flows until feature 09 in Common-Ansible introduces
     the symmetric remove-side fork. The PowerShell removal script tears
     down runners installed by either flow (it operates on systemd units
     and GitHub registrations by name, not on flow-specific state).
@@ -45,7 +45,7 @@ function Set-VmRunnersForTest {
         [Parameter(Mandatory)]
         [string] $RunnersPath,
 
-        # Infrastructure-VM-Ansible repo root. Required when
+        # Common-Ansible repo root. Required when
         # RunnersFlow=ansible; ignored otherwise. The dispatcher validates
         # presence at call time so a misconfigured session fails here
         # rather than at the underlying wsl invocation.

@@ -8,7 +8,7 @@
 
 # Register-side dispatcher: symmetric peer of Set-VmUsersForTest, selecting
 # between Infrastructure-GitHubRunners' register-runners.ps1 and
-# Infrastructure-VM-Ansible's ops/register-runners.sh. The lifecycle test
+# Common-Ansible's ops/register-runners.sh. The lifecycle test
 # forwards $Config.RunnersFlow into this single switch point.
 . "$PSScriptRoot\Set-VmRunnersForTest.ps1"
 

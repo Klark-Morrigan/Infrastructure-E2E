@@ -35,7 +35,7 @@ polling agent that receives signals from GitHub Actions workflows.
   own repos.
 - Provisioning, user management, or runner registration - those are
   delegated to `Infrastructure-Vm-Provisioner`,
-  `Infrastructure-VM-Ansible` (primary) and `Infrastructure-Vm-Users`
+  `Common-Ansible` (primary) and `Infrastructure-Vm-Users`
   (custom-powershell flow), and `Infrastructure-GitHubRunners`
   respectively. User reconciliation, user removal, and runner
   registration each have two first-class implementations selected at
@@ -64,11 +64,11 @@ PowerShell 7+ (`pwsh`).
   - `E2EConfig` (owned by this repo - see [GitHub App setup](#github-app-setup))
 - `Common.PowerShell` >= `3.1.0` installed from PSGallery
 - When `UsersFlow=ansible` (the default since feature 02 of
-  `Infrastructure-VM-Ansible`) or `RunnersFlow=ansible` (opt-in during
+  `Common-Ansible`) or `RunnersFlow=ansible` (opt-in during
   the first validation cycle; the default-flip happens in a follow-up
   bump), the agent runs that flow inside WSL2; the Ansible controller
   must have been bootstrapped once via
-  `Infrastructure-VM-Ansible/ops/bootstrap-controller.ps1`. Pass
+  `Common-Ansible/ops/bootstrap-controller.ps1`. Pass
   `-UsersFlow custom-powershell` to fall back to the original
   Infrastructure-Vm-Users flow, or `-RunnersFlow ansible` to opt the
   register-runners half into the Ansible path. The two flow switches
@@ -128,7 +128,7 @@ Install the app on all four repos:
    - `Infrastructure-E2E`
    - `Infrastructure-Vm-Provisioner`
    - `Infrastructure-Vm-Users`
-   - `Infrastructure-VM-Ansible`
+   - `Common-Ansible`
    - `Infrastructure-GitHubRunners`
 
 After installing, GitHub redirects to the installation page. The installation
@@ -146,7 +146,7 @@ Scoping the runners token to one repo and one permission at mint time means
 `Administration` access is never granted to the other repos in the installation.
 
 The other three repos (`Infrastructure-Vm-Provisioner`,
-`Infrastructure-Vm-Users`, `Infrastructure-VM-Ansible`) are installed
+`Infrastructure-Vm-Users`, `Common-Ansible`) are installed
 so the app can receive `workflow_call` triggers from their CI workflows
 - their installation IDs are not needed in the vault.
 
@@ -169,8 +169,8 @@ following in the `E2EConfig` vault:
   "ProvisionerPath":     "C:\\a_Code\\Infrastructure-Vm-Provisioner",
   "UsersPath":           "C:\\a_Code\\Infrastructure-Vm-Users",
   "UsersFlow":           "ansible",                                   // optional session default - 'ansible' (default) or 'custom-powershell'; a caller's flow-spec overrides per run
-  "AnsiblePath":         "C:\\a_Code\\Infrastructure-VM-Ansible",     // required when either flow resolves to 'ansible' - the default scenario, so effectively always on a workstation serving these repos' PRs
-  "WslDistro":           "Ubuntu-24.04",                              // required alongside AnsiblePath whenever a flow is 'ansible'; see Infrastructure-VM-Ansible README Troubleshooting
+  "AnsiblePath":         "C:\\a_Code\\Common-Ansible",     // required when either flow resolves to 'ansible' - the default scenario, so effectively always on a workstation serving these repos' PRs
+  "WslDistro":           "Ubuntu-24.04",                              // required alongside AnsiblePath whenever a flow is 'ansible'; see Common-Ansible README Troubleshooting
   "RunnersPath":         "C:\\a_Code\\Infrastructure-GitHubRunners",
   "RunnersFlow":         "custom-powershell",                         // optional session default - 'custom-powershell' (default) or 'ansible'; a caller's flow-spec overrides per run
   "HostTarballCachePath": "C:\\cache\\github-runners",
@@ -189,7 +189,7 @@ following in the `E2EConfig` vault:
 ### 4. Store Actions secrets in upstream repos
 
 In each of the four upstream repos (`Infrastructure-Vm-Provisioner`,
-`Infrastructure-Vm-Users`, `Infrastructure-VM-Ansible`,
+`Infrastructure-Vm-Users`, `Common-Ansible`,
 `Infrastructure-GitHubRunners`), add the following GitHub Actions
 secrets:
 
@@ -361,7 +361,7 @@ gh workflow run e2e.yml --repo <owner>/Infrastructure-E2E
 ### Automatic (PR check in upstream repos)
 
 Pull requests in `Infrastructure-Vm-Provisioner`, `Infrastructure-Vm-Users`,
-`Infrastructure-VM-Ansible`, and `Infrastructure-GitHubRunners` call this
+`Common-Ansible`, and `Infrastructure-GitHubRunners` call this
 workflow via `workflow_call` as a required status check. The full
 lifecycle layer always runs regardless of which upstream repo the PR is
 in - so an Ansible role change cannot merge to master without proving
@@ -378,7 +378,7 @@ exercises the path it owns:
 
 | Caller repo | `flow-spec` | Tests |
 |---|---|---|
-| `Infrastructure-VM-Ansible` | `{"usersFlow":"ansible","runnersFlow":"ansible"}` | the Ansible create-users + register-runners scripts |
+| `Common-Ansible` | `{"usersFlow":"ansible","runnersFlow":"ansible"}` | the Ansible create-users + register-runners scripts |
 | `Infrastructure-Vm-Users` | `{"usersFlow":"custom-powershell","runnersFlow":"custom-powershell"}` | the PowerShell users scripts |
 | `Infrastructure-GitHubRunners` | `{"usersFlow":"custom-powershell","runnersFlow":"custom-powershell"}` | the PowerShell runner-registration script |
 | `Infrastructure-Vm-Provisioner` | omitted | the default ansible scenario |
@@ -411,8 +411,8 @@ its own assertions on top.
 | Layer | Script | Asserts |
 |---|---|---|
 | VM provisioning | `agent/e2e/vm-provisioning/Invoke-VmProvisioningTest.ps1` | Four-phase install / uninstall / re-install / deprovision lifecycle over two VMs (see [VM provisioning test](#vm-provisioning-test)). Each phase asserts: VM is reachable via SSH; cloud-init completed; root filesystem not full. Per-phase: phase 1 - JDK 21 installed on VM1 (`JAVA_HOME`, login + non-login `PATH`, `java -version` prefix), mixed `files` array landed - single fixture at target + three `*.jar` fixtures under `/opt/ci-jars` (per-file SHA-256, `root:root`, `0644`); phase 2 - VM1 JDK removed (install dir, `/etc/profile.d/jdk.sh`, stale symlinks all gone), VM2 has no JDK artifacts, file-transfer targets on VM1 idempotent vs phase-1 snapshot; phase 3 - JDK 17 active on VM1, VM2 still has no JDK artifacts; phase 4 - both VMs and their disk artifacts removed, host-side JDK cache for both versions preserved |
-| VM users | `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` | Expected OS groups exist; expected users exist with correct shell and group membership; sudoers files are in place. The create half dispatches via [`Set-VmUsersForTest.ps1`](agent/e2e/vm-users/Set-VmUsersForTest.ps1) - selecting `UsersFlow=ansible` (default) runs `Infrastructure-VM-Ansible/ops/create-users.sh` under WSL; `UsersFlow=custom-powershell` runs `Infrastructure-Vm-Users/hyper-v/ubuntu/create-users.ps1`. The teardown half dispatches symmetrically via [`Remove-VmUsersForTest.ps1`](agent/e2e/vm-users/Remove-VmUsersForTest.ps1) - `UsersFlow=ansible` runs `Infrastructure-VM-Ansible/ops/remove-users.sh` (feature 03 of that repo); `UsersFlow=custom-powershell` runs `Infrastructure-Vm-Users/hyper-v/ubuntu/remove-users.ps1`. Both halves are first-class permanent peers and either pairing is supported - an `ansible` create can be torn down by a `custom-powershell` remove and vice versa, because both directions reconcile by username against the same on-VM contract. |
-| Runner lifecycle | `agent/e2e/runner-lifecycle/Invoke-RunnerLifecycleTest.ps1` | Runner systemd service is active; runner appears online in the GitHub API. The register half dispatches via [`Set-VmRunnersForTest.ps1`](agent/e2e/runner-lifecycle/Set-VmRunnersForTest.ps1) - `RunnersFlow=custom-powershell` (current default) runs `Infrastructure-GitHubRunners/hyper-v/ubuntu/register-runners.ps1`; `RunnersFlow=ansible` runs `Infrastructure-VM-Ansible/ops/register-runners.sh` under WSL. The default-flip to `ansible` happens in a follow-up bump after the Ansible path validates on real hardware. The teardown half stays on `Infrastructure-GitHubRunners/hyper-v/ubuntu/deregister-runners.ps1` for both flows until feature 09 of `Infrastructure-VM-Ansible` introduces the symmetric remove-side fork. As with `UsersFlow`, either pairing is supported - an `ansible` register can be torn down by the PowerShell deregister and vice versa, because both directions reconcile against the same on-VM and GitHub-API contracts. |
+| VM users | `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` | Expected OS groups exist; expected users exist with correct shell and group membership; sudoers files are in place. The create half dispatches via [`Set-VmUsersForTest.ps1`](agent/e2e/vm-users/Set-VmUsersForTest.ps1) - selecting `UsersFlow=ansible` (default) runs `Common-Ansible/ops/create-users.sh` under WSL; `UsersFlow=custom-powershell` runs `Infrastructure-Vm-Users/hyper-v/ubuntu/create-users.ps1`. The teardown half dispatches symmetrically via [`Remove-VmUsersForTest.ps1`](agent/e2e/vm-users/Remove-VmUsersForTest.ps1) - `UsersFlow=ansible` runs `Common-Ansible/ops/remove-users.sh` (feature 03 of that repo); `UsersFlow=custom-powershell` runs `Infrastructure-Vm-Users/hyper-v/ubuntu/remove-users.ps1`. Both halves are first-class permanent peers and either pairing is supported - an `ansible` create can be torn down by a `custom-powershell` remove and vice versa, because both directions reconcile by username against the same on-VM contract. |
+| Runner lifecycle | `agent/e2e/runner-lifecycle/Invoke-RunnerLifecycleTest.ps1` | Runner systemd service is active; runner appears online in the GitHub API. The register half dispatches via [`Set-VmRunnersForTest.ps1`](agent/e2e/runner-lifecycle/Set-VmRunnersForTest.ps1) - `RunnersFlow=custom-powershell` (current default) runs `Infrastructure-GitHubRunners/hyper-v/ubuntu/register-runners.ps1`; `RunnersFlow=ansible` runs `Common-Ansible/ops/register-runners.sh` under WSL. The default-flip to `ansible` happens in a follow-up bump after the Ansible path validates on real hardware. The teardown half stays on `Infrastructure-GitHubRunners/hyper-v/ubuntu/deregister-runners.ps1` for both flows until feature 09 of `Common-Ansible` introduces the symmetric remove-side fork. As with `UsersFlow`, either pairing is supported - an `ansible` register can be torn down by the PowerShell deregister and vice versa, because both directions reconcile against the same on-VM and GitHub-API contracts. |
 
 The polling agent (`Start-E2EAgent.ps1`) always runs the full runner
 lifecycle test, which transitively exercises all three layers. The

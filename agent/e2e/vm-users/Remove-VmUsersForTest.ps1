@@ -2,11 +2,11 @@
 .NOTES
     Dispatcher for the remove-side of the vm-users E2E layer. Selects
     between the bespoke PowerShell flow (Infrastructure-Vm-Users) and the
-    Ansible flow (Infrastructure-VM-Ansible). Mirror of
+    Ansible flow (Common-Ansible). Mirror of
     Set-VmUsersForTest: both directions are first-class peers, both flows
     reconcile against the same VmUsersConfig vault entry.
 
-    Feature 03 of Infrastructure-VM-Ansible introduced the symmetric
+    Feature 03 of Common-Ansible introduced the symmetric
     remove path (sudoers -> users -> groups, reverse of create) and the
     `ops/remove-users.sh` operator entry. Before this dispatcher landed,
     teardown stayed on `Infrastructure-Vm-Users/.../remove-users.ps1`
@@ -42,7 +42,7 @@ function Remove-VmUsersForTest {
         [Parameter(Mandatory)]
         [string] $UsersPath,
 
-        # Infrastructure-VM-Ansible repo root. Required when
+        # Common-Ansible repo root. Required when
         # UsersFlow=ansible; ignored otherwise. The dispatcher validates
         # presence at call time so a misconfigured session fails here
         # rather than at the underlying wsl invocation.

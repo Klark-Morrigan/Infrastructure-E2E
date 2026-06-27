@@ -78,7 +78,7 @@ function Invoke-E2EAgentLoop {
         # lifecycle test dispatches to. 'custom-powershell' (the current
         # default) keeps invoking Infrastructure-GitHubRunners'
         # register-runners.ps1. 'ansible' opts in to
-        # Infrastructure-VM-Ansible's ops/register-runners.sh. The
+        # Common-Ansible's ops/register-runners.sh. The
         # default stays on custom-powershell for one full release cycle
         # while the Ansible path validates on real hardware; the
         # default-flip happens in a follow-up bump.
@@ -86,11 +86,11 @@ function Invoke-E2EAgentLoop {
         [ValidateSet('custom-powershell', 'ansible')]
         [string] $RunnersFlow = 'custom-powershell',
 
-        # Absolute path to the Infrastructure-VM-Ansible repo root on the
+        # Absolute path to the Common-Ansible repo root on the
         # workstation. Required when either UsersFlow=ansible (the users
         # flow default) or RunnersFlow=ansible. Both flows share the same
-        # repo and the same WSL distro because the one Infrastructure-
-        # VM-Ansible checkout houses ops/create-users.sh,
+        # repo and the same WSL distro because the one Common-Ansible
+        # checkout houses ops/create-users.sh,
         # ops/register-runners.sh, and ops/_run-playbook.sh. The loop
         # validates the path exists below before the first VM is built
         # so a misconfigured agent fails at startup, not mid-test.
