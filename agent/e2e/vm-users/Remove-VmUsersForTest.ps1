@@ -1,10 +1,12 @@
 <#
 .NOTES
     Dispatcher for the remove-side of the vm-users E2E layer. Selects
-    between the bespoke PowerShell flow (Infrastructure-Vm-Users) and the
-    Ansible flow (Common-Ansible). Mirror of
+    between the bespoke PowerShell flow and the Ansible flow. Mirror of
     Set-VmUsersForTest: both directions are first-class peers, both flows
-    reconcile against the same VmUsersConfig vault entry.
+    reconcile against the same VmUsersConfig vault entry, and both now
+    resolve within Infrastructure-Vm-Users (the user domain owner) -
+    custom-powershell via hyper-v/ubuntu/remove-users.ps1, ansible via
+    ops/remove-users.sh consuming the Common-Ansible substrate.
 
     Feature 03 of Common-Ansible introduced the symmetric
     remove path (sudoers -> users -> groups, reverse of create) and the
@@ -37,15 +39,19 @@ function Remove-VmUsersForTest {
         [ValidateSet('custom-powershell', 'ansible')]
         [string] $UsersFlow,
 
-        # Infrastructure-Vm-Users repo root. Required for the
-        # custom-powershell flow; harmless under ansible (ignored).
+        # Infrastructure-Vm-Users repo root. Required for both flows: it
+        # is the remove-users.ps1 home under custom-powershell and the
+        # ops/remove-users.sh home under ansible (both user
+        # implementations live in their owner repo as of feature 19).
         [Parameter(Mandatory)]
         [string] $UsersPath,
 
-        # Common-Ansible repo root. Required when
-        # UsersFlow=ansible; ignored otherwise. The dispatcher validates
-        # presence at call time so a misconfigured session fails here
-        # rather than at the underlying wsl invocation.
+        # Common-Ansible substrate root. Required when UsersFlow=ansible;
+        # ignored otherwise. No longer the wrapper's cwd - the wrapper
+        # lives under $UsersPath now - but it still consumes the
+        # Common-Ansible roles + bridge, so this pins that substrate via
+        # COMMON_ANSIBLE_ROOT. The dispatcher validates presence at call
+        # time so a misconfigured session fails here, not at the wsl call.
         [string] $AnsiblePath,
 
         # Name of the WSL distro the Ansible bridge runs inside.
@@ -82,15 +88,24 @@ function Remove-VmUsersForTest {
             if (-not $WslDistro) {
                 throw 'UsersFlow=ansible requires -WslDistro'
             }
-            # Push-Location + `wsl -d <distro> --`: same rationale as
-            # Set-VmUsersForTest. `-d <distro>` pins the bash-having
-            # Linux distro regardless of the workstation's WSL default
-            # (Docker Desktop silently changes the default to a no-bash
-            # engine distro). Push-Location anchors PowerShell's cwd
-            # at the repo root so wsl inherits it as the Linux cwd,
-            # bypassing the `wsl --cd` interop layer whose sparse PATH
-            # cannot find bash by name.
-            Push-Location $AnsiblePath
+            # Push-Location + `wsl -d <distro> --` + COMMON_ANSIBLE_ROOT
+            # forwarding: same rationale as Set-VmUsersForTest (see that
+            # file for the canonical explanation). cwd is $UsersPath - the
+            # remove-users.sh wrapper's owner repo - and COMMON_ANSIBLE_ROOT
+            # pins the substrate the wrapper consumes to $AnsiblePath,
+            # forwarded into WSL via WSLENV's /p path-translation flag.
+            # WSLENV is saved and restored in finally so the per-invocation
+            # forwarding does not leak into a later flow.
+            Push-Location $UsersPath
+            $env:COMMON_ANSIBLE_ROOT = $AnsiblePath
+            $priorWslEnv = $env:WSLENV
+            if ($env:WSLENV) {
+                if ($env:WSLENV -notlike '*COMMON_ANSIBLE_ROOT*') {
+                    $env:WSLENV = "$env:WSLENV`:COMMON_ANSIBLE_ROOT/p"
+                }
+            } else {
+                $env:WSLENV = 'COMMON_ANSIBLE_ROOT/p'
+            }
             try {
                 # `2>&1 | Out-Host`: the wsl invocation is a native
                 # command, and its stdout/stderr otherwise get collected
@@ -106,6 +121,16 @@ function Remove-VmUsersForTest {
                 & wsl -d $WslDistro -- ./ops/remove-users.sh 2>&1 | Out-Host
             }
             finally {
+                # Clear the substrate pin and restore WSLENV so neither
+                # leaks into a later flow in the same agent process. A
+                # $null prior value means WSLENV did not exist before, so
+                # remove it rather than setting it to an empty string.
+                Remove-Item Env:COMMON_ANSIBLE_ROOT -ErrorAction SilentlyContinue
+                if ($null -eq $priorWslEnv) {
+                    Remove-Item Env:WSLENV -ErrorAction SilentlyContinue
+                } else {
+                    $env:WSLENV = $priorWslEnv
+                }
                 Pop-Location
             }
             if ($LASTEXITCODE -ne 0) {

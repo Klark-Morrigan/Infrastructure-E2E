@@ -104,21 +104,30 @@ Describe 'Remove-VmUsersForTest' {
         BeforeEach {
             $Script:AnsiblePath = Join-Path $TestDrive 'Ansible'
             New-Item -Path $Script:AnsiblePath -ItemType Directory -Force | Out-Null
+            # UsersPath is the wrapper's owner repo and now the ansible
+            # flow's Push-Location target, so it must exist on disk.
             $Script:UsersPath   = Join-Path $TestDrive 'Vm-Users'
+            New-Item -Path $Script:UsersPath -ItemType Directory -Force | Out-Null
         }
 
-        It 'invokes wsl with the WslDistro targeting remove-users.sh from AnsiblePath' {
-            $Script:Captured    = [System.Collections.Generic.List[string]]::new()
-            $Script:CapturedCwd = $null
+        It 'invokes wsl with the WslDistro targeting remove-users.sh from UsersPath' {
+            $Script:Captured     = [System.Collections.Generic.List[string]]::new()
+            $Script:CapturedCwd  = $null
+            $Script:CapturedRoot = $null
+            $Script:CapturedWslEnv = $null
             # Function shadow for wsl. $args captures all unparsed tokens
             # so we can assert the full surface, not just presence. The
             # dispatcher anchors cwd via Push-Location instead of
-            # `wsl --cd`, so we capture (Get-Location) at call time to
-            # assert it equals AnsiblePath.
+            # `wsl --cd`, so we capture (Get-Location) at call time and
+            # assert it equals UsersPath (the wrapper's owner repo). We
+            # also capture COMMON_ANSIBLE_ROOT / WSLENV to prove the
+            # substrate is pinned to AnsiblePath and path-translated.
             function wsl {
                 foreach ($a in $args) { $Script:Captured.Add([string]$a) }
-                $Script:CapturedCwd  = (Get-Location).Path
-                $global:LASTEXITCODE = 0
+                $Script:CapturedCwd    = (Get-Location).Path
+                $Script:CapturedRoot   = $env:COMMON_ANSIBLE_ROOT
+                $Script:CapturedWslEnv = $env:WSLENV
+                $global:LASTEXITCODE   = 0
             }
 
             Remove-VmUsersForTest `
@@ -135,7 +144,27 @@ Describe 'Remove-VmUsersForTest' {
             # the '--' verbatim. Assert the surrounding tokens only.
             $joined = $Script:Captured -join ' '
             $joined | Should -Match '^-d Ubuntu-24\.04(\s+--)?\s+\./ops/remove-users\.sh$'
-            $Script:CapturedCwd | Should -Be $Script:AnsiblePath
+            $Script:CapturedCwd    | Should -Be $Script:UsersPath
+            $Script:CapturedRoot   | Should -Be $Script:AnsiblePath
+            $Script:CapturedWslEnv | Should -Match 'COMMON_ANSIBLE_ROOT/p'
+        }
+
+        It 'clears COMMON_ANSIBLE_ROOT / WSLENV after the run' {
+            # The forwarding is per-invocation: it must not linger in the
+            # agent process env and bleed into a later flow.
+            function wsl { $global:LASTEXITCODE = 0 }
+            $priorWslEnv = $env:WSLENV
+
+            Remove-VmUsersForTest `
+                -UsersFlow   'ansible' `
+                -UsersPath   $Script:UsersPath `
+                -AnsiblePath $Script:AnsiblePath `
+                -WslDistro   'Ubuntu-24.04' `
+                -VmDef       $Script:VmDef `
+                -Entry       $Script:Entry
+
+            $env:COMMON_ANSIBLE_ROOT | Should -BeNullOrEmpty
+            $env:WSLENV | Should -Be $priorWslEnv
         }
 
         It 'throws when AnsiblePath is missing' {

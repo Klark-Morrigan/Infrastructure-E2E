@@ -86,14 +86,16 @@ function Invoke-E2EAgentLoop {
         [ValidateSet('custom-powershell', 'ansible')]
         [string] $RunnersFlow = 'custom-powershell',
 
-        # Absolute path to the Common-Ansible repo root on the
+        # Absolute path to the Common-Ansible substrate root on the
         # workstation. Required when either UsersFlow=ansible (the users
-        # flow default) or RunnersFlow=ansible. Both flows share the same
-        # repo and the same WSL distro because the one Common-Ansible
-        # checkout houses ops/create-users.sh,
-        # ops/register-runners.sh, and ops/_run-playbook.sh. The loop
-        # validates the path exists below before the first VM is built
-        # so a misconfigured agent fails at startup, not mid-test.
+        # flow default) or RunnersFlow=ansible. The runner flow runs the
+        # substrate's own ops/register-runners.sh from here directly; the
+        # users flow runs ops/create-users.sh from Infrastructure-Vm-Users
+        # and consumes this substrate (roles + bridge) via
+        # COMMON_ANSIBLE_ROOT (see Set-VmUsersForTest). Both share the
+        # same WSL distro. The loop validates the path exists below before
+        # the first VM is built so a misconfigured agent fails at startup,
+        # not mid-test.
         [Parameter()]
         [string] $AnsiblePath,
 
