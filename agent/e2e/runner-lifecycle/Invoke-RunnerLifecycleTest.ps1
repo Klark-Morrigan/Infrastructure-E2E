@@ -279,7 +279,7 @@ function Invoke-RunnerLifecycleTeardown {
     Write-Host 'Deregistering runners ...' -ForegroundColor Magenta
     # -Force: if the runner service crashed mid-test, -Force removes the
     # GitHub registration via the API without SSH access.
-    & "$($Config.RunnersPath)\hyper-v\ubuntu\deregister-runners.ps1" `
+    & "$($Config.RunnersPath)\hyper-v\ubuntu\PowerShell\deregister-runners.ps1" `
         -Token $RunnersToken `
         -SecretSuffix $script:E2ETestSecretSuffix `
         -Force
@@ -566,7 +566,7 @@ function Invoke-RunnerLifecycleTest {
             # and runner files while the VM may still be alive.
             if ($runnersToken) {
                 try {
-                    & "$($Config.RunnersPath)\hyper-v\ubuntu\deregister-runners.ps1" `
+                    & "$($Config.RunnersPath)\hyper-v\ubuntu\PowerShell\deregister-runners.ps1" `
                         -Token  $runnersToken `
                         -SecretSuffix $script:E2ETestSecretSuffix `
                         -Force

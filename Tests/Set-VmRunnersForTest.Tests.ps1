@@ -47,7 +47,7 @@ Describe 'Set-VmRunnersForTest' {
             # test's value - .ps1 scripts that fall off the end leave
             # $LASTEXITCODE untouched.
             Set-Content `
-                -Path  "$Script:RunnersPath\hyper-v\ubuntu\register-runners.ps1" `
+                -Path  "$Script:RunnersPath\hyper-v\ubuntu\PowerShell\register-runners.ps1" `
                 -Value @'
 param($Token, $SecretSuffix)
 Set-Content -Path ([Environment]::GetEnvironmentVariable('MARKER_PATH')) `
@@ -75,7 +75,7 @@ exit 0
 
         It 'throws with the exit code when register-runners.ps1 fails' {
             Set-Content `
-                -Path  "$Script:RunnersPath\hyper-v\ubuntu\register-runners.ps1" `
+                -Path  "$Script:RunnersPath\hyper-v\ubuntu\PowerShell\register-runners.ps1" `
                 -Value 'exit 7'
 
             { Set-VmRunnersForTest `
@@ -90,7 +90,7 @@ exit 0
 
         It 'does not invoke wsl' {
             Set-Content `
-                -Path  "$Script:RunnersPath\hyper-v\ubuntu\register-runners.ps1" `
+                -Path  "$Script:RunnersPath\hyper-v\ubuntu\PowerShell\register-runners.ps1" `
                 -Value 'exit 0'
             # Shadow wsl - if the dispatcher reaches it the test fails
             # with the marker. Function shadowing takes precedence over
@@ -266,7 +266,7 @@ exit 0
             New-Item -Path "$Script:RunnersPath\hyper-v\ubuntu" `
                      -ItemType Directory -Force | Out-Null
             Set-Content `
-                -Path  "$Script:RunnersPath\hyper-v\ubuntu\register-runners.ps1" `
+                -Path  "$Script:RunnersPath\hyper-v\ubuntu\PowerShell\register-runners.ps1" `
                 -Value 'throw "ansible flow must not invoke PS register-runners"'
 
             { Set-VmRunnersForTest `

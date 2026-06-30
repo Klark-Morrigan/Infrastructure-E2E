@@ -2,7 +2,7 @@
 .NOTES
     Dispatcher for the register-side of the runner-lifecycle E2E layer.
     Selects between the bespoke PowerShell flow
-    (Infrastructure-GitHubRunners\hyper-v\ubuntu\register-runners.ps1) and
+    (Infrastructure-GitHubRunners\hyper-v\ubuntu\PowerShell\register-runners.ps1) and
     the Ansible flow (Infrastructure-GitHubRunners'
     hyper-v\ubuntu\Ansible\ops\register-runners.sh). Both impls now live in
     the runner domain owner repo (GitHubRunners); the Ansible wrapper
@@ -13,7 +13,7 @@
     first-class peers.
 
     The deregister half stays on
-    Infrastructure-GitHubRunners\hyper-v\ubuntu\deregister-runners.ps1 for
+    Infrastructure-GitHubRunners\hyper-v\ubuntu\PowerShell\deregister-runners.ps1 for
     both flows until feature 09 in Common-Ansible introduces
     the symmetric remove-side fork. The PowerShell removal script tears
     down runners installed by either flow (it operates on systemd units
@@ -83,7 +83,7 @@ function Set-VmRunnersForTest {
             # The invocation that lived inline in Invoke-RunnerLifecycleTest
             # before this step. Identical surface so the existing flow
             # remains a first-class peer of the Ansible one.
-            & "$RunnersPath\hyper-v\ubuntu\register-runners.ps1" `
+            & "$RunnersPath\hyper-v\ubuntu\PowerShell\register-runners.ps1" `
                 -Token        $Token `
                 -SecretSuffix $SecretSuffix
             if ($LASTEXITCODE -ne 0) {
