@@ -3,9 +3,10 @@
     Dispatcher for the create-side of the vm-users E2E layer. Selects
     between the bespoke PowerShell flow and the Ansible flow. Both flows
     now resolve within Infrastructure-Vm-Users (the user domain owner):
-    custom-powershell runs hyper-v/ubuntu/create-users.ps1, ansible runs
-    ops/create-users.sh - the latter consuming the Common-Ansible
-    substrate (roles + bridge) as a sibling checkout. Both reconcile the
+    custom-powershell runs hyper-v/ubuntu/PowerShell/create-users.ps1, ansible
+    runs hyper-v/ubuntu/Ansible/ops/create-users.sh - the latter consuming the
+    Common-Ansible substrate (roles + bridge) as a sibling checkout. Each impl
+    is a self-contained slice under hyper-v/ubuntu/. Both reconcile the
     same on-VM state from the same VmUsersConfig vault entry; the test
     layer treats them as first-class peers.
 
@@ -44,15 +45,6 @@ function Set-VmUsersForTest {
         [Parameter(Mandatory)]
         [string] $UsersPath,
 
-        # Common-Ansible substrate root. Required when UsersFlow=ansible;
-        # ignored otherwise. No longer the wrapper's cwd - the wrapper
-        # lives under $UsersPath now - but the wrapper still consumes the
-        # Common-Ansible roles + bridge, so this pins that substrate via
-        # COMMON_ANSIBLE_ROOT rather than relying on the sibling-checkout
-        # default layout. The dispatcher validates presence at call time
-        # so a misconfigured session fails here, not at the wsl call.
-        [string] $AnsiblePath,
-
         # Name of the WSL distro the Ansible bridge runs inside.
         # Required when UsersFlow=ansible; ignored otherwise. Passed to
         # `wsl -d <name> --` so the dispatcher does not depend on the
@@ -72,27 +64,23 @@ function Set-VmUsersForTest {
             # The invocation that lived inline in Invoke-VmUsersSetup
             # before this step. Identical surface so the existing flow
             # remains a first-class peer of the Ansible one.
-            & "$UsersPath\hyper-v\ubuntu\create-users.ps1" -SecretSuffix $script:E2ETestSecretSuffix
+            & "$UsersPath\hyper-v\ubuntu\PowerShell\create-users.ps1" -SecretSuffix $script:E2ETestSecretSuffix
             if ($LASTEXITCODE -ne 0) {
                 throw "custom-powershell create-users.ps1 exited $LASTEXITCODE"
             }
         }
         'ansible' {
-            if (-not $AnsiblePath) {
-                throw 'UsersFlow=ansible requires -AnsiblePath'
-            }
             if (-not $WslDistro) {
                 throw 'UsersFlow=ansible requires -WslDistro'
             }
             # Push-Location + `wsl -d <distro> --`:
             #
-            # The create-users.sh wrapper now lives in the user domain
-            # owner (Infrastructure-Vm-Users), so cwd is $UsersPath - the
-            # wrapper's repo, not the substrate. The wrapper resolves the
-            # Common-Ansible substrate as a sibling checkout via
-            # ops/imports/_common-ansible-root.sh; COMMON_ANSIBLE_ROOT
-            # (set below) pins that resolution to the operator-configured
-            # $AnsiblePath instead of trusting the workstation's layout.
+            # The create-users.sh wrapper lives in the user domain owner
+            # (Infrastructure-Vm-Users), so cwd is $UsersPath - the
+            # wrapper's repo. The wrapper resolves the Common-Ansible
+            # substrate (roles + bridge) itself as a sibling checkout via
+            # ops/imports/_common-ansible-root.sh, so this layer passes no
+            # Common-Ansible path.
             #
             # `-d <distro>` targets the bash-having Linux distro the
             # operator bootstrapped against, regardless of what the
@@ -111,23 +99,7 @@ function Set-VmUsersForTest {
             # layer cannot find `bash` by name. Push-Location avoids
             # that wrapper entirely; wsl execs the script directly with
             # its normal startup PATH.
-            #
-            # COMMON_ANSIBLE_ROOT crosses into WSL only when listed in
-            # WSLENV; the /p flag path-translates the Windows path to its
-            # /mnt/c form so the resolver's `cd` lands. Saved and restored
-            # in finally so the per-invocation forwarding does not
-            # accumulate across tests (mirrors the GH_TOKEN/WSLENV
-            # handling in Set-VmRunnersForTest).
             Push-Location $UsersPath
-            $env:COMMON_ANSIBLE_ROOT = $AnsiblePath
-            $priorWslEnv = $env:WSLENV
-            if ($env:WSLENV) {
-                if ($env:WSLENV -notlike '*COMMON_ANSIBLE_ROOT*') {
-                    $env:WSLENV = "$env:WSLENV`:COMMON_ANSIBLE_ROOT/p"
-                }
-            } else {
-                $env:WSLENV = 'COMMON_ANSIBLE_ROOT/p'
-            }
             try {
                 # -vvv goes to a file, summary stays on the terminal.
                 # The verbose stream localizes any future SSH-via-WSL
@@ -170,23 +142,12 @@ function Set-VmUsersForTest {
                 $summaryPattern =
                     '^(PLAY|TASK|PLAY RECAP|fatal:|ok:|changed:|skipped:|failed:|unreachable:|\s*=+\s*$|.*\| (ok|changed|failed|skipping|fatal): \[)'
 
-                & wsl -d $WslDistro -- ./ops/create-users.sh -vvv 2>&1 |
+                & wsl -d $WslDistro -- ./hyper-v/ubuntu/Ansible/ops/create-users.sh -vvv 2>&1 |
                     Tee-Object -FilePath $logPath |
                     Where-Object { $_ -match $summaryPattern } |
                     Out-Host
             }
             finally {
-                # Clear the substrate pin and restore WSLENV to its
-                # pre-invocation state so neither leaks into a later flow
-                # (e.g. the runner dispatcher) in the same agent process.
-                # A $null prior value means WSLENV did not exist before,
-                # so remove it rather than setting it to an empty string.
-                Remove-Item Env:COMMON_ANSIBLE_ROOT -ErrorAction SilentlyContinue
-                if ($null -eq $priorWslEnv) {
-                    Remove-Item Env:WSLENV -ErrorAction SilentlyContinue
-                } else {
-                    $env:WSLENV = $priorWslEnv
-                }
                 Pop-Location
             }
             if ($LASTEXITCODE -ne 0) {

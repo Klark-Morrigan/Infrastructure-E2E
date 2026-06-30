@@ -114,21 +114,23 @@ exit 0
     # ------------------------------------------------------------------
 
         BeforeEach {
-            $Script:AnsiblePath = Join-Path $TestDrive 'Ansible'
-            New-Item -Path $Script:AnsiblePath -ItemType Directory -Force | Out-Null
+            # RunnersPath is the wrapper's owner repo (GitHubRunners) and
+            # the ansible flow's Push-Location target, so it must exist on
+            # disk for Push-Location to anchor cwd there.
             $Script:RunnersPath = Join-Path $TestDrive 'GitHubRunners'
+            New-Item -Path $Script:RunnersPath -ItemType Directory -Force | Out-Null
         }
 
-        It 'invokes wsl with the WslDistro targeting register-runners.sh from AnsiblePath' {
+        It 'invokes wsl with the WslDistro targeting register-runners.sh from RunnersPath' {
             $Script:Captured       = [System.Collections.Generic.List[string]]::new()
             $Script:CapturedCwd    = $null
             $Script:CapturedToken  = $null
             # Function shadow for wsl. $args captures all unparsed tokens
             # so we can assert the full surface, not just presence. The
             # dispatcher anchors cwd via Push-Location, so we capture
-            # (Get-Location) at call time to assert it equals
-            # AnsiblePath. GH_TOKEN must be set when wsl is invoked
-            # (the bridge consumes it via env).
+            # (Get-Location) at call time to assert it equals RunnersPath
+            # (the wrapper's owner repo). GH_TOKEN must be set when wsl is
+            # invoked (the bridge consumes it via env).
             function wsl {
                 foreach ($a in $args) { $Script:Captured.Add([string]$a) }
                 $Script:CapturedCwd   = (Get-Location).Path
@@ -139,7 +141,6 @@ exit 0
             Set-VmRunnersForTest `
                 -RunnersFlow  'ansible' `
                 -RunnersPath  $Script:RunnersPath `
-                -AnsiblePath  $Script:AnsiblePath `
                 -WslDistro    'Ubuntu-24.04' `
                 -Token        $Script:Token `
                 -SecretSuffix $Script:SecretSuffix `
@@ -151,8 +152,8 @@ exit 0
             # it - but production wsl.exe (a native exe) does receive
             # the '--' verbatim. Assert the surrounding tokens only.
             $joined = $Script:Captured -join ' '
-            $joined | Should -Match '^-d Ubuntu-24\.04(\s+--)?\s+\./ops/register-runners\.sh$'
-            $Script:CapturedCwd   | Should -Be $Script:AnsiblePath
+            $joined | Should -Match '^-d Ubuntu-24\.04(\s+--)?\s+\./hyper-v/ubuntu/Ansible/ops/register-runners\.sh$'
+            $Script:CapturedCwd   | Should -Be $Script:RunnersPath
             $Script:CapturedToken | Should -Be $Script:Token
         }
 
@@ -163,7 +164,6 @@ exit 0
             Set-VmRunnersForTest `
                 -RunnersFlow  'ansible' `
                 -RunnersPath  $Script:RunnersPath `
-                -AnsiblePath  $Script:AnsiblePath `
                 -WslDistro    'Ubuntu-24.04' `
                 -Token        $Script:Token `
                 -SecretSuffix $Script:SecretSuffix `
@@ -179,7 +179,6 @@ exit 0
             { Set-VmRunnersForTest `
                 -RunnersFlow  'ansible' `
                 -RunnersPath  $Script:RunnersPath `
-                -AnsiblePath  $Script:AnsiblePath `
                 -WslDistro    'Ubuntu-24.04' `
                 -Token        $Script:Token `
                 -SecretSuffix $Script:SecretSuffix `
@@ -203,7 +202,6 @@ exit 0
             Set-VmRunnersForTest `
                 -RunnersFlow  'ansible' `
                 -RunnersPath  $Script:RunnersPath `
-                -AnsiblePath  $Script:AnsiblePath `
                 -WslDistro    'Ubuntu-24.04' `
                 -Token        $Script:Token `
                 -SecretSuffix $Script:SecretSuffix `
@@ -220,7 +218,6 @@ exit 0
             Set-VmRunnersForTest `
                 -RunnersFlow  'ansible' `
                 -RunnersPath  $Script:RunnersPath `
-                -AnsiblePath  $Script:AnsiblePath `
                 -WslDistro    'Ubuntu-24.04' `
                 -Token        $Script:Token `
                 -SecretSuffix $Script:SecretSuffix `
@@ -238,7 +235,6 @@ exit 0
                 Set-VmRunnersForTest `
                     -RunnersFlow  'ansible' `
                     -RunnersPath  $Script:RunnersPath `
-                    -AnsiblePath  $Script:AnsiblePath `
                     -WslDistro    'Ubuntu-24.04' `
                     -Token        $Script:Token `
                     -SecretSuffix $Script:SecretSuffix `
@@ -252,22 +248,10 @@ exit 0
             }
         }
 
-        It 'throws when AnsiblePath is missing' {
-            { Set-VmRunnersForTest `
-                -RunnersFlow  'ansible' `
-                -RunnersPath  $Script:RunnersPath `
-                -Token        $Script:Token `
-                -SecretSuffix $Script:SecretSuffix `
-                -VmDef        $Script:VmDef `
-                -Entry        $Script:Entry
-            } | Should -Throw '*requires -AnsiblePath*'
-        }
-
         It 'throws when WslDistro is missing' {
             { Set-VmRunnersForTest `
                 -RunnersFlow  'ansible' `
                 -RunnersPath  $Script:RunnersPath `
-                -AnsiblePath  $Script:AnsiblePath `
                 -Token        $Script:Token `
                 -SecretSuffix $Script:SecretSuffix `
                 -VmDef        $Script:VmDef `
@@ -288,7 +272,6 @@ exit 0
             { Set-VmRunnersForTest `
                 -RunnersFlow  'ansible' `
                 -RunnersPath  $Script:RunnersPath `
-                -AnsiblePath  $Script:AnsiblePath `
                 -WslDistro    'Ubuntu-24.04' `
                 -Token        $Script:Token `
                 -SecretSuffix $Script:SecretSuffix `

@@ -133,9 +133,9 @@ if ($MyInvocation.InvocationName -ne '.') {
     # deadline is checked at session boundaries so the agent stops without
     # operator intervention. PipelineStoppedException (Ctrl+C) is re-thrown
     # so the operator can also stop it early.
-    # UsersFlow / RunnersFlow / AnsiblePath / WslDistro are optional in
-    # the vault payload so older E2EConfig files do not need a re-write
-    # to keep working. When absent, Invoke-E2EAgentLoop's defaults
+    # UsersFlow / RunnersFlow / WslDistro are optional in the vault
+    # payload so older E2EConfig files do not need a re-write to keep
+    # working. When absent, Invoke-E2EAgentLoop's defaults
     # (UsersFlow=ansible, RunnersFlow=custom-powershell) apply, and
     # WslDistro has no default - if either flow is 'ansible' the loop
     # fail-fasts with a named error so the operator adds it to the vault
@@ -151,12 +151,10 @@ if ($MyInvocation.InvocationName -ne '.') {
     # safe for normal operation.
     $vaultUsersFlow              = $null
     $vaultRunnersFlow            = $null
-    $vaultAnsiblePath            = $null
     $vaultWslDistro              = $null
     $vaultDeploymentLookbackHours = $null
     if ($config.PSObject.Properties['UsersFlow'])   { $vaultUsersFlow   = $config.UsersFlow }
     if ($config.PSObject.Properties['RunnersFlow']) { $vaultRunnersFlow = $config.RunnersFlow }
-    if ($config.PSObject.Properties['AnsiblePath']) { $vaultAnsiblePath = $config.AnsiblePath }
     if ($config.PSObject.Properties['WslDistro'])   { $vaultWslDistro   = $config.WslDistro }
     if ($config.PSObject.Properties['DeploymentLookbackHours']) {
         $vaultDeploymentLookbackHours = $config.DeploymentLookbackHours
@@ -182,7 +180,6 @@ if ($MyInvocation.InvocationName -ne '.') {
             }
             if ($vaultUsersFlow)   { $loopParams['UsersFlow']   = $vaultUsersFlow }
             if ($vaultRunnersFlow) { $loopParams['RunnersFlow'] = $vaultRunnersFlow }
-            if ($vaultAnsiblePath) { $loopParams['AnsiblePath'] = $vaultAnsiblePath }
             if ($vaultWslDistro)   { $loopParams['WslDistro']   = $vaultWslDistro }
             if ($vaultDeploymentLookbackHours) {
                 $loopParams['DeploymentLookbackHours'] = $vaultDeploymentLookbackHours

@@ -77,34 +77,25 @@ function Invoke-E2EAgentLoop {
         # Selects which register-runners implementation the runner
         # lifecycle test dispatches to. 'custom-powershell' (the current
         # default) keeps invoking Infrastructure-GitHubRunners'
-        # register-runners.ps1. 'ansible' opts in to
-        # Common-Ansible's ops/register-runners.sh. The
-        # default stays on custom-powershell for one full release cycle
-        # while the Ansible path validates on real hardware; the
-        # default-flip happens in a follow-up bump.
+        # register-runners.ps1. 'ansible' opts in to the same repo's
+        # hyper-v/ubuntu/Ansible/ops/register-runners.sh. The default stays
+        # on custom-powershell for one full release cycle while the Ansible
+        # path validates on real hardware; the default-flip happens in a
+        # follow-up bump.
         [Parameter()]
         [ValidateSet('custom-powershell', 'ansible')]
         [string] $RunnersFlow = 'custom-powershell',
-
-        # Absolute path to the Common-Ansible substrate root on the
-        # workstation. Required when either UsersFlow=ansible (the users
-        # flow default) or RunnersFlow=ansible. The runner flow runs the
-        # substrate's own ops/register-runners.sh from here directly; the
-        # users flow runs ops/create-users.sh from Infrastructure-Vm-Users
-        # and consumes this substrate (roles + bridge) via
-        # COMMON_ANSIBLE_ROOT (see Set-VmUsersForTest). Both share the
-        # same WSL distro. The loop validates the path exists below before
-        # the first VM is built so a misconfigured agent fails at startup,
-        # not mid-test.
-        [Parameter()]
-        [string] $AnsiblePath,
 
         # Name of the WSL distro to run the Ansible bridge inside. Passed
         # via `wsl -d <name>` so the agent does not depend on the
         # workstation's WSL default - Docker Desktop's installer silently
         # changes the default to its no-bash `docker-desktop` engine
         # distro, which broke this code path until the explicit -d was
-        # added. Required when UsersFlow=ansible (the default).
+        # added. Required when either UsersFlow=ansible (the default) or
+        # RunnersFlow=ansible. Each ansible wrapper (create/remove-users.sh
+        # in Vm-Users, register-runners.sh in GitHubRunners) self-resolves
+        # the Common-Ansible substrate as a sibling checkout, so no
+        # Common-Ansible path is threaded through this loop.
         [Parameter()]
         [string] $WslDistro,
 
@@ -169,10 +160,11 @@ function Invoke-E2EAgentLoop {
         $Deadline = [DateTime]::UtcNow.AddMinutes($TimeoutMinutes)
     }
 
-    # Fail-fast: validate AnsiblePath and WslDistro at startup so a
-    # misconfigured session does not build a VM and only then discover
-    # the bridge is unreachable. custom-powershell ignores both; only
-    # the ansible flow on either layer needs them.
+    # Fail-fast: validate WslDistro at startup so a misconfigured session
+    # does not build a VM and only then discover the bridge is
+    # unreachable. custom-powershell ignores it; only the ansible flow on
+    # either layer needs it. Each ansible wrapper self-resolves the
+    # Common-Ansible substrate, so there is no path to validate here.
     #
     # WslDistro is verified up-front via Assert-WslHasBash from
     # Common.PowerShell - that catches the docker-desktop-default trap
@@ -184,12 +176,6 @@ function Invoke-E2EAgentLoop {
     if ($RunnersFlow -eq 'ansible') { $ansibleFlows += 'RunnersFlow' }
     if ($ansibleFlows.Count -gt 0) {
         $flowList = $ansibleFlows -join '/'
-        if (-not $AnsiblePath) {
-            throw "${flowList}='ansible' requires -AnsiblePath."
-        }
-        if (-not (Test-Path -LiteralPath $AnsiblePath -PathType Container)) {
-            throw "AnsiblePath '$AnsiblePath' does not exist or is not a directory."
-        }
         if (-not $WslDistro) {
             throw "${flowList}='ansible' requires -WslDistro."
         }
@@ -289,10 +275,10 @@ function Invoke-E2EAgentLoop {
                 # Validate the effective flows. An unknown value fails loud
                 # here rather than as a sparse ValidateSet error deep in a
                 # dispatcher. An 'ansible' effective flow re-asserts the
-                # AnsiblePath/WslDistro prerequisites: the startup check only
-                # covered the session defaults, so a payload that upgrades a
-                # layer to ansible (vault set custom-powershell) must still
-                # have a usable bridge or it would fail mid-test.
+                # WslDistro prerequisite: the startup check only covered the
+                # session defaults, so a payload that upgrades a layer to
+                # ansible (vault set custom-powershell) must still have a
+                # usable bridge or it would fail mid-test.
                 foreach ($pair in @(
                         @{ Name = 'usersFlow';   Value = $effectiveUsersFlow },
                         @{ Name = 'runnersFlow'; Value = $effectiveRunnersFlow })) {
@@ -302,11 +288,6 @@ function Invoke-E2EAgentLoop {
                     }
                 }
                 if ($effectiveUsersFlow -eq 'ansible' -or $effectiveRunnersFlow -eq 'ansible') {
-                    if (-not $AnsiblePath -or
-                        -not (Test-Path -LiteralPath $AnsiblePath -PathType Container)) {
-                        throw ("Effective flow is 'ansible' but AnsiblePath is " +
-                            "missing or invalid: '$AnsiblePath'.")
-                    }
                     if (-not $WslDistro) {
                         throw "Effective flow is 'ansible' but WslDistro is not set."
                     }
@@ -319,7 +300,6 @@ function Invoke-E2EAgentLoop {
                     ProvisionerPath       = $ProvisionerPath
                     UsersPath             = $UsersPath
                     UsersFlow             = $effectiveUsersFlow
-                    AnsiblePath           = $AnsiblePath
                     WslDistro             = $WslDistro
                     RunnersPath           = $RunnersPath
                     RunnersFlow           = $effectiveRunnersFlow

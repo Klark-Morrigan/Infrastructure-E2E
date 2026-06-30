@@ -33,10 +33,6 @@ Describe 'Invoke-E2EAgentLoop' {
         # Deadline is intentionally absent here - set fresh each test by the
         # BeforeEach below so the loop does not spin for hours once the
         # deployment mock starts returning $null.
-        # AnsiblePath points at a real directory because the loop now
-        # validates the path exists at startup when UsersFlow=ansible
-        # (the default). Tests that exercise the validation override it.
-        $Script:AnsiblePath = $TestDrive
 
         $Script:BaseParams = @{
             AppId                 = 1
@@ -46,7 +42,6 @@ Describe 'Invoke-E2EAgentLoop' {
             ProvisionerPath       = 'C:\test\provisioner'
             UsersPath             = 'C:\test\users'
             UsersFlow             = 'ansible'
-            AnsiblePath           = $Script:AnsiblePath
             # WslDistro is required when UsersFlow=ansible; the value is
             # not exercised here (Assert-WslHasBash is stubbed above).
             WslDistro             = 'Ubuntu-24.04'
@@ -167,7 +162,6 @@ Describe 'Invoke-E2EAgentLoop' {
             $Script:_config.ProvisionerPath         | Should -Be 'C:\test\provisioner'
             $Script:_config.UsersPath               | Should -Be 'C:\test\users'
             $Script:_config.UsersFlow               | Should -Be 'ansible'
-            $Script:_config.AnsiblePath             | Should -Be $Script:AnsiblePath
             $Script:_config.RunnersPath             | Should -Be 'C:\test\runners'
             $Script:_config.HostTarballCachePath    | Should -Be 'C:\test\tarball-cache'
             $Script:_config.Owner            | Should -Be 'org'
@@ -462,7 +456,7 @@ Describe 'Invoke-E2EAgentLoop' {
     }
 
     # ------------------------------------------------------------------
-    Context 'UsersFlow / AnsiblePath plumbing' {
+    Context 'UsersFlow / WslDistro plumbing' {
     # ------------------------------------------------------------------
 
         It 'defaults UsersFlow to ansible when callers do not pass one' {
@@ -490,31 +484,24 @@ Describe 'Invoke-E2EAgentLoop' {
             $Script:_def_config.UsersFlow | Should -Be 'ansible'
         }
 
-        It "throws at startup when UsersFlow='ansible' and AnsiblePath is missing" {
+        It "throws at startup when UsersFlow='ansible' and WslDistro is missing" {
             # No mocks reachable: the validation runs before the polling
             # loop starts, so no token / deployment calls happen.
             $params = $Script:BaseParams.Clone()
-            $params.Remove('AnsiblePath')
+            $params.Remove('WslDistro')
 
-            { Invoke-E2EAgentLoop @params } | Should -Throw '*requires -AnsiblePath*'
+            { Invoke-E2EAgentLoop @params } | Should -Throw '*requires -WslDistro*'
         }
 
-        It "throws at startup when AnsiblePath does not exist on disk" {
-            $params = $Script:BaseParams.Clone()
-            $params['AnsiblePath'] = 'C:\definitely\not\a\real\path-XYZ-12345'
-
-            { Invoke-E2EAgentLoop @params } |
-                Should -Throw '*does not exist*'
-        }
-
-        It "does not require AnsiblePath when UsersFlow='custom-powershell'" {
+        It "does not require WslDistro when both flows are 'custom-powershell'" {
             Mock Get-GitHubAppToken { $Script:FreshToken }
             Mock Get-PendingDeployment { $null }
             Mock Set-DeploymentStatus {}
 
             $params = $Script:BaseParams.Clone()
-            $params['UsersFlow'] = 'custom-powershell'
-            $params.Remove('AnsiblePath')
+            $params['UsersFlow']   = 'custom-powershell'
+            $params['RunnersFlow'] = 'custom-powershell'
+            $params.Remove('WslDistro')
 
             { Invoke-E2EAgentLoop @params } | Should -Not -Throw
         }
@@ -625,7 +612,7 @@ Describe 'Invoke-E2EAgentLoop' {
             Should -Invoke Invoke-RunnerLifecycleTest -Times 0
         }
 
-        It "posts failure when a payload upgrades a layer to 'ansible' but AnsiblePath is missing" {
+        It "posts failure when a payload upgrades a layer to 'ansible' but WslDistro is missing" {
             # The startup check only validated the session defaults. A payload
             # that flips a custom-powershell session to ansible must re-assert
             # the bridge prerequisites or it would fail deep in a dispatcher.
@@ -642,12 +629,13 @@ Describe 'Invoke-E2EAgentLoop' {
             }
             Mock Invoke-RunnerLifecycleTest {}
 
-            # Session is custom-powershell with no AnsiblePath, so startup
+            # Session is custom-powershell with no WslDistro, so startup
             # validation passes; the payload's ansible upgrade is caught
             # per-run instead.
             $params = $Script:BaseParams.Clone()
-            $params['UsersFlow'] = 'custom-powershell'
-            $params.Remove('AnsiblePath')
+            $params['UsersFlow']   = 'custom-powershell'
+            $params['RunnersFlow'] = 'custom-powershell'
+            $params.Remove('WslDistro')
 
             { Invoke-E2EAgentLoop @params } | Should -Not -Throw
 

@@ -43,11 +43,6 @@ param(
     [ValidateSet('custom-powershell', 'ansible')]
     [string] $UsersFlow = 'ansible',
 
-    # Absolute path to the Common-Ansible repo root. Required
-    # when -UsersFlow ansible (the default); ignored otherwise. The
-    # dispatcher fails fast when it is missing under UsersFlow=ansible.
-    [string] $AnsiblePath = 'C:\a_Code\Common-Ansible',
-
     # Name of the WSL distro the Ansible bridge runs inside. Required
     # when -UsersFlow ansible (the default); ignored otherwise. Passed
     # via `wsl -d <name>` so the test does not depend on the
@@ -90,7 +85,6 @@ Invoke-VmUsersTest -Config ([PSCustomObject]@{
     ProvisionerPath = $ProvisionerPath
     UsersPath       = $UsersPath
     UsersFlow       = $UsersFlow
-    AnsiblePath     = $AnsiblePath
     WslDistro       = $WslDistro
     TestVm          = [PSCustomObject]@{
         ubuntuVersion       = $UbuntuVersion

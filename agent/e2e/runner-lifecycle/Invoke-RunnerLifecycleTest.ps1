@@ -7,8 +7,8 @@
 . "$PSScriptRoot\..\vm-users\Invoke-VmUsersTest.ps1"
 
 # Register-side dispatcher: symmetric peer of Set-VmUsersForTest, selecting
-# between Infrastructure-GitHubRunners' register-runners.ps1 and
-# Common-Ansible's ops/register-runners.sh. The lifecycle test
+# between Infrastructure-GitHubRunners' register-runners.ps1 and its
+# hyper-v/ubuntu/Ansible/ops/register-runners.sh. The lifecycle test
 # forwards $Config.RunnersFlow into this single switch point.
 . "$PSScriptRoot\Set-VmRunnersForTest.ps1"
 
@@ -393,15 +393,15 @@ function Invoke-RunnerLifecycleTest {
         # mid-way (e.g. config.sh succeeds but svc.sh fails).
         Write-Host "Registering runners via '$($Config.RunnersFlow)' flow ..." `
             -ForegroundColor Magenta
-        # $Config carries RunnersFlow + AnsiblePath + WslDistro from
-        # Start-E2EAgent. AnsiblePath and WslDistro are optional in the
-        # dispatcher and ignored unless RunnersFlow=ansible; the
-        # agent-loop validates their presence at startup so a missing
-        # value fails before the VM is built.
+        # $Config carries RunnersFlow + WslDistro from Start-E2EAgent.
+        # WslDistro is optional in the dispatcher and ignored unless
+        # RunnersFlow=ansible; the agent-loop validates its presence at
+        # startup so a missing value fails before the VM is built. The
+        # ansible flow resolves register-runners.sh under $RunnersPath
+        # (GitHubRunners), which self-resolves the Common-Ansible substrate.
         Set-VmRunnersForTest `
             -RunnersFlow  $Config.RunnersFlow `
             -RunnersPath  $Config.RunnersPath `
-            -AnsiblePath  $Config.AnsiblePath `
             -WslDistro    $Config.WslDistro `
             -Token        $runnersToken `
             -SecretSuffix $script:E2ETestSecretSuffix `

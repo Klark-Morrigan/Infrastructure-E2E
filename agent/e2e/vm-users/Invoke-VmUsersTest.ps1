@@ -142,15 +142,15 @@ function Invoke-VmUsersSetup {
     Invoke-VmProvisioningPhase1 -Config $Config -Vm1Def $vmDef
 
     Write-Host "Reconciling users via '$($Config.UsersFlow)' flow ..." -ForegroundColor Magenta
-    # $Config carries UsersFlow + AnsiblePath + WslDistro from
-    # Start-E2EAgent / Start-VmUsersTest. AnsiblePath and WslDistro
-    # are optional in the dispatcher and ignored unless
-    # UsersFlow=ansible; the agent-loop validates their presence at
-    # startup so a missing value fails before the VM is built.
+    # $Config carries UsersFlow + WslDistro from Start-E2EAgent /
+    # Start-VmUsersTest. WslDistro is optional in the dispatcher and
+    # ignored unless UsersFlow=ansible; the agent-loop validates its
+    # presence at startup so a missing value fails before the VM is built.
+    # The ansible flow's create-users.sh self-resolves the Common-Ansible
+    # substrate, so no Common-Ansible path is threaded here.
     Set-VmUsersForTest `
         -UsersFlow   $Config.UsersFlow `
         -UsersPath   $Config.UsersPath `
-        -AnsiblePath $Config.AnsiblePath `
         -WslDistro   $Config.WslDistro `
         -VmDef       $vmDef `
         -Entry       $Entry
@@ -280,16 +280,14 @@ function Invoke-VmUsersTeardown {
 
     try {
         Write-Host "Removing users via '$($Config.UsersFlow)' flow ..." -ForegroundColor Magenta
-        # $Config carries UsersFlow + AnsiblePath + WslDistro from
-        # Start-E2EAgent / Start-VmUsersTest, same chain that feeds the
-        # create-side dispatcher above. AnsiblePath / WslDistro are
-        # validated at agent startup so a misconfigured session fails
-        # before any VM is built; the dispatcher re-checks them here as
-        # belt-and-braces.
+        # $Config carries UsersFlow + WslDistro from Start-E2EAgent /
+        # Start-VmUsersTest, same chain that feeds the create-side
+        # dispatcher above. WslDistro is validated at agent startup so a
+        # misconfigured session fails before any VM is built; the
+        # dispatcher re-checks it here as belt-and-braces.
         Remove-VmUsersForTest `
             -UsersFlow   $Config.UsersFlow `
             -UsersPath   $Config.UsersPath `
-            -AnsiblePath $Config.AnsiblePath `
             -WslDistro   $Config.WslDistro `
             -VmDef       $VmDef `
             -Entry       $Entry

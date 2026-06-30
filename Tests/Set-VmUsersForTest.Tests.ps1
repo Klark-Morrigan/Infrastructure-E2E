@@ -53,7 +53,7 @@ Describe 'Set-VmUsersForTest' {
             # use a UsersPath that points at a real fixture script
             # the test creates, then assert its side effect.
             $Script:UsersPath = Join-Path $TestDrive 'Vm-Users'
-            New-Item -Path "$Script:UsersPath\hyper-v\ubuntu" -ItemType Directory -Force | Out-Null
+            New-Item -Path "$Script:UsersPath\hyper-v\ubuntu\PowerShell" -ItemType Directory -Force | Out-Null
             # Marker file the fixture script writes - asserting its
             # presence proves the dispatcher reached the create call.
             $Script:Marker = Join-Path $TestDrive 'create-users-ran.txt'
@@ -65,7 +65,7 @@ Describe 'Set-VmUsersForTest' {
             # test's value - .ps1 scripts that fall off the end leave
             # $LASTEXITCODE untouched.
             Set-Content `
-                -Path  "$Script:UsersPath\hyper-v\ubuntu\create-users.ps1" `
+                -Path  "$Script:UsersPath\hyper-v\ubuntu\PowerShell\create-users.ps1" `
                 -Value "Set-Content -Path '$Script:Marker' -Value ran; exit 0"
 
             Set-VmUsersForTest `
@@ -81,7 +81,7 @@ Describe 'Set-VmUsersForTest' {
             # exit inside a dot-script propagates to $LASTEXITCODE for
             # the call-operator path the dispatcher uses.
             Set-Content `
-                -Path  "$Script:UsersPath\hyper-v\ubuntu\create-users.ps1" `
+                -Path  "$Script:UsersPath\hyper-v\ubuntu\PowerShell\create-users.ps1" `
                 -Value 'exit 7'
 
             { Set-VmUsersForTest `
@@ -94,7 +94,7 @@ Describe 'Set-VmUsersForTest' {
 
         It 'does not invoke wsl' {
             Set-Content `
-                -Path  "$Script:UsersPath\hyper-v\ubuntu\create-users.ps1" `
+                -Path  "$Script:UsersPath\hyper-v\ubuntu\PowerShell\create-users.ps1" `
                 -Value 'exit 0'
             # Shadow wsl - if the dispatcher reaches it the test fails
             # with the marker. Function shadowing takes precedence over
@@ -116,10 +116,8 @@ Describe 'Set-VmUsersForTest' {
     # ------------------------------------------------------------------
 
         BeforeEach {
-            $Script:AnsiblePath = Join-Path $TestDrive 'Ansible'
-            New-Item -Path $Script:AnsiblePath -ItemType Directory -Force | Out-Null
-            # UsersPath is the wrapper's owner repo and now the ansible
-            # flow's Push-Location target, so it must exist on disk.
+            # UsersPath is the wrapper's owner repo and the ansible flow's
+            # Push-Location target, so it must exist on disk.
             $Script:UsersPath   = Join-Path $TestDrive 'Vm-Users'
             New-Item -Path $Script:UsersPath -ItemType Directory -Force | Out-Null
         }
@@ -127,27 +125,22 @@ Describe 'Set-VmUsersForTest' {
         It 'invokes wsl with the WslDistro targeting create-users.sh from UsersPath' {
             $Script:Captured     = [System.Collections.Generic.List[string]]::new()
             $Script:CapturedCwd  = $null
-            $Script:CapturedRoot = $null
-            $Script:CapturedWslEnv = $null
             # Function shadow for wsl. $args captures all unparsed tokens
             # so we can assert the full surface, not just presence. The
             # dispatcher anchors cwd via Push-Location instead of
             # `wsl --cd`, so we capture (Get-Location) at call time and
-            # assert it equals UsersPath (the wrapper's owner repo). We
-            # also capture COMMON_ANSIBLE_ROOT / WSLENV to prove the
-            # substrate is pinned to AnsiblePath and path-translated.
+            # assert it equals UsersPath (the wrapper's owner repo). The
+            # wrapper self-resolves the Common-Ansible substrate, so no
+            # COMMON_ANSIBLE_ROOT is set or forwarded here.
             function wsl {
                 foreach ($a in $args) { $Script:Captured.Add([string]$a) }
                 $Script:CapturedCwd    = (Get-Location).Path
-                $Script:CapturedRoot   = $env:COMMON_ANSIBLE_ROOT
-                $Script:CapturedWslEnv = $env:WSLENV
                 $global:LASTEXITCODE   = 0
             }
 
             Set-VmUsersForTest `
                 -UsersFlow   'ansible' `
                 -UsersPath   $Script:UsersPath `
-                -AnsiblePath $Script:AnsiblePath `
                 -WslDistro   'Ubuntu-24.04' `
                 -VmDef       $Script:VmDef `
                 -Entry       $Script:Entry
@@ -157,37 +150,8 @@ Describe 'Set-VmUsersForTest' {
             # it - but production wsl.exe (a native exe) does receive
             # the '--' verbatim. Assert the surrounding tokens only.
             $joined = $Script:Captured -join ' '
-            $joined | Should -Match '^-d Ubuntu-24\.04(\s+--)?\s+\./ops/create-users\.sh(\s+-vvv)?$'
+            $joined | Should -Match '^-d Ubuntu-24\.04(\s+--)?\s+\./hyper-v/ubuntu/Ansible/ops/create-users\.sh(\s+-vvv)?$'
             $Script:CapturedCwd    | Should -Be $Script:UsersPath
-            $Script:CapturedRoot   | Should -Be $Script:AnsiblePath
-            $Script:CapturedWslEnv | Should -Match 'COMMON_ANSIBLE_ROOT/p'
-        }
-
-        It 'clears COMMON_ANSIBLE_ROOT / WSLENV after the run' {
-            # The forwarding is per-invocation: it must not linger in the
-            # agent process env and bleed into a later flow.
-            function wsl { $global:LASTEXITCODE = 0 }
-            $priorWslEnv = $env:WSLENV
-
-            Set-VmUsersForTest `
-                -UsersFlow   'ansible' `
-                -UsersPath   $Script:UsersPath `
-                -AnsiblePath $Script:AnsiblePath `
-                -WslDistro   'Ubuntu-24.04' `
-                -VmDef       $Script:VmDef `
-                -Entry       $Script:Entry
-
-            $env:COMMON_ANSIBLE_ROOT | Should -BeNullOrEmpty
-            $env:WSLENV | Should -Be $priorWslEnv
-        }
-
-        It 'throws when AnsiblePath is missing' {
-            { Set-VmUsersForTest `
-                -UsersFlow 'ansible' `
-                -UsersPath $Script:UsersPath `
-                -VmDef     $Script:VmDef `
-                -Entry     $Script:Entry
-            } | Should -Throw '*requires -AnsiblePath*'
         }
 
         It 'throws with the exit code when create-users.sh fails' {
@@ -196,7 +160,6 @@ Describe 'Set-VmUsersForTest' {
             { Set-VmUsersForTest `
                 -UsersFlow   'ansible' `
                 -UsersPath   $Script:UsersPath `
-                -AnsiblePath $Script:AnsiblePath `
                 -WslDistro   'Ubuntu-24.04' `
                 -VmDef       $Script:VmDef `
                 -Entry       $Script:Entry
@@ -207,15 +170,14 @@ Describe 'Set-VmUsersForTest' {
             function wsl { $global:LASTEXITCODE = 0 }
             # Drop a poisoned create-users.ps1 - if the dispatcher reaches
             # it the test fails loudly.
-            New-Item -Path "$Script:UsersPath\hyper-v\ubuntu" -ItemType Directory -Force | Out-Null
+            New-Item -Path "$Script:UsersPath\hyper-v\ubuntu\PowerShell" -ItemType Directory -Force | Out-Null
             Set-Content `
-                -Path  "$Script:UsersPath\hyper-v\ubuntu\create-users.ps1" `
+                -Path  "$Script:UsersPath\hyper-v\ubuntu\PowerShell\create-users.ps1" `
                 -Value 'throw "ansible flow must not invoke PS create-users"'
 
             { Set-VmUsersForTest `
                 -UsersFlow   'ansible' `
                 -UsersPath   $Script:UsersPath `
-                -AnsiblePath $Script:AnsiblePath `
                 -WslDistro   'Ubuntu-24.04' `
                 -VmDef       $Script:VmDef `
                 -Entry       $Script:Entry
