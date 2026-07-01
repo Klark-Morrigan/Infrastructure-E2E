@@ -96,7 +96,9 @@ if ($MyInvocation.InvocationName -ne '.') {
     #   "ProvisionerPath":     "C:\\a_Code\\Infrastructure-Vm-Provisioner",
     #   "UsersPath":           "C:\\a_Code\\Infrastructure-Vm-Users",
     #   "RunnersPath":         "C:\\a_Code\\Infrastructure-GitHubRunners",
+    #   "UsersFlow":           "ansible",
     #   "RunnersFlow":         "custom-powershell",
+    #   "WslDistro":           "Ubuntu-24.04",
     #   "HostTarballCachePath": "C:\\cache\\github-runners",
     #   "TestVm": {
     #     "ubuntuVersion":       "24.04",
