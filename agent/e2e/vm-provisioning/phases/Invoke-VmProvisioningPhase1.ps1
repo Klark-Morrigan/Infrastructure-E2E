@@ -94,7 +94,7 @@ function Invoke-VmProvisioningPhase1 {
     Write-VmProvisionerConfig -Entries @($entry)
 
     Write-Host 'Phase 1: provisioning router + VM1 ...' -ForegroundColor Magenta
-    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
+    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\PowerShell\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
 
     # provision.ps1 ran in its own scope and the discovered router IP
     # never made it back to the test's local _RouterVm reference. Look
@@ -200,7 +200,7 @@ function Invoke-VmProvisioningPhase1 {
     # reconciler must take the diff's no-op branch for every artifact.
     Write-Host 'Phase 1: re-provisioning VM1 with unchanged JSON (no-op) ...' `
         -ForegroundColor Magenta
-    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
+    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\PowerShell\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
 
     Write-Host "Phase 1: verifying no-op rerun did not touch JDK / dotnet artifacts ..." `
         -ForegroundColor Magenta

@@ -91,7 +91,7 @@ function Invoke-VmProvisioningPhase3 {
 
     Write-Host 'Phase 3a: provisioning (version change on VM1) ...' `
         -ForegroundColor Magenta
-    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
+    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\PowerShell\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
 
     Write-Host "Phase 3a: verifying version change on $($Vm1Def.vmName) ..." `
         -ForegroundColor Magenta
@@ -194,7 +194,7 @@ function Invoke-VmProvisioningPhase3 {
 
     Write-Host 'Phase 3b: provisioning (uninstall via empty list on VM1) ...' `
         -ForegroundColor Magenta
-    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
+    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\PowerShell\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
 
     Write-Host "Phase 3b: verifying remove-via-empty on $($Vm1Def.vmName) ..." `
         -ForegroundColor Magenta

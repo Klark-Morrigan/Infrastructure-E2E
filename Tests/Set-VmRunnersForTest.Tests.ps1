@@ -34,7 +34,10 @@ Describe 'Set-VmRunnersForTest' {
             # RunnersPath that points at a real fixture script the test
             # creates, then assert its side effect.
             $Script:RunnersPath = Join-Path $TestDrive 'GitHubRunners'
-            New-Item -Path "$Script:RunnersPath\hyper-v\ubuntu" `
+            # register-runners.ps1 lives in the PowerShell/ slice (the
+            # sliced hyper-v\ubuntu layout), so the fixture dir must carry
+            # it or Set-Content on the script below has no parent to land in.
+            New-Item -Path "$Script:RunnersPath\hyper-v\ubuntu\PowerShell" `
                      -ItemType Directory -Force | Out-Null
             # Marker file the fixture script writes - asserting its
             # presence proves the dispatcher reached the register call.
@@ -263,7 +266,7 @@ exit 0
             function wsl { $global:LASTEXITCODE = 0 }
             # Drop a poisoned register-runners.ps1 - if the dispatcher
             # reaches it the test fails loudly.
-            New-Item -Path "$Script:RunnersPath\hyper-v\ubuntu" `
+            New-Item -Path "$Script:RunnersPath\hyper-v\ubuntu\PowerShell" `
                      -ItemType Directory -Force | Out-Null
             Set-Content `
                 -Path  "$Script:RunnersPath\hyper-v\ubuntu\PowerShell\register-runners.ps1" `
