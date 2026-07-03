@@ -8,10 +8,11 @@
 # Invoke-DotnetSdkVersionChangeAssertions
 #   Asserts that a 'version' change in dotnetSdk produced a clean swap on
 #   the VM, not a sticky parallel install. The reconciler should have:
-#     V1 - removed every /opt/dotnet-{previousResolvedVersion}* dir.
-#     V2 - removed every dotnetSdk-{previousResolvedVersion}*.json manifest.
-#     V3 - left exactly one dotnetSdk-*.json manifest behind, whose
-#          basename references the new resolved version.
+#     V1 - removed every {installPrefix}{previousResolvedVersion}* dir.
+#     V2 - removed every {manifestFilePrefix}{previousResolvedVersion}*.json
+#          manifest.
+#     V3 - left exactly one {manifestFilePrefix}*.json manifest behind,
+#          whose basename references the new resolved version.
 #     V4 - re-pointed /usr/local/bin/dotnet at a binary under the new
 #          install dir (readlink -f resolves through the symlink).
 #
@@ -44,7 +45,14 @@ function Invoke-DotnetSdkVersionChangeAssertions {
         # The resolver's new concrete pin (e.g. '11.0.100'). The remaining
         # manifest's basename must contain this substring so we
         # distinguish the new manifest from a left-behind old one.
-        [Parameter(Mandatory)] [string] $NewResolvedVersion
+        [Parameter(Mandatory)] [string] $NewResolvedVersion,
+
+        # Manifest store directory, no trailing slash.
+        [string] $ManifestStoreDir = '/var/lib/infra-provisioner/manifests',
+
+        # Manifest filename prefix; the store is probed with the glob
+        # '<prefix>*.json'. The Ansible engine passes 'dotnet_sdk-'.
+        [string] $ManifestFilePrefix = 'dotnetSdk-'
     )
 
     # V1) Old install dir glob produces zero matches.
@@ -71,8 +79,8 @@ function Invoke-DotnetSdkVersionChangeAssertions {
     #          basename should reference the new version (not the old).
     $result = Invoke-SshClientCommand `
         -SshClient $SshClient `
-        -Command  ("ls -1 /var/lib/infra-provisioner/manifests/" +
-                   "dotnetSdk-*.json")
+        -Command  ("ls -1 $ManifestStoreDir/" +
+                   "$ManifestFilePrefix*.json")
     if ($result.ExitStatus -ne 0) {
         throw "Manifest listing failed on $VmName " +
             "(exit $($result.ExitStatus)): $($result.Error)"
@@ -81,8 +89,9 @@ function Invoke-DotnetSdkVersionChangeAssertions {
         -not [string]::IsNullOrWhiteSpace($_)
     } | ForEach-Object { $_.Trim() })
     if ($paths.Count -ne 1) {
-        throw "Expected exactly one dotnetSdk manifest on $VmName after " +
-            "version change, found $($paths.Count): $($paths -join ', '). " +
+        throw "Expected exactly one $ManifestFilePrefix*.json manifest on " +
+            "$VmName after version change, " +
+            "found $($paths.Count): $($paths -join ', '). " +
             "Version change left stale manifest(s) behind."
     }
     $manifestBasename = Split-Path -Leaf $paths[0]

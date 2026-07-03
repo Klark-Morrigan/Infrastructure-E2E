@@ -9,7 +9,14 @@
 # (Infrastructure-Vm-Provisioner feature 43, steps 3-6) install global .NET tools
 # system-wide under /usr/local/share/dotnet/tools/ with per-command symlinks
 # under /usr/local/bin/ and a manifest at
-# /var/lib/infra-provisioner/manifests/dotnetTools-{id}-{rawVersion}.json.
+# {manifestStoreDir}/{manifestFilePrefix}{id}-{rawVersion}.json.
+#
+# The manifest store dir and filename prefixes differ by provisioning engine
+# and are parameters on each helper, defaulting to the PowerShell
+# reconciler's layout (/var/lib/infra-provisioner/manifests, 'dotnetTools-',
+# parent SDK prefix 'dotnetSdk-'); the Ansible toolchain engine passes
+# /var/lib/common-ansible/toolchains/manifests, 'dotnettool-', and
+# 'dotnet_sdk-'. The tools root is identical across engines.
 #
 # This file ships three assertion helpers - install, version-change, removed -
 # that mirror the JDK and dotnet SDK assertion files. The interleaved
@@ -30,15 +37,12 @@
 # enforced by phase 2a / phase 3b's "no dotnetTools-*.json leftover" check.
 # ---------------------------------------------------------------------------
 
-# Manifest store path. Hardcoded here (not derived from a provisioner-side
-# constant) because the E2E agent is a separate process tree and has no
-# load-bearing reason to import the provisioner module just for this string.
-$script:DotnetToolsManifestStore = '/var/lib/infra-provisioner/manifests'
-
 # tools-root is the public contract of the provider; changing it would break
-# every existing manifest's ownedPaths. Hardcoded for the same reason as the
-# manifest store path above.
-$script:DotnetToolsRoot          = '/usr/local/share/dotnet/tools'
+# every existing manifest's ownedPaths. Hardcoded here (not derived from a
+# provisioner-side constant) because the E2E agent is a separate process
+# tree and has no load-bearing reason to import the provisioner module just
+# for this string.
+$script:DotnetToolsRoot = '/usr/local/share/dotnet/tools'
 
 # ---------------------------------------------------------------------------
 # Invoke-DotnetToolsInstallAssertions
@@ -77,13 +81,25 @@ function Invoke-DotnetToolsInstallAssertions {
 
         # Command name the tool installs - same string DotnetToolsProvider
         # records under manifest.commands and under /usr/local/bin/{cmd}.
-        [Parameter(Mandatory)] [string] $Command
+        [Parameter(Mandatory)] [string] $Command,
+
+        # Manifest store directory, no trailing slash.
+        [string] $ManifestStoreDir = '/var/lib/infra-provisioner/manifests',
+
+        # Tool-manifest filename prefix; the manifest is expected at
+        # '<prefix><id>-<version>.json'. The Ansible engine passes
+        # 'dotnettool-'.
+        [string] $ManifestFilePrefix = 'dotnetTools-',
+
+        # Parent SDK manifest filename prefix, used by the I5 walker-contract
+        # check. The Ansible engine passes 'dotnet_sdk-'.
+        [string] $SdkManifestFilePrefix = 'dotnetSdk-'
     )
 
     $storeDir    = "$($script:DotnetToolsRoot)/.store/$ToolId/$ToolVersion"
     $shimPath    = "$($script:DotnetToolsRoot)/$Command"
     $symlinkPath = "/usr/local/bin/$Command"
-    $manifestPath = "$($script:DotnetToolsManifestStore)/dotnetTools-$ToolId-$ToolVersion.json"
+    $manifestPath = "$ManifestStoreDir/$ManifestFilePrefix$ToolId-$ToolVersion.json"
 
     # I1) .store dir present. test -d is the cheapest probe.
     $result = Invoke-SshClientCommand `
@@ -198,8 +214,8 @@ function Invoke-DotnetToolsInstallAssertions {
     #     single match.
     $result = Invoke-SshClientCommand `
         -SshClient $SshClient `
-        -Command  ("bash -c 'ls -1 $($script:DotnetToolsManifestStore)/" +
-                   "dotnetSdk-*.json'")
+        -Command  ("bash -c 'ls -1 $ManifestStoreDir/" +
+                   "$SdkManifestFilePrefix*.json'")
     if ($result.ExitStatus -ne 0) {
         throw "SDK manifest listing failed on $VmName " +
             "(exit $($result.ExitStatus)): $($result.Error)"
@@ -208,7 +224,8 @@ function Invoke-DotnetToolsInstallAssertions {
         -not [string]::IsNullOrWhiteSpace($_)
     } | ForEach-Object { $_.Trim() })
     if ($sdkManifestPaths.Count -ne 1) {
-        throw "Expected exactly one dotnetSdk manifest on $VmName, " +
+        throw "Expected exactly one $SdkManifestFilePrefix*.json manifest " +
+            "on $VmName, " +
             "found $($sdkManifestPaths.Count): $($sdkManifestPaths -join ', ')."
     }
     $result = Invoke-SshClientCommand `
@@ -263,13 +280,21 @@ function Invoke-DotnetToolsVersionChangeAssertions {
         [Parameter(Mandatory)] [string] $ToolId,
         [Parameter(Mandatory)] [string] $PreviousVersion,
         [Parameter(Mandatory)] [string] $NewVersion,
-        [Parameter(Mandatory)] [string] $Command
+        [Parameter(Mandatory)] [string] $Command,
+
+        # Manifest store directory, no trailing slash.
+        [string] $ManifestStoreDir = '/var/lib/infra-provisioner/manifests',
+
+        # Tool-manifest filename prefix; the manifest is expected at
+        # '<prefix><id>-<version>.json'. The Ansible engine passes
+        # 'dotnettool-'.
+        [string] $ManifestFilePrefix = 'dotnetTools-'
     )
 
     $oldStore        = "$($script:DotnetToolsRoot)/.store/$ToolId/$PreviousVersion"
     $newStore        = "$($script:DotnetToolsRoot)/.store/$ToolId/$NewVersion"
-    $oldManifest     = "$($script:DotnetToolsManifestStore)/dotnetTools-$ToolId-$PreviousVersion.json"
-    $newManifest     = "$($script:DotnetToolsManifestStore)/dotnetTools-$ToolId-$NewVersion.json"
+    $oldManifest     = "$ManifestStoreDir/$ManifestFilePrefix$ToolId-$PreviousVersion.json"
+    $newManifest     = "$ManifestStoreDir/$ManifestFilePrefix$ToolId-$NewVersion.json"
     $symlinkPath     = "/usr/local/bin/$Command"
 
     # V1) Old .store entry gone.
@@ -356,9 +381,9 @@ function Invoke-DotnetToolsVersionChangeAssertions {
 #   Asserts the tool removal path produced no orphans:
 #     U1 - .store entries for the tool (any version) are gone.
 #     U2 - /usr/local/bin/{cmd} symlink removed.
-#     U3 - No dotnetTools-*.json manifest remains for the tool id (across
-#          any version - guards the orphan-after-walker case the plan's
-#          step 7 step 4 regression guard cares about).
+#     U3 - No '<manifest-file-prefix><id>-*.json' manifest remains for the
+#          tool id (across any version - guards the orphan-after-walker
+#          case the plan's step 7 step 4 regression guard cares about).
 #
 #   ToolVersion is optional: when supplied, U3 asserts no manifest with
 #   that exact rawVersion remains; when omitted, U3 asserts no manifest
@@ -371,7 +396,14 @@ function Invoke-DotnetToolsUninstallAssertions {
         [Parameter(Mandatory)] [object] $SshClient,
         [Parameter(Mandatory)] [string] $VmName,
         [Parameter(Mandatory)] [string] $ToolId,
-        [Parameter(Mandatory)] [string] $Command
+        [Parameter(Mandatory)] [string] $Command,
+
+        # Manifest store directory, no trailing slash.
+        [string] $ManifestStoreDir = '/var/lib/infra-provisioner/manifests',
+
+        # Tool-manifest filename prefix for the U3 leftover glob. The
+        # Ansible engine passes 'dotnettool-'.
+        [string] $ManifestFilePrefix = 'dotnetTools-'
     )
 
     $storeRoot   = "$($script:DotnetToolsRoot)/.store/$ToolId"
@@ -411,24 +443,24 @@ function Invoke-DotnetToolsUninstallAssertions {
     }
     Write-Host "  [OK] U2: symlink removed ($symlinkPath)" -ForegroundColor Green
 
-    # U3) No dotnetTools-*.json manifest left for the id. The glob
-    #     embeds the id so a manifest for a sibling tool (none in this
-    #     scenario, but cheap to be specific) is not falsely flagged.
+    # U3) No tool manifest left for the id. The glob embeds the id so a
+    #     manifest for a sibling tool (none in this scenario, but cheap
+    #     to be specific) is not falsely flagged.
     $result = Invoke-SshClientCommand `
         -SshClient $SshClient `
-        -Command  ("bash -c 'ls -1 $($script:DotnetToolsManifestStore)/" +
-                   "dotnetTools-$ToolId-*.json 2>/dev/null || true'")
+        -Command  ("bash -c 'ls -1 $ManifestStoreDir/" +
+                   "$ManifestFilePrefix$ToolId-*.json 2>/dev/null || true'")
     if ($result.ExitStatus -ne 0) {
         throw "Manifest leftover probe failed on $VmName " +
             "(exit $($result.ExitStatus)): $($result.Error)"
     }
     $leftover = $result.Output.Trim()
     if (-not [string]::IsNullOrEmpty($leftover)) {
-        throw "Leftover dotnetTools manifest(s) on ${VmName}: $leftover. " +
+        throw "Leftover dotnet-tool manifest(s) on ${VmName}: $leftover. " +
             "The walker (or the explicit tool uninstall path) left orphan " +
             "manifests behind - the next reconciliation will fail on a " +
             "tool whose .store entry no longer exists."
     }
-    Write-Host "  [OK] U3: no dotnetTools-$ToolId-*.json manifest leftover" `
-        -ForegroundColor Green
+    Write-Host ("  [OK] U3: no $ManifestFilePrefix$ToolId-*.json " +
+        "manifest leftover") -ForegroundColor Green
 }

@@ -7,11 +7,11 @@
 # ---------------------------------------------------------------------------
 # Invoke-JdkVersionChangeAssertions
 #   Asserts that a 'version' change in javaDevKit produced a clean swap on
-#   the VM, not a sticky parallel install. The reconciler should have:
-#     V1 - removed every /opt/jdk-{vendor}-{previousVersion}* dir.
-#     V2 - removed every javaDevKit-{previousVersion}*.json manifest.
-#     V3 - left exactly one javaDevKit-*.json manifest behind, whose
-#          basename references the new version.
+#   the VM, not a sticky parallel install. The engine should have:
+#     V1 - removed every {installPrefix}{previousVersion}* dir.
+#     V2 - removed every {manifestFilePrefix}{previousVersion}*.json manifest.
+#     V3 - left exactly one {manifestFilePrefix}*.json manifest behind,
+#          whose basename references the new version.
 #     V4 - re-pointed /usr/local/bin/java at a binary under the new
 #          install dir (readlink -f resolves through the symlink).
 #
@@ -28,10 +28,6 @@ function Invoke-JdkVersionChangeAssertions {
         [Parameter(Mandatory)] [object] $SshClient,
         [Parameter(Mandatory)] [string] $VmName,
 
-        # Vendor-prefix shared by both old and new install dirs,
-        # e.g. '/opt/jdk-temurin-'. Used for the cleanup glob.
-        [Parameter(Mandatory)] [string] $InstallPrefix,
-
         # The operator's previous-version pin (e.g. '17'). Concatenated
         # onto $InstallPrefix to form the cleanup glob. Substring match
         # (not exact) because the resolver expands '17' to '17.0.x+y'.
@@ -40,7 +36,18 @@ function Invoke-JdkVersionChangeAssertions {
         # The operator's new-version pin (e.g. '21'). The remaining
         # manifest's basename must contain this substring so we
         # distinguish the new manifest from a left-behind old one.
-        [Parameter(Mandatory)] [string] $NewRequestedVersion
+        [Parameter(Mandatory)] [string] $NewRequestedVersion,
+
+        # Prefix shared by both old and new install dirs; used for the
+        # cleanup glob. The Ansible engine passes '/opt/jdk-'.
+        [string] $InstallPrefix = '/opt/jdk-temurin-',
+
+        # Manifest store directory, no trailing slash.
+        [string] $ManifestStoreDir = '/var/lib/infra-provisioner/manifests',
+
+        # Manifest filename prefix; the store is probed with the glob
+        # '<prefix>*.json'. The Ansible engine passes 'jdk-'.
+        [string] $ManifestFilePrefix = 'javaDevKit-'
     )
 
     # V1) Old install dir glob produces zero matches.
@@ -67,8 +74,8 @@ function Invoke-JdkVersionChangeAssertions {
     #          basename should reference the new version (not the old).
     $result = Invoke-SshClientCommand `
         -SshClient $SshClient `
-        -Command  ("ls -1 /var/lib/infra-provisioner/manifests/" +
-                   "javaDevKit-*.json")
+        -Command  ("ls -1 $ManifestStoreDir/" +
+                   "$ManifestFilePrefix*.json")
     if ($result.ExitStatus -ne 0) {
         throw "Manifest listing failed on $VmName " +
             "(exit $($result.ExitStatus)): $($result.Error)"
@@ -77,8 +84,9 @@ function Invoke-JdkVersionChangeAssertions {
         -not [string]::IsNullOrWhiteSpace($_)
     } | ForEach-Object { $_.Trim() })
     if ($paths.Count -ne 1) {
-        throw "Expected exactly one javaDevKit manifest on $VmName after " +
-            "version change, found $($paths.Count): $($paths -join ', '). " +
+        throw "Expected exactly one $ManifestFilePrefix*.json manifest on " +
+            "$VmName after version change, " +
+            "found $($paths.Count): $($paths -join ', '). " +
             "Version change left stale manifest(s) behind."
     }
     $manifestBasename = Split-Path -Leaf $paths[0]

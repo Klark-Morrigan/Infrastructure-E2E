@@ -21,18 +21,18 @@
 #          that survive a login-shell-only cleanup.
 #     A5 - No stale /usr/local/bin symlinks pointing into the removed
 #          /opt/jdk-{vendor}-* directory.
-#     A6 - No javaDevKit-*.json manifest under
-#          /var/lib/infra-provisioner/manifests/. The manifest is the
-#          reconciler's truth source; a leftover here would cause the
-#          next reconciliation to re-uninstall (or fail) on already-gone
-#          artifacts.
+#     A6 - No '<manifest-file-prefix>*.json' manifest under the manifest
+#          store. The manifest is the engine's truth source; a leftover
+#          here would cause the next reconciliation to re-uninstall (or
+#          fail) on already-gone artifacts.
 #
 #   Throws on the first failure with a message naming the VM and the
 #   observed value. The outer try/finally in Invoke-VmProvisioningTest still
 #   runs teardown.
 #
-#   $InstallPrefix is passed in so the caller decides what vendor prefix is
-#   expected on disk (symmetric with Invoke-JdkInstallAssertions).
+#   Engine-specific paths (install prefix, manifest store dir, manifest
+#   filename prefix) are parameters defaulting to the PowerShell
+#   reconciler's layout (symmetric with Invoke-JdkInstallAssertions).
 # ---------------------------------------------------------------------------
 
 function Invoke-JdkUninstallAssertions {
@@ -44,10 +44,17 @@ function Invoke-JdkUninstallAssertions {
         [Parameter(Mandatory)]
         [string] $VmName,
 
-        # Expected on-disk install prefix, e.g. '/opt/jdk-temurin-'. Used
-        # for the glob check (A1) and the symlink-target check (A5).
-        [Parameter(Mandatory)]
-        [string] $InstallPrefix
+        # Expected on-disk install prefix. Used for the glob check (A1)
+        # and the symlink-target check (A5). The Ansible engine passes
+        # '/opt/jdk-' (no vendor infix).
+        [string] $InstallPrefix = '/opt/jdk-temurin-',
+
+        # Manifest store directory, no trailing slash.
+        [string] $ManifestStoreDir = '/var/lib/infra-provisioner/manifests',
+
+        # Manifest filename prefix; the store is probed with the glob
+        # '<prefix>*.json'. The Ansible engine passes 'jdk-'.
+        [string] $ManifestFilePrefix = 'javaDevKit-'
     )
 
     # A1) Install dir gone. shopt -s nullglob so 'ls -d' on an empty glob
@@ -149,8 +156,8 @@ function Invoke-JdkUninstallAssertions {
     #     printed path is a leak.
     $result = Invoke-SshClientCommand `
         -SshClient $SshClient `
-        -Command  ("bash -c 'ls -1 /var/lib/infra-provisioner/manifests/" +
-                   "javaDevKit-*.json 2>/dev/null || true'")
+        -Command  ("bash -c 'ls -1 $ManifestStoreDir/" +
+                   "$ManifestFilePrefix*.json 2>/dev/null || true'")
     if ($result.ExitStatus -ne 0) {
         throw "Manifest leftover probe failed on $VmName " +
             "(exit $($result.ExitStatus)): $($result.Error)"
@@ -158,9 +165,9 @@ function Invoke-JdkUninstallAssertions {
     $leftover = $result.Output.Trim()
     if (-not [string]::IsNullOrEmpty($leftover)) {
         throw "Leftover JDK manifest(s) on ${VmName}: $leftover. " +
-            "The reconciler's truth source still claims an install - the " +
+            "The engine's truth source still claims an install - the " +
             "next reconciliation will re-attempt teardown."
     }
-    Write-Host '  [OK] A6: no javaDevKit-*.json manifest leftover' `
+    Write-Host "  [OK] A6: no $ManifestFilePrefix*.json manifest leftover" `
         -ForegroundColor Green
 }

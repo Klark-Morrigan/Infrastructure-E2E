@@ -6,7 +6,7 @@
 
 # ---------------------------------------------------------------------------
 # Get-DotnetSdkArtifactSnapshot
-#   Snapshots the mtimes of the three .NET SDK artifacts the reconciler owns
+#   Snapshots the mtimes of the three .NET SDK artifacts the engine owns
 #   on a VM (install dir, profile.d script, manifest file). Used in pairs:
 #   once before a no-op re-provision, once after; equality across both
 #   snapshots proves the reconciler took the no-op branch and did not
@@ -27,7 +27,13 @@ function Get-DotnetSdkArtifactSnapshot {
 
         # Install prefix, e.g. '/opt/dotnet-'. Resolved to a concrete
         # install dir via a glob below.
-        [Parameter(Mandatory)] [string] $InstallPrefix
+        [Parameter(Mandatory)] [string] $InstallPrefix,
+
+        # Manifest store dir + filename prefix; engine parameters with
+        # PowerShell-reconciler defaults (the Ansible engine passes its
+        # own store and 'dotnet_sdk-').
+        [string] $ManifestStoreDir = '/var/lib/infra-provisioner/manifests',
+        [string] $ManifestFilePrefix = 'dotnetSdk-'
     )
 
     # One-shot stat across the three known globs. stat prints
@@ -37,7 +43,7 @@ function Get-DotnetSdkArtifactSnapshot {
     $cmd = (
         "stat -c '%n %Y' ${InstallPrefix}* " +
             "/etc/profile.d/dotnet.sh " +
-            "/var/lib/infra-provisioner/manifests/dotnetSdk-*.json"
+            "$ManifestStoreDir/$ManifestFilePrefix*.json"
     )
 
     $result = Invoke-SshClientCommand -SshClient $SshClient -Command $cmd
@@ -63,7 +69,7 @@ function Get-DotnetSdkArtifactSnapshot {
         elseif ($path -eq '/etc/profile.d/dotnet.sh') {
             $snapshot.ProfileMtime = $mtime
         }
-        elseif ($path.StartsWith('/var/lib/infra-provisioner/manifests/')) {
+        elseif ($path.StartsWith("$ManifestStoreDir/")) {
             $snapshot.ManifestPath  = $path
             $snapshot.ManifestMtime = $mtime
         }
@@ -97,11 +103,17 @@ function Invoke-DotnetSdkNoopAssertions {
 
         # Snapshot from Get-DotnetSdkArtifactSnapshot taken before the
         # no-op provision run. Must have come from the same VM.
-        [Parameter(Mandatory)] [PSCustomObject] $PreviousSnapshot
+        [Parameter(Mandatory)] [PSCustomObject] $PreviousSnapshot,
+
+        # Engine parameters forwarded to Get-DotnetSdkArtifactSnapshot;
+        # must match the values the previous snapshot was taken with.
+        [string] $ManifestStoreDir = '/var/lib/infra-provisioner/manifests',
+        [string] $ManifestFilePrefix = 'dotnetSdk-'
     )
 
     $now = Get-DotnetSdkArtifactSnapshot `
-        -SshClient $SshClient -VmName $VmName -InstallPrefix $InstallPrefix
+        -SshClient $SshClient -VmName $VmName -InstallPrefix $InstallPrefix `
+        -ManifestStoreDir $ManifestStoreDir -ManifestFilePrefix $ManifestFilePrefix
 
     if ($now.InstallDir -ne $PreviousSnapshot.InstallDir) {
         throw "Install dir changed across no-op rerun on $VmName " +

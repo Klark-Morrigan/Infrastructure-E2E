@@ -21,11 +21,14 @@
 #     A5 - /usr/local/bin/dotnet symlink is gone (not just orphaned). The
 #          install only ever creates one symlink, so this is a presence
 #          check rather than a target-prefix scan.
-#     A6 - No dotnetSdk-*.json manifest under
-#          /var/lib/infra-provisioner/manifests/. The manifest is the
-#          reconciler's truth source; a leftover here would cause the
-#          next reconciliation to re-uninstall (or fail) on already-gone
-#          artefacts.
+#     A6 - No '<manifest-file-prefix>*.json' manifest under the manifest
+#          store. The manifest is the engine's truth source; a leftover
+#          here would cause the next reconciliation to re-uninstall (or
+#          fail) on already-gone artefacts.
+#
+#   The manifest store dir and filename prefix are engine parameters with
+#   PowerShell-reconciler defaults (symmetric with
+#   Invoke-DotnetSdkInstallAssertions).
 #
 #   Throws on the first failure with a message naming the VM and the
 #   observed value. The outer try/finally in Invoke-VmProvisioningTest still
@@ -44,7 +47,14 @@ function Invoke-DotnetSdkUninstallAssertions {
         # Expected on-disk install prefix, e.g. '/opt/dotnet-'. Used for
         # the glob check (A1).
         [Parameter(Mandatory)]
-        [string] $InstallPrefix
+        [string] $InstallPrefix,
+
+        # Manifest store directory, no trailing slash.
+        [string] $ManifestStoreDir = '/var/lib/infra-provisioner/manifests',
+
+        # Manifest filename prefix; the store is probed with the glob
+        # '<prefix>*.json'. The Ansible engine passes 'dotnet_sdk-'.
+        [string] $ManifestFilePrefix = 'dotnetSdk-'
     )
 
     # A1) Install dir gone. shopt -s nullglob so 'ls -d' on an empty glob
@@ -161,8 +171,8 @@ function Invoke-DotnetSdkUninstallAssertions {
     # A6) No leftover manifest. Any printed path is a leak.
     $result = Invoke-SshClientCommand `
         -SshClient $SshClient `
-        -Command  ("bash -c 'ls -1 /var/lib/infra-provisioner/manifests/" +
-                   "dotnetSdk-*.json 2>/dev/null || true'")
+        -Command  ("bash -c 'ls -1 $ManifestStoreDir/" +
+                   "$ManifestFilePrefix*.json 2>/dev/null || true'")
     if ($result.ExitStatus -ne 0) {
         throw "Manifest leftover probe failed on $VmName " +
             "(exit $($result.ExitStatus)): $($result.Error)"
@@ -170,9 +180,9 @@ function Invoke-DotnetSdkUninstallAssertions {
     $leftover = $result.Output.Trim()
     if (-not [string]::IsNullOrEmpty($leftover)) {
         throw "Leftover dotnet SDK manifest(s) on ${VmName}: $leftover. " +
-            "The reconciler's truth source still claims an install - the " +
+            "The engine's truth source still claims an install - the " +
             "next reconciliation will re-attempt teardown."
     }
-    Write-Host '  [OK] A6: no dotnetSdk-*.json manifest leftover' `
+    Write-Host "  [OK] A6: no $ManifestFilePrefix*.json manifest leftover" `
         -ForegroundColor Green
 }

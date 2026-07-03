@@ -330,6 +330,21 @@ workstations. The file-transfer fixtures live under
 is computed per workstation. VM2's IP is derived from VM1's by
 incrementing the last octet - operator config still pins a single IP.
 
+The jdk / dotnet toolchain assertion helpers (under
+`agent/e2e/vm-provisioning/assertions/`) take the engine-specific parts
+of the on-disk layout as parameters: the manifest store directory, the
+manifest filename prefix (the store is probed with the glob
+`<prefix>*.json`), and the JDK install prefix. Every parameter defaults
+to the PowerShell reconciler's layout
+(`/var/lib/infra-provisioner/manifests`; `javaDevKit-` / `dotnetSdk-` /
+`dotnetTools-`; `/opt/jdk-temurin-`), so the phase files pass nothing
+and keep driving the `custom-powershell` flow unchanged. A caller
+driving the Common-Ansible toolchain engine reuses the same end-state
+checks by passing that engine's store
+(`/var/lib/common-ansible/toolchains/manifests`), filename prefixes
+(`jdk-` / `dotnet_sdk-` / `dotnettool-`), and the `/opt/jdk-` install
+prefix.
+
 ```powershell
 # Standard VmLAN setup - no arguments needed:
 .\agent\e2e\vm-provisioning\Start-VmProvisioningTest.ps1
