@@ -15,8 +15,17 @@
 # and are parameters on each helper, defaulting to the PowerShell
 # reconciler's layout (/var/lib/infra-provisioner/manifests, 'dotnetTools-',
 # parent SDK prefix 'dotnetSdk-'); the Ansible toolchain engine passes
-# /var/lib/common-ansible/toolchains/manifests, 'dotnettool-', and
-# 'dotnet_sdk-'. The tools root is identical across engines.
+# /var/lib/common-ansible/toolchains/manifests and 'dotnettool-'. The tools
+# root is identical across engines.
+#
+# The manifest CONTENT schema also differs, and only the install assertion
+# reads it (I4's rawVersion / ownedSymlinks fields + I5's parent-SDK
+# 'children' walker link). The Ansible engine tracks tool manifests
+# independently - no children array, its SDK manifest is 'dotnet-<v>.json'
+# with no tool references, and its field names differ - and verifies that
+# schema in its own molecule tests, so its caller passes
+# -SkipReconcilerManifestSchema to run only the engine-agnostic I1/I2/I3 +
+# manifest-presence checks.
 #
 # This file ships three assertion helpers - install, version-change, removed -
 # that mirror the JDK and dotnet SDK assertion files. The interleaved
@@ -53,11 +62,14 @@ $script:DotnetToolsRoot = '/usr/local/share/dotnet/tools'
 #          NOT inside .store - see DotnetToolsProvider.Install-Version.ps1).
 #     I3 - Invoking the tool via the symlink (non-login bash -c, the shape
 #          systemd/sshd-exec uses) exits 0 and reports the expected version.
-#     I4 - A dotnetTools-{id}-{rawVersion}.json manifest is present and
-#          (after JSON parse) records id, rawVersion, and the expected
-#          ownedSymlinks entry.
-#     I5 - The parent dotnetSdk manifest's children array references the
-#          tool manifest path (walker contract from feature 42 Phase A).
+#     I4 - A {manifestFilePrefix}{id}-{version}.json manifest is present.
+#          Under the reconciler it is then parsed and its id / rawVersion /
+#          ownedSymlinks asserted; -SkipReconcilerManifestSchema stops at
+#          the presence check (the Ansible manifest schema differs and is
+#          the role's own molecule concern).
+#     I5 - The parent SDK manifest's children array references the tool
+#          manifest path (walker contract from feature 42 Phase A).
+#          Reconciler-only; skipped under -SkipReconcilerManifestSchema.
 #
 #   The version-comparison strategy is `--version` exact-match because the
 #   plan pins specific reportgenerator releases. Throws on the first failure
@@ -91,9 +103,23 @@ function Invoke-DotnetToolsInstallAssertions {
         # 'dotnettool-'.
         [string] $ManifestFilePrefix = 'dotnetTools-',
 
-        # Parent SDK manifest filename prefix, used by the I5 walker-contract
-        # check. The Ansible engine passes 'dotnet_sdk-'.
-        [string] $SdkManifestFilePrefix = 'dotnetSdk-'
+        # Parent SDK manifest filename prefix, used only by the I5
+        # walker-contract check (reconciler-only; see
+        # -SkipReconcilerManifestSchema). Reconciler default 'dotnetSdk-'.
+        [string] $SdkManifestFilePrefix = 'dotnetSdk-',
+
+        # Skip the checks that assert the PowerShell reconciler's manifest
+        # CONTENT schema: I4's rawVersion / ownedSymlinks field assertions
+        # and I5's parent-SDK 'children' walker link. The Ansible toolchain
+        # engine writes a different manifest schema (version / symlinks, and
+        # no children array - its dotnet_tools role tracks tool manifests
+        # independently and tears down by role order, not a walker) and
+        # verifies that schema in its own molecule tests. The observable
+        # end-state these stand in for stays covered here by I1 (the .store
+        # path encodes the version), I2 (the symlink resolves), I3 (apphost
+        # launch), and the tool-manifest presence probe below. Default off
+        # keeps the reconciler assertions verbatim.
+        [switch] $SkipReconcilerManifestSchema
     )
 
     $storeDir    = "$($script:DotnetToolsRoot)/.store/$ToolId/$ToolVersion"
@@ -181,9 +207,21 @@ function Invoke-DotnetToolsInstallAssertions {
     }
     $manifestRaw = $result.Output
     if ($manifestRaw.Trim() -eq 'absent') {
-        throw "Manifest $manifestPath missing on $VmName. The reconciler's " +
+        throw "Manifest $manifestPath missing on $VmName. The engine's " +
             "truth source for the tool install is gone."
     }
+
+    # Ansible engine: the manifest content schema differs (version /
+    # symlinks, no children) and is verified by that role's own molecule
+    # tests. Stop after confirming the manifest exists - I1/I2/I3 above
+    # already cover the observable end-state the reconciler fields below
+    # (and the I5 walker link) stand in for.
+    if ($SkipReconcilerManifestSchema) {
+        Write-Host "  [OK] I4: tool manifest present ($manifestPath)" `
+            -ForegroundColor Green
+        return
+    }
+
     $manifest = $null
     try {
         $manifest = $manifestRaw | ConvertFrom-Json -ErrorAction Stop

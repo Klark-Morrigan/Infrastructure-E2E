@@ -76,30 +76,40 @@ Describe 'Invoke-DotnetToolsInstallAssertions' {
         ).Count | Should -Be 1
     }
 
-    It 'probes the common-ansible store and manifest prefixes when overridden' {
+    It 'stops at manifest presence under the ansible engine (skips reconciler content + walker)' {
         $toolManifestPath = '/var/lib/common-ansible/toolchains/manifests/' +
             "dotnettool-$($script:ToolId)-5.4.4.json"
-        $script:SshRules = New-ToolsInstallRules `
-            -ToolManifestPath $toolManifestPath `
-            -SdkManifestPath  ('/var/lib/common-ansible/toolchains/manifests/' +
-                'dotnet_sdk-8.0.100.json')
+        # The real Ansible manifest schema: version / symlinks, no children
+        # and no rawVersion / ownedSymlinks. Under -SkipReconcilerManifestSchema
+        # it is not parsed - only its presence matters - and no parent-SDK
+        # manifest probe is issued (I5 is reconciler-only).
+        $ansibleManifest = @{
+            schema_version = 1
+            id             = $script:ToolId
+            version        = '5.4.4'
+            symlinks       = @(@{ path = "/usr/local/bin/$($script:ToolCmd)" })
+        } | ConvertTo-Json -Depth 5
+        $script:SshRules = @(
+            @{ Match = '*test -d*'; Output = 'present' }
+            @{ Match = '*test -L*'; Output = "/usr/local/share/dotnet/tools/$($script:ToolCmd)" }
+            @{ Match = '*test -f*'; Output = $ansibleManifest }
+        )
 
         { Invoke-DotnetToolsInstallAssertions -SshClient ([object]::new()) `
             -VmName 'vm1' -ToolId $script:ToolId -ToolVersion '5.4.4' `
             -Command $script:ToolCmd `
-            -ManifestStoreDir      '/var/lib/common-ansible/toolchains/manifests' `
-            -ManifestFilePrefix    'dotnettool-' `
-            -SdkManifestFilePrefix 'dotnet_sdk-' } | Should -Not -Throw
+            -ManifestStoreDir   '/var/lib/common-ansible/toolchains/manifests' `
+            -ManifestFilePrefix 'dotnettool-' `
+            -SkipReconcilerManifestSchema } | Should -Not -Throw
 
         @($script:IssuedCommands -like "*test -f*$toolManifestPath*").Count |
             Should -Be 1
-        @($script:IssuedCommands -like `
-            '*ls -1 /var/lib/common-ansible/toolchains/manifests/dotnet_sdk-*.json*'
-        ).Count | Should -Be 1
+        # I5 (parent-SDK walker link) is reconciler-only: no manifest
+        # listing is issued under the skip switch.
+        @($script:IssuedCommands -like '*ls -1*manifests*').Count | Should -Be 0
         # No probe may keep pointing at the reconciler layout.
         @($script:IssuedCommands -like '*infra-provisioner*').Count | Should -Be 0
         @($script:IssuedCommands -like '*dotnetTools-*').Count      | Should -Be 0
-        @($script:IssuedCommands -like '*dotnetSdk-*').Count        | Should -Be 0
     }
 }
 
