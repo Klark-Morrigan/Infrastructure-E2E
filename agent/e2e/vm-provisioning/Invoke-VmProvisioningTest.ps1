@@ -44,6 +44,10 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 . "$PSScriptRoot\assertions\env-vars\Invoke-EnvVarsAppliedAssertions.ps1"
 . "$PSScriptRoot\assertions\env-vars\Invoke-EnvVarsRemovedAssertions.ps1"
 . "$PSScriptRoot\Resolve-RouterIpFromKvp.ps1"
+# Toolchain-flow dispatcher (custom-powershell reconciler vs the Ansible
+# provision-toolchains.sh driver). Dot-sourced before the phase files so
+# they can call Set-VmToolchainsForTest / New-ToolchainDesiredState.
+. "$PSScriptRoot\Set-VmToolchainsForTest.ps1"
 
 # ---------------------------------------------------------------------------
 # Test scenario constants
@@ -127,6 +131,20 @@ $script:DotnetInitialResolvedVersion   = '8.0.100'
 $script:DotnetReinstallChannel         = '9.0'
 $script:DotnetReinstallResolvedVersion = '9.0.100'
 $script:DotnetInstallPrefix            = '/opt/dotnet-'
+
+# Ansible-engine on-disk layout. Under ToolchainsFlow=ansible the
+# Common-Ansible toolchain_host_push roles install the JDK to /opt/jdk-<v>
+# (no vendor infix) and write their manifests to a different store with
+# different filename prefixes than the PowerShell reconciler. The phases
+# feed these to the engine-parameterized assertions (step 5.5-A.5) so the
+# same end-state checks run against whichever engine placed the toolchain.
+# The .NET SDK install prefix (/opt/dotnet-) is identical across engines,
+# so it is reused from $script:DotnetInstallPrefix rather than redeclared.
+$script:AnsibleJdkInstallPrefix   = '/opt/jdk-'
+$script:AnsibleManifestStoreDir   = '/var/lib/common-ansible/toolchains/manifests'
+$script:AnsibleJdkManifestPrefix  = 'jdk-'
+$script:AnsibleSdkManifestPrefix  = 'dotnet-'
+$script:AnsibleToolManifestPrefix = 'dotnettool-'
 
 # Snapshot captured by phase 1 after the dotnet install assertions pass
 # and consumed by the phase-1 no-op rerun assertion. Symmetric with
@@ -497,6 +515,96 @@ function Assert-EtcEnvironmentMtimeAdvanced {
     }
     Write-Host "  [OK] /etc/environment mtime advanced ($($script:EnvVarsPhase1Mtime) -> $now)" `
         -ForegroundColor Green
+}
+
+# StrictMode-safe read of the session's ToolchainsFlow off $Config. The
+# agent threads it from the deployment payload; the standalone
+# Start-VmProvisioningTest config omits it, so an absent property defaults
+# to the reconciler - keeping the standalone run and any pre-5.5-B caller
+# on today's behaviour.
+function Resolve-ToolchainsFlow {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [PSCustomObject] $Config)
+
+    if ($Config.PSObject.Properties['ToolchainsFlow'] -and $Config.ToolchainsFlow) {
+        return $Config.ToolchainsFlow
+    }
+    return 'custom-powershell'
+}
+
+# Resolves the engine-specific parameters the jdk / dotnet assertion
+# helpers take (step 5.5-A.5) for the session's ToolchainsFlow. Returned as
+# splat-ready hashtables so each phase can pass them into the assertions
+# without branching at every call site:
+#   .Jdk / .Sdk        - install prefix (+ manifest store & prefix under
+#                        ansible) shared by that toolchain's install /
+#                        uninstall / version-change / noop assertions.
+#   .Tools             - manifest store & prefix for the dotnet_tools
+#                        assertions (they carry no install prefix).
+#   .ToolInstallExtra  - extra args for the tool INSTALL assertion only:
+#                        under ansible, -SkipReconcilerManifestSchema, since
+#                        that engine's manifest content schema and its lack
+#                        of a parent-SDK 'children' walker link are the
+#                        role's own molecule concern, not an E2E end-state.
+# For custom-powershell every hashtable carries only the reconciler install
+# prefix (or nothing), so the assertions fall back to their reconciler
+# defaults and the existing run is unchanged.
+function Get-ToolchainAssertionParamSets {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('custom-powershell', 'ansible')]
+        [string] $ToolchainsFlow
+    )
+
+    if ($ToolchainsFlow -eq 'ansible') {
+        return [PSCustomObject]@{
+            Jdk = @{
+                InstallPrefix      = $script:AnsibleJdkInstallPrefix
+                ManifestStoreDir   = $script:AnsibleManifestStoreDir
+                ManifestFilePrefix = $script:AnsibleJdkManifestPrefix
+            }
+            Sdk = @{
+                InstallPrefix      = $script:DotnetInstallPrefix
+                ManifestStoreDir   = $script:AnsibleManifestStoreDir
+                ManifestFilePrefix = $script:AnsibleSdkManifestPrefix
+            }
+            Tools = @{
+                ManifestStoreDir   = $script:AnsibleManifestStoreDir
+                ManifestFilePrefix = $script:AnsibleToolManifestPrefix
+            }
+            ToolInstallExtra = @{ SkipReconcilerManifestSchema = $true }
+        }
+    }
+
+    # custom-powershell: pass the reconciler install prefixes explicitly (as
+    # the phases always have); manifest store / prefixes default to the
+    # reconciler layout inside the assertions, so nothing else is passed.
+    return [PSCustomObject]@{
+        Jdk              = @{ InstallPrefix = $script:JdkInstallPrefix }
+        Sdk              = @{ InstallPrefix = $script:DotnetInstallPrefix }
+        Tools            = @{}
+        ToolInstallExtra = @{}
+    }
+}
+
+# One-call context bundle each phase resolves at its top: the flow string,
+# the boolean the branch points read, the assertion param sets, and the
+# (StrictMode-safe) WSL distro the ansible driver needs. Keeps the
+# per-phase toolchain-flow boilerplate to a single line.
+function Get-ToolchainPhaseContext {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [PSCustomObject] $Config)
+
+    $flow = Resolve-ToolchainsFlow -Config $Config
+    return [PSCustomObject]@{
+        Flow      = $flow
+        IsAnsible = $flow -eq 'ansible'
+        Params    = Get-ToolchainAssertionParamSets -ToolchainsFlow $flow
+        WslDistro = if ($Config.PSObject.Properties['WslDistro']) {
+            $Config.WslDistro
+        } else { $null }
+    }
 }
 
 # Phase functions. One file per phase so each is independently reviewable

@@ -86,16 +86,31 @@ function Invoke-E2EAgentLoop {
         [ValidateSet('custom-powershell', 'ansible')]
         [string] $RunnersFlow = 'custom-powershell',
 
+        # Selects which engine puts the jdk / dotnet toolchains on the VM
+        # during the provisioning phases. 'custom-powershell' (the default)
+        # keeps the PowerShell reconciler installing them via the
+        # javaDevKit / dotnetSdk / dotnetTools blocks in VmProvisionerConfig
+        # (today's behaviour, byte-for-byte). 'ansible' strips those blocks
+        # and drives Infrastructure-Vm-Provisioner's
+        # hyper-v/ubuntu/Ansible/ops/provision-toolchains.sh instead, with
+        # the same jdk / dotnet end-state assertions reused across both
+        # engines. The default stays on custom-powershell so every existing
+        # run is unchanged; the Common-Ansible PR opts in via its flow-spec.
+        [Parameter()]
+        [ValidateSet('custom-powershell', 'ansible')]
+        [string] $ToolchainsFlow = 'custom-powershell',
+
         # Name of the WSL distro to run the Ansible bridge inside. Passed
         # via `wsl -d <name>` so the agent does not depend on the
         # workstation's WSL default - Docker Desktop's installer silently
         # changes the default to its no-bash `docker-desktop` engine
         # distro, which broke this code path until the explicit -d was
-        # added. Required when either UsersFlow=ansible (the default) or
-        # RunnersFlow=ansible. Each ansible wrapper (create/remove-users.sh
-        # in Vm-Users, register-runners.sh in GitHubRunners) self-resolves
-        # the Common-Ansible substrate as a sibling checkout, so no
-        # Common-Ansible path is threaded through this loop.
+        # added. Required when any of UsersFlow=ansible (the default),
+        # RunnersFlow=ansible, or ToolchainsFlow=ansible. Each ansible
+        # wrapper (create/remove-users.sh in Vm-Users, register-runners.sh
+        # in GitHubRunners, provision-toolchains.sh in Vm-Provisioner)
+        # self-resolves the Common-Ansible substrate as a sibling checkout,
+        # so no Common-Ansible path is threaded through this loop.
         [Parameter()]
         [string] $WslDistro,
 
@@ -172,8 +187,9 @@ function Invoke-E2EAgentLoop {
     # WslMissingBash: error with a remediation hint instead of letting
     # the bridge fail mid-test with a sparse-PATH error.
     $ansibleFlows = @()
-    if ($UsersFlow   -eq 'ansible') { $ansibleFlows += 'UsersFlow' }
-    if ($RunnersFlow -eq 'ansible') { $ansibleFlows += 'RunnersFlow' }
+    if ($UsersFlow      -eq 'ansible') { $ansibleFlows += 'UsersFlow' }
+    if ($RunnersFlow    -eq 'ansible') { $ansibleFlows += 'RunnersFlow' }
+    if ($ToolchainsFlow -eq 'ansible') { $ansibleFlows += 'ToolchainsFlow' }
     if ($ansibleFlows.Count -gt 0) {
         $flowList = $ansibleFlows -join '/'
         if (-not $WslDistro) {
@@ -255,8 +271,9 @@ function Invoke-E2EAgentLoop {
                 #   spec posts a 'failure' status instead of crashing the
                 #   agent. Guarded property access is required under
                 #   Set-StrictMode -Latest.
-                $effectiveUsersFlow   = $UsersFlow
-                $effectiveRunnersFlow = $RunnersFlow
+                $effectiveUsersFlow      = $UsersFlow
+                $effectiveRunnersFlow    = $RunnersFlow
+                $effectiveToolchainsFlow = $ToolchainsFlow
                 if ($deployment.PSObject.Properties['payload'] -and $deployment.payload) {
                     $payload = $deployment.payload
                     # GitHub returns the payload as a parsed object when it
@@ -268,8 +285,12 @@ function Invoke-E2EAgentLoop {
                     if ($payload.PSObject.Properties['runnersFlow'] -and $payload.runnersFlow) {
                         $effectiveRunnersFlow = $payload.runnersFlow
                     }
+                    if ($payload.PSObject.Properties['toolchainsFlow'] -and $payload.toolchainsFlow) {
+                        $effectiveToolchainsFlow = $payload.toolchainsFlow
+                    }
                     Write-Host ("Flow spec from payload: UsersFlow=$effectiveUsersFlow " +
-                        "RunnersFlow=$effectiveRunnersFlow") -ForegroundColor Cyan
+                        "RunnersFlow=$effectiveRunnersFlow " +
+                        "ToolchainsFlow=$effectiveToolchainsFlow") -ForegroundColor Cyan
                 }
 
                 # Validate the effective flows. An unknown value fails loud
@@ -280,14 +301,16 @@ function Invoke-E2EAgentLoop {
                 # ansible (vault set custom-powershell) must still have a
                 # usable bridge or it would fail mid-test.
                 foreach ($pair in @(
-                        @{ Name = 'usersFlow';   Value = $effectiveUsersFlow },
-                        @{ Name = 'runnersFlow'; Value = $effectiveRunnersFlow })) {
+                        @{ Name = 'usersFlow';      Value = $effectiveUsersFlow },
+                        @{ Name = 'runnersFlow';    Value = $effectiveRunnersFlow },
+                        @{ Name = 'toolchainsFlow'; Value = $effectiveToolchainsFlow })) {
                     if ($pair.Value -notin @('custom-powershell', 'ansible')) {
                         throw ("Invalid $($pair.Name) '$($pair.Value)' in deployment " +
                             "payload; expected 'custom-powershell' or 'ansible'.")
                     }
                 }
-                if ($effectiveUsersFlow -eq 'ansible' -or $effectiveRunnersFlow -eq 'ansible') {
+                if ($effectiveUsersFlow -eq 'ansible' -or $effectiveRunnersFlow -eq 'ansible' -or
+                    $effectiveToolchainsFlow -eq 'ansible') {
                     if (-not $WslDistro) {
                         throw "Effective flow is 'ansible' but WslDistro is not set."
                     }
@@ -303,6 +326,7 @@ function Invoke-E2EAgentLoop {
                     WslDistro             = $WslDistro
                     RunnersPath           = $RunnersPath
                     RunnersFlow           = $effectiveRunnersFlow
+                    ToolchainsFlow        = $effectiveToolchainsFlow
                     HostTarballCachePath  = $HostTarballCachePath
                     Owner                 = $Owner
                     TestVm                = $TestVm

@@ -37,35 +37,69 @@ function Invoke-VmProvisioningPhase1 {
     Write-Host "Phase 1: writing single-VM VmProvisionerConfig (VM1 + JDK $($script:JdkInitialVersion) + dotnet SDK $($script:DotnetInitialResolvedVersion)) ..." `
         -ForegroundColor Magenta
 
+    # Toolchain engine for this run (reconciler default, or ansible from
+    # the deployment payload). $tcx bundles the flow, the branch boolean,
+    # the engine-specific assertion params, and the WSL distro.
+    $tcx = Get-ToolchainPhaseContext -Config $Config
+    # Splat-ready engine params for this phase's assertions (reconciler
+    # defaults under custom-powershell; the common-ansible store + prefix
+    # under ansible). Splatting needs simple variables, hence the locals.
+    $jdkParams        = $tcx.Params.Jdk
+    $sdkParams        = $tcx.Params.Sdk
+    $toolParams       = $tcx.Params.Tools
+    $toolInstallExtra = $tcx.Params.ToolInstallExtra
+
+    # Desired toolchain state for this phase: JDK 21 + dotnet SDK 8.0.100 +
+    # one global tool. Under custom-powershell these ride in the
+    # VmProvisionerConfig entry below and the reconciler installs them
+    # inside provision.ps1; under ansible the blocks are omitted here and
+    # Set-VmToolchainsForTest drives provision-toolchains.sh from this same
+    # desired state once provision.ps1 has brought the VM up.
+    $toolchainsDesired = New-ToolchainDesiredState `
+        -JdkVersions       @($script:JdkInitialVersion) `
+        -DotnetSdkVersions @([ordered]@{
+            channel = $script:DotnetInitialChannel
+            version = $script:DotnetInitialResolvedVersion
+        }) `
+        -DotnetToolsTools  @([ordered]@{
+            id      = $script:DotnetToolId
+            version = $script:DotnetToolInitialVersion
+        })
+
     $entry = New-VmEntryBase `
         -Config    $Config `
         -VmName    $Vm1Def.vmName `
         -IpAddress $Vm1Def.ipAddress `
         -Password  $Vm1Def.password
-    $entry.javaDevKit = [ordered]@{
-        vendor  = $script:JdkTestVendor
-        version = $script:JdkInitialVersion
-    }
-    # Co-tenant the dotnet SDK on VM1 from phase 1. Running JDK +
-    # dotnetSdk through the same provision exercises the reconciler's
-    # multi-provider dispatch order (JdkProvider then DotnetSdkProvider
-    # per Get-Providers) and proves the two providers do not interfere
-    # with each other's manifest writes.
-    $entry.dotnetSdk = [ordered]@{
-        channel = $script:DotnetInitialChannel
-        version = $script:DotnetInitialResolvedVersion
-    }
-    # Co-tenant a single .NET global tool from phase 1. Together with
-    # dotnetSdk above this drives DotnetToolsProvider end-to-end through
-    # the nested-provider walker contract: SDK installs first, then the
-    # tool installs against the host-prefetched .nupkg, and the SDK
-    # manifest's children array gains a reference to the tool manifest.
-    $entry.dotnetTools = @(
-        [ordered]@{
-            id      = $script:DotnetToolId
-            version = $script:DotnetToolInitialVersion
+    # Toolchain blocks only under the reconciler flow. Under ansible the
+    # entry carries no javaDevKit / dotnetSdk / dotnetTools so provision.ps1
+    # skips those providers, and the ansible driver installs them afterwards.
+    if (-not $tcx.IsAnsible) {
+        $entry.javaDevKit = [ordered]@{
+            vendor  = $script:JdkTestVendor
+            version = $script:JdkInitialVersion
         }
-    )
+        # Co-tenant the dotnet SDK on VM1 from phase 1. Running JDK +
+        # dotnetSdk through the same provision exercises the reconciler's
+        # multi-provider dispatch order (JdkProvider then DotnetSdkProvider
+        # per Get-Providers) and proves the two providers do not interfere
+        # with each other's manifest writes.
+        $entry.dotnetSdk = [ordered]@{
+            channel = $script:DotnetInitialChannel
+            version = $script:DotnetInitialResolvedVersion
+        }
+        # Co-tenant a single .NET global tool from phase 1. Together with
+        # dotnetSdk above this drives DotnetToolsProvider end-to-end through
+        # the nested-provider walker contract: SDK installs first, then the
+        # tool installs against the host-prefetched .nupkg, and the SDK
+        # manifest's children array gains a reference to the tool manifest.
+        $entry.dotnetTools = @(
+            [ordered]@{
+                id      = $script:DotnetToolId
+                version = $script:DotnetToolInitialVersion
+            }
+        )
+    }
     # Mixed files array: one single entry + one bulk entry. JSON order is
     # preserved by the per-entry dispatch in Invoke-VmPostProvisioning;
     # asserting both forms in one provision run covers the "mixed dispatch"
@@ -103,6 +137,16 @@ function Invoke-VmProvisioningPhase1 {
     # carries forward) has a populated ipAddress to dial.
     Resolve-RouterIpFromKvp -RouterVmDef $Vm1Def._RouterVm
 
+    # Under the ansible flow, install the toolchains via
+    # provision-toolchains.sh now that provision.ps1 has brought the router
+    # + VM1 up. A no-op under custom-powershell (the reconciler already
+    # installed them inside provision.ps1 above).
+    Set-VmToolchainsForTest `
+        -ToolchainsFlow  $tcx.Flow `
+        -ProvisionerPath $Config.ProvisionerPath `
+        -DesiredState    $toolchainsDesired `
+        -WslDistro       $tcx.WslDistro
+
     # Router-side white-box checks (forwarding, nftables/dnsmasq, NAT
     # rules, priv0 IP) are no longer asserted here: provision.ps1's
     # Assert-RouterReady runs them during provisioning and fails the run
@@ -127,24 +171,27 @@ function Invoke-VmProvisioningPhase1 {
             -SshClient        $sshClient `
             -VmName           $Vm1Def.vmName `
             -RequestedVersion $script:JdkInitialVersion `
-            -InstallPrefix    $script:JdkInstallPrefix
+            @jdkParams
 
         Invoke-DotnetSdkInstallAssertions `
             -SshClient       $sshClient `
             -VmName          $Vm1Def.vmName `
             -ResolvedVersion $script:DotnetInitialResolvedVersion `
-            -InstallPrefix   $script:DotnetInstallPrefix
+            @sdkParams
 
         # Tool install assertions follow the SDK install assertions
-        # because I5 reads the parent SDK manifest - the SDK assertions
-        # have already verified that manifest is present and well-formed
-        # at this point.
+        # because I5 reads the parent SDK manifest (reconciler flow) - the
+        # SDK assertions have already verified that manifest is present and
+        # well-formed at this point. Under ansible, @toolInstallExtra carries
+        # -SkipReconcilerManifestSchema so the content + walker checks (which
+        # that engine does not produce) are bypassed.
         Invoke-DotnetToolsInstallAssertions `
             -SshClient   $sshClient `
             -VmName      $Vm1Def.vmName `
             -ToolId      $script:DotnetToolId `
             -ToolVersion $script:DotnetToolInitialVersion `
-            -Command     $script:DotnetToolCommand
+            -Command     $script:DotnetToolCommand `
+            @toolParams @toolInstallExtra
 
         # Capture VM-side SHA-256s so phase 2 can assert idempotence by
         # snapshot. Helpers also assert C2-C5 (single) / C1-C4 (bulk)
@@ -182,22 +229,34 @@ function Invoke-VmProvisioningPhase1 {
 
         # Snapshot the JDK artifacts AFTER the install assertions pass
         # so the no-op rerun below can prove the reconciler did not
-        # touch them.
-        $script:Phase1JdkSnapshot = Get-JdkArtifactSnapshot `
-            -SshClient     $sshClient `
-            -VmName        $Vm1Def.vmName `
-            -InstallPrefix $script:JdkInstallPrefix
+        # touch them. Reconciler-only: the no-op rerun probes provision.ps1's
+        # diff branch, which the ansible flow does not go through (its
+        # toolchains are not in VmProvisionerConfig), so the snapshots are
+        # captured only when they will be consumed.
+        if (-not $tcx.IsAnsible) {
+            $script:Phase1JdkSnapshot = Get-JdkArtifactSnapshot `
+                -SshClient     $sshClient `
+                -VmName        $Vm1Def.vmName `
+                -InstallPrefix $script:JdkInstallPrefix
 
-        # Same snapshot for the dotnet SDK so the no-op rerun proves
-        # the DotnetSdkProvider also took the diff's no-op branch.
-        $script:Phase1DotnetSnapshot = Get-DotnetSdkArtifactSnapshot `
-            -SshClient     $sshClient `
-            -VmName        $Vm1Def.vmName `
-            -InstallPrefix $script:DotnetInstallPrefix
+            # Same snapshot for the dotnet SDK so the no-op rerun proves
+            # the DotnetSdkProvider also took the diff's no-op branch.
+            $script:Phase1DotnetSnapshot = Get-DotnetSdkArtifactSnapshot `
+                -SshClient     $sshClient `
+                -VmName        $Vm1Def.vmName `
+                -InstallPrefix $script:DotnetInstallPrefix
+        }
     }
 
     # No-op rerun. Same VmProvisionerConfig already on disk - the
-    # reconciler must take the diff's no-op branch for every artifact.
+    # reconciler must take the diff's no-op branch for every artifact. This
+    # asserts a property of the PowerShell reconciler (re-provision does not
+    # re-extract unchanged toolchains); the ansible engine installs the
+    # toolchains outside provision.ps1, so re-running provision.ps1 never
+    # touches them and there is no equivalent no-op branch to probe - the
+    # ansible flow is done after its install assertions above.
+    if ($tcx.IsAnsible) { return }
+
     Write-Host 'Phase 1: re-provisioning VM1 with unchanged JSON (no-op) ...' `
         -ForegroundColor Magenta
     & "$($Config.ProvisionerPath)\hyper-v\ubuntu\PowerShell\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix

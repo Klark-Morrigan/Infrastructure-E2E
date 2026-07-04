@@ -493,14 +493,29 @@ Describe 'Invoke-E2EAgentLoop' {
             { Invoke-E2EAgentLoop @params } | Should -Throw '*requires -WslDistro*'
         }
 
-        It "does not require WslDistro when both flows are 'custom-powershell'" {
+        It "throws at startup when ToolchainsFlow='ansible' and WslDistro is missing" {
+            # ToolchainsFlow=ansible needs the bridge just like the other
+            # ansible flows; the startup gate must include it. Users /
+            # runners set to custom-powershell so ToolchainsFlow is the sole
+            # ansible trigger, proving it alone requires WslDistro.
+            $params = $Script:BaseParams.Clone()
+            $params['UsersFlow']      = 'custom-powershell'
+            $params['RunnersFlow']    = 'custom-powershell'
+            $params['ToolchainsFlow'] = 'ansible'
+            $params.Remove('WslDistro')
+
+            { Invoke-E2EAgentLoop @params } | Should -Throw '*requires -WslDistro*'
+        }
+
+        It "does not require WslDistro when all three flows are 'custom-powershell'" {
             Mock Get-GitHubAppToken { $Script:FreshToken }
             Mock Get-PendingDeployment { $null }
             Mock Set-DeploymentStatus {}
 
             $params = $Script:BaseParams.Clone()
-            $params['UsersFlow']   = 'custom-powershell'
-            $params['RunnersFlow'] = 'custom-powershell'
+            $params['UsersFlow']      = 'custom-powershell'
+            $params['RunnersFlow']    = 'custom-powershell'
+            $params['ToolchainsFlow'] = 'custom-powershell'
             $params.Remove('WslDistro')
 
             { Invoke-E2EAgentLoop @params } | Should -Not -Throw
@@ -562,10 +577,35 @@ Describe 'Invoke-E2EAgentLoop' {
 
             Invoke-E2EAgentLoop @Script:BaseParams
 
-            # BaseParams sets UsersFlow=ansible and leaves RunnersFlow at its
-            # parameter default (custom-powershell).
-            $Script:_nopl_config.UsersFlow   | Should -Be 'ansible'
-            $Script:_nopl_config.RunnersFlow | Should -Be 'custom-powershell'
+            # BaseParams sets UsersFlow=ansible and leaves RunnersFlow /
+            # ToolchainsFlow at their parameter defaults (custom-powershell).
+            $Script:_nopl_config.UsersFlow      | Should -Be 'ansible'
+            $Script:_nopl_config.RunnersFlow    | Should -Be 'custom-powershell'
+            $Script:_nopl_config.ToolchainsFlow | Should -Be 'custom-powershell'
+        }
+
+        It 'overrides ToolchainsFlow from the payload, keeping the other layers at the session value' {
+            # The Common-Ansible toolchain PR opts its layer into ansible via
+            # the payload while users / runners stay on their session flows.
+            $Script:_tc_config = $null
+            $script:_tcCount = 0
+            Mock Get-PendingDeployment {
+                $script:_tcCount++
+                if ($script:_tcCount -eq 1) {
+                    return [PSCustomObject]@{
+                        id      = 81
+                        payload = [PSCustomObject]@{ toolchainsFlow = 'ansible' }
+                    }
+                }
+                return $null
+            }
+            Mock Invoke-RunnerLifecycleTest { $Script:_tc_config = $Config }
+
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            $Script:_tc_config.ToolchainsFlow | Should -Be 'ansible'   # from payload
+            $Script:_tc_config.UsersFlow      | Should -Be 'ansible'   # session default
+            $Script:_tc_config.RunnersFlow    | Should -Be 'custom-powershell'  # param default
         }
 
         It 'applies only the flow present in the payload, keeping the other at the session value' {

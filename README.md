@@ -39,9 +39,15 @@ polling agent that receives signals from GitHub Actions workflows.
   of its flows: `custom-powershell` and `ansible` implementations live
   side by side in the owner repo, and the `ansible` wrappers consume the
   `Common-Ansible` substrate (roles + bridge) as a sibling checkout they
-  resolve themselves. User reconciliation, user removal, and runner
-  registration each have two first-class implementations selected at
-  agent startup via `UsersFlow` and `RunnersFlow`.
+  resolve themselves. User reconciliation, user removal, runner
+  registration, and jdk / dotnet toolchain installation each have two
+  first-class implementations selected at agent startup via `UsersFlow`,
+  `RunnersFlow`, and `ToolchainsFlow`. `ToolchainsFlow` gates only which
+  engine installs the toolchains: `custom-powershell` (the default) leaves
+  the PowerShell reconciler doing it inside `provision.ps1`, while
+  `ansible` drives `Infrastructure-Vm-Provisioner`'s
+  `provision-toolchains.sh`. The same jdk / dotnet end-state assertions run
+  for both engines, so the two are measured against one bar.
 
 ---
 
@@ -71,19 +77,23 @@ PowerShell 7+ (`pwsh`).
   - `E2EConfig` (owned by this repo - see [GitHub App setup](#github-app-setup))
 - `Common.PowerShell` >= `3.1.0` installed from PSGallery
 - When `UsersFlow=ansible` (the default since feature 02 of
-  `Common-Ansible`) or `RunnersFlow=ansible` (opt-in during
+  `Common-Ansible`), `RunnersFlow=ansible` (opt-in during
   the first validation cycle; the default-flip happens in a follow-up
-  bump), the agent runs that flow inside WSL2 via the owner repo's
-  wrapper, which resolves the `Common-Ansible` substrate as a sibling
-  checkout; the Ansible controller must have been bootstrapped once via
-  `Common-Ansible/ops/bootstrap-controller.ps1`. Pass
+  bump), or `ToolchainsFlow=ansible` (opt-in; default stays
+  `custom-powershell`), the agent runs that flow inside WSL2 via the owner
+  repo's wrapper, which resolves the `Common-Ansible` substrate as a
+  sibling checkout; the Ansible controller must have been bootstrapped once
+  via `Common-Ansible/ops/bootstrap-controller.ps1`. Pass
   `-UsersFlow custom-powershell` to fall back to the original
-  Infrastructure-Vm-Users flow, or `-RunnersFlow ansible` to opt the
-  register-runners half into the Ansible path. The two flow switches
-  are independent: an `ansible` create-users can be paired with a
-  `custom-powershell` register-runners and vice versa, because both
-  directions reconcile the same on-VM contract regardless of which
-  side ran which step.
+  Infrastructure-Vm-Users flow, `-RunnersFlow ansible` to opt the
+  register-runners half into the Ansible path, or `-ToolchainsFlow ansible`
+  to install the jdk / dotnet toolchains via
+  `Infrastructure-Vm-Provisioner`'s `provision-toolchains.sh` instead of
+  the reconciler. The flow switches are independent: each layer reconciles
+  the same on-VM contract regardless of which engine ran it. The
+  `ToolchainsFlow=ansible` path reads its desired versions from a
+  `Toolchains` vault entry the test writes; that vault is registered lazily
+  on first use, so no manual `Toolchains` vault setup is required.
 
 ---
 
@@ -177,9 +187,10 @@ following in the `E2EConfig` vault:
   "ProvisionerPath":     "C:\\a_Code\\Infrastructure-Vm-Provisioner",
   "UsersPath":           "C:\\a_Code\\Infrastructure-Vm-Users",
   "UsersFlow":           "ansible",                                   // optional session default - 'ansible' (default) or 'custom-powershell'; a caller's flow-spec overrides per run
-  "WslDistro":           "Ubuntu-24.04",                              // required when either flow is 'ansible' (the default scenario); the WSL2 distro the ansible wrappers run in. Each wrapper (under UsersPath / RunnersPath) self-resolves the Common-Ansible substrate as a sibling checkout, so no Common-Ansible path is configured here. See Common-Ansible README Troubleshooting
+  "WslDistro":           "Ubuntu-24.04",                              // required when any flow is 'ansible' (UsersFlow/RunnersFlow default, ToolchainsFlow opt-in); the WSL2 distro the ansible wrappers run in. Each wrapper (under UsersPath / RunnersPath / ProvisionerPath) self-resolves the Common-Ansible substrate as a sibling checkout, so no Common-Ansible path is configured here. See Common-Ansible README Troubleshooting
   "RunnersPath":         "C:\\a_Code\\Infrastructure-GitHubRunners",
   "RunnersFlow":         "custom-powershell",                         // optional session default - 'custom-powershell' (default) or 'ansible'; a caller's flow-spec overrides per run
+  "ToolchainsFlow":      "custom-powershell",                         // optional session default - 'custom-powershell' (default, the jdk/dotnet reconciler) or 'ansible' (provision-toolchains.sh under ProvisionerPath); a caller's flow-spec overrides per run
   "HostTarballCachePath": "C:\\cache\\github-runners",
   "TestVm": {
     "ubuntuVersion":  "24.04",
@@ -333,17 +344,33 @@ incrementing the last octet - operator config still pins a single IP.
 The jdk / dotnet toolchain assertion helpers (under
 `agent/e2e/vm-provisioning/assertions/`) take the engine-specific parts
 of the on-disk layout as parameters: the manifest store directory, the
-manifest filename prefix (the store is probed with the glob
-`<prefix>*.json`), and the JDK install prefix. Every parameter defaults
-to the PowerShell reconciler's layout
+manifest filename prefix, and the JDK install prefix. The filename
+prefix is the leading segment of the manifest basename - the jdk /
+dotnet_sdk helpers derive their `<prefix>*.json` listing glob from it,
+while the dotnet_tools helpers build the exact
+`<prefix><id>-<version>.json` name they probe (and the tools install
+helper also takes the parent-SDK prefix for its walker-contract check).
+Every parameter defaults to the PowerShell reconciler's layout
 (`/var/lib/infra-provisioner/manifests`; `javaDevKit-` / `dotnetSdk-` /
 `dotnetTools-`; `/opt/jdk-temurin-`), so the phase files pass nothing
 and keep driving the `custom-powershell` flow unchanged. A caller
 driving the Common-Ansible toolchain engine reuses the same end-state
 checks by passing that engine's store
 (`/var/lib/common-ansible/toolchains/manifests`), filename prefixes
-(`jdk-` / `dotnet_sdk-` / `dotnettool-`), and the `/opt/jdk-` install
+(`jdk-` / `dotnet-` / `dotnettool-`), and the `/opt/jdk-` install
 prefix.
+
+Manifest *content* differs by engine as well, and only the dotnet_tools
+install helper reads it: its I4 field assertions (`rawVersion`,
+`ownedSymlinks`) and its I5 parent-SDK `children` walker link are the
+PowerShell reconciler's truth-source schema. The Common-Ansible engine
+tracks tool manifests independently (a `version` / `symlinks` schema with
+no `children` array), verifying that schema in its own role molecule
+tests, so its caller passes `-SkipReconcilerManifestSchema` to run only
+the engine-agnostic checks (store dir, `/usr/local/bin` symlink, apphost
+launch, and tool-manifest presence). The observable end-state those
+reconciler-only checks stand in for stays covered by the presence and
+symlink probes.
 
 ```powershell
 # Standard VmLAN setup - no arguments needed:
@@ -390,26 +417,33 @@ in - so an Ansible role change cannot merge to master without proving
 the new code still reconciles users and brings up an online runner on a
 real VM.
 
-Each caller selects which create/remove implementation the run
-exercises through the `flow-spec` input - a JSON object
-`{"usersFlow":"...","runnersFlow":"..."}` with values `ansible` or
-`custom-powershell`. The workflow embeds that JSON in the GitHub
-Deployment payload; the polling agent reads it and overrides its vault
-`UsersFlow` / `RunnersFlow` defaults for that one run, so a repo's PR
-exercises the path it owns:
+Each caller selects which implementation the run exercises through the
+`flow-spec` input - a JSON object
+`{"usersFlow":"...","runnersFlow":"...","toolchainsFlow":"..."}` with
+values `ansible` or `custom-powershell`. The workflow embeds that JSON in
+the GitHub Deployment payload; the polling agent reads it and overrides
+its vault `UsersFlow` / `RunnersFlow` / `ToolchainsFlow` defaults for that
+one run, so a repo's PR exercises the path it owns. Any key may be omitted
+- `usersFlow` / `runnersFlow` then fall back to the agent's vault
+defaults, and an omitted `toolchainsFlow` stays `custom-powershell` (the
+jdk / dotnet reconciler):
 
 | Caller repo | `flow-spec` | Tests |
 |---|---|---|
-| `Common-Ansible` | `{"usersFlow":"ansible","runnersFlow":"ansible"}` | the Ansible create-users + register-runners scripts |
+| `Common-Ansible` (users/runners) | `{"usersFlow":"ansible","runnersFlow":"ansible"}` | the Ansible create-users + register-runners scripts |
+| `Common-Ansible` (toolchains) | `{"toolchainsFlow":"ansible"}` | `provision-toolchains.sh` installs jdk / dotnet; the shared install / swap / uninstall assertions run against it |
 | `Infrastructure-Vm-Users` | `{"usersFlow":"custom-powershell","runnersFlow":"custom-powershell"}` | the PowerShell users scripts |
 | `Infrastructure-GitHubRunners` | `{"usersFlow":"custom-powershell","runnersFlow":"custom-powershell"}` | the PowerShell runner-registration script |
-| `Infrastructure-Vm-Provisioner` | omitted | the default ansible scenario |
+| `Infrastructure-Vm-Provisioner` | omitted | the default scenario (ansible users/runners, reconciler toolchains) |
 
-`ansible` is the default scenario: a caller that omits `flow-spec` (and a
-manual `workflow_dispatch` left at its default) runs both layers on the
-Ansible path. A `flow-spec` that names an unknown flow, or that upgrades a
-layer to `ansible` on an agent without `WslDistro` configured, fails the
-deployment with a named error rather than guessing.
+For users and runners `ansible` is the default scenario: a caller that
+omits those keys (and a manual `workflow_dispatch` left at its default)
+runs both layers on the Ansible path. `toolchainsFlow` is the exception -
+it defaults to `custom-powershell` so every existing run keeps installing
+toolchains via the reconciler; the `Common-Ansible` toolchain PR opts in.
+A `flow-spec` that names an unknown flow, or that upgrades a layer to
+`ansible` on an agent without `WslDistro` configured, fails the deployment
+with a named error rather than guessing.
 
 ### Reading results
 

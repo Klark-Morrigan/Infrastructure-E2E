@@ -21,9 +21,11 @@ on:
     inputs:
       flow-spec:
         description: >-
-          JSON selecting which create/remove implementation each layer runs,
-          e.g. {"usersFlow":"ansible","runnersFlow":"ansible"}. Values are
-          'ansible' or 'custom-powershell'. Omit for the ansible scenario.
+          JSON selecting which implementation each layer runs, e.g.
+          {"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible"}.
+          Values are 'ansible' or 'custom-powershell'. toolchainsFlow is
+          optional and defaults to custom-powershell when omitted (the jdk /
+          dotnet reconciler), so existing runs are unchanged.
         required: false
         type: string
         default: '{"usersFlow":"ansible","runnersFlow":"ansible"}'
@@ -31,10 +33,12 @@ on:
     inputs:
       flow-spec:
         description: >-
-          JSON selecting which create/remove implementation each layer runs.
-          Callers pass {"usersFlow":"...","runnersFlow":"..."} with values
-          'ansible' (default) or 'custom-powershell'. Omitted => ansible, so
-          a caller that does not set it gets the default ansible scenario.
+          JSON selecting which implementation each layer runs. Callers pass
+          {"usersFlow":"...","runnersFlow":"...","toolchainsFlow":"..."} with
+          values 'ansible' (default for users/runners) or 'custom-powershell'.
+          toolchainsFlow is optional and defaults to custom-powershell (the
+          jdk / dotnet reconciler); the Common-Ansible PR sets it to 'ansible'
+          to exercise the toolchain flow.
         required: false
         type: string
         default: '{"usersFlow":"ansible","runnersFlow":"ansible"}'
