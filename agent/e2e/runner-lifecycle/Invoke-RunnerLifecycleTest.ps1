@@ -198,7 +198,14 @@ function Invoke-RunnerLifecycleSetup {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [PSCustomObject] $Config
+        [PSCustomObject] $Config,
+
+        # Timing context owned by Invoke-RunnerLifecycleTest. Forwarded to
+        # Invoke-VmUsersSetup so the provision / user-reconcile shell-outs
+        # record as spans under this run's 'Setup' node rather than a
+        # detached tree.
+        [Parameter(Mandatory)]
+        [object] $Tree
     )
 
     # Generate a random deploy password per test run. Hex GUID - no special
@@ -215,7 +222,9 @@ function Invoke-RunnerLifecycleSetup {
         -Secret (ConvertTo-Json $runnersEntries -Depth 5 -Compress)
 
     # Provision VM, create all users (base + e2edeploy + e2erunner).
-    $vmDef = Invoke-VmUsersSetup -Config $Config -Entry $entry
+    # -Tree threads the run's timing context so the provision and
+    # user-reconcile shell-outs nest under this run's 'Setup' span.
+    $vmDef = Invoke-VmUsersSetup -Config $Config -Entry $entry -Tree $Tree
 
     # Mint a token scoped to Infrastructure-GitHubRunners with administration:write
     # only. Scoping to one repo and one permission prevents the token from
@@ -371,8 +380,20 @@ function Invoke-RunnerLifecycleTest {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [PSCustomObject] $Config
+        [PSCustomObject] $Config,
+
+        # Timing context for the run. Defaults to a fresh runner-lifecycle
+        # tree; each phase and part below records as a span so the report
+        # (feature 88 C3) shows the phase/part breakdown. Injectable so a
+        # caller - or a test - can observe the accumulated tree after the
+        # run, including on the failure path where a return value is lost
+        # to the re-thrown exception.
+        [object] $Tree = $null
     )
+
+    if ($null -eq $Tree) {
+        $Tree = New-TimingSpanTree -RootName 'runner-lifecycle'
+    }
 
     $vmDef        = $null
     $runnersToken = $null
@@ -380,7 +401,12 @@ function Invoke-RunnerLifecycleTest {
     $succeeded    = $false
 
     try {
-        $setup        = Invoke-RunnerLifecycleSetup -Config $Config
+        # Setup phase: pre-registration stack (config, provision, users,
+        # token). Its provision / user-reconcile shell-outs nest as parts
+        # under this span via the threaded $Tree.
+        $setup        = Measure-TimingSpan -Tree $Tree -Name 'Setup' -Action {
+            Invoke-RunnerLifecycleSetup -Config $Config -Tree $Tree
+        }
         $vmDef        = $setup.VmDef
         $runnersToken = $setup.RunnersToken
         $entry        = $setup.Entry
@@ -399,100 +425,108 @@ function Invoke-RunnerLifecycleTest {
         # startup so a missing value fails before the VM is built. The
         # ansible flow resolves register-runners.sh under $RunnersPath
         # (GitHubRunners), which self-resolves the Common-Ansible substrate.
-        Set-VmRunnersForTest `
-            -RunnersFlow  $Config.RunnersFlow `
-            -RunnersPath  $Config.RunnersPath `
-            -WslDistro    $Config.WslDistro `
-            -Token        $runnersToken `
-            -SecretSuffix $script:E2ETestSecretSuffix `
-            -VmDef        $vmDef `
-            -Entry        $configEntry
-
-        Write-Host "Verifying runner service: $($vmDef.vmName) at $($vmDef.ipAddress) ..." `
-            -ForegroundColor Magenta
-
-        $sshClient = $null
-
-        try {
-            $sshSession = New-VmSshClientWithJump -Vm $vmDef
-            $sshClient  = $sshSession.Client
-
-            # Resolve the full systemd unit name. svc.sh names it
-            # 'actions.runner.{owner}-{repo}.{runnerName}.service'.
-            # Matching on '.$runnerName.' avoids false positives when
-            # one runner name is a prefix of another.
-            $nameResult = Invoke-SshClientCommand `
-                -SshClient $sshClient `
-                -Command   ("systemctl list-unit-files --no-legend " +
-                            "--type=service 'actions.runner.*' " +
-                            "| grep -F '.$runnerName.'")
-            $serviceLine = ($nameResult.Output -join '').Trim()
-            if (-not $serviceLine) {
-                throw ("Runner service for '$runnerName' not found on " +
-                    "$($vmDef.vmName) - svc.sh may not have run.")
-            }
-            $serviceName = ($serviceLine -split '\s+')[0]
-            Write-Host "  [OK] runner service installed: $serviceName" `
-                -ForegroundColor Green
-
-            $activeResult = Invoke-SshClientCommand `
-                -SshClient $sshClient `
-                -Command   "systemctl is-active '$serviceName'"
-            if (($activeResult.Output -join '').Trim() -ne 'active') {
-                throw ("Runner service '$serviceName' is not active on " +
-                    "$($vmDef.vmName). " +
-                    "Check: journalctl -u '$serviceName'")
-            }
-            Write-Host '  [OK] runner service active.' -ForegroundColor Green
-        }
-        finally {
-            if ($null -ne $sshSession) {
-                try { $sshSession.Dispose() } catch { Write-Verbose "Ignoring SSH session dispose failure: $($_.Exception.Message)" }
-            }
+        Measure-TimingSpan -Tree $Tree -Name 'Register runners' -Action {
+            Set-VmRunnersForTest `
+                -RunnersFlow  $Config.RunnersFlow `
+                -RunnersPath  $Config.RunnersPath `
+                -WslDistro    $Config.WslDistro `
+                -Token        $runnersToken `
+                -SecretSuffix $script:E2ETestSecretSuffix `
+                -VmDef        $vmDef `
+                -Entry        $configEntry
         }
 
-        # Assert runner online via GitHub API.
-        # The runner service needs a few seconds after start to open its
-        # websocket to GitHub and appear as 'online'. Poll with backoff
-        # rather than sleeping a fixed amount - most runs will succeed on
-        # the first or second attempt.
-        Write-Host 'Verifying runner online via GitHub API ...' -ForegroundColor Magenta
-        $githubUrl = $configEntry[0].githubUrl
-        $parts     = $githubUrl.TrimEnd('/') -split '/'
-        $apiOwner  = $parts[-2]
-        $apiRepo   = $parts[-1]
+        # Verify-online phase: the runner service is installed and active
+        # on the VM (SSH) and the runner reports 'online' in the GitHub
+        # API. Wrapped as one span; a not-installed / not-active / offline
+        # failure marks it Failed and the report shows how far the run got.
+        Measure-TimingSpan -Tree $Tree -Name 'Verify online' -Action {
+            Write-Host "Verifying runner service: $($vmDef.vmName) at $($vmDef.ipAddress) ..." `
+                -ForegroundColor Magenta
 
-        $maxAttempts  = 10
-        $delaySeconds = 5
-        $registration = $null
+            $sshClient = $null
 
-        for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-            $response = Invoke-GitHubApi `
-                -Token    $runnersToken `
-                -Endpoint "repos/$apiOwner/$apiRepo/actions/runners?per_page=100"
-            $registration = @($response.runners) |
-                Where-Object { $_.name -eq $runnerName } |
-                Select-Object -First 1
+            try {
+                $sshSession = New-VmSshClientWithJump -Vm $vmDef
+                $sshClient  = $sshSession.Client
 
-            if ($null -ne $registration -and $registration.status -eq 'online') {
-                break
+                # Resolve the full systemd unit name. svc.sh names it
+                # 'actions.runner.{owner}-{repo}.{runnerName}.service'.
+                # Matching on '.$runnerName.' avoids false positives when
+                # one runner name is a prefix of another.
+                $nameResult = Invoke-SshClientCommand `
+                    -SshClient $sshClient `
+                    -Command   ("systemctl list-unit-files --no-legend " +
+                                "--type=service 'actions.runner.*' " +
+                                "| grep -F '.$runnerName.'")
+                $serviceLine = ($nameResult.Output -join '').Trim()
+                if (-not $serviceLine) {
+                    throw ("Runner service for '$runnerName' not found on " +
+                        "$($vmDef.vmName) - svc.sh may not have run.")
+                }
+                $serviceName = ($serviceLine -split '\s+')[0]
+                Write-Host "  [OK] runner service installed: $serviceName" `
+                    -ForegroundColor Green
+
+                $activeResult = Invoke-SshClientCommand `
+                    -SshClient $sshClient `
+                    -Command   "systemctl is-active '$serviceName'"
+                if (($activeResult.Output -join '').Trim() -ne 'active') {
+                    throw ("Runner service '$serviceName' is not active on " +
+                        "$($vmDef.vmName). " +
+                        "Check: journalctl -u '$serviceName'")
+                }
+                Write-Host '  [OK] runner service active.' -ForegroundColor Green
+            }
+            finally {
+                if ($null -ne $sshSession) {
+                    try { $sshSession.Dispose() } catch { Write-Verbose "Ignoring SSH session dispose failure: $($_.Exception.Message)" }
+                }
             }
 
-            $statusMsg = if ($null -eq $registration) { 'not found' }
-                         else { $registration.status }
-            Write-Host ("  [attempt $attempt/$maxAttempts] Runner status: " +
-                "$statusMsg - waiting ${delaySeconds}s ...") -ForegroundColor Yellow
-            Start-Sleep -Seconds $delaySeconds
-        }
+            # Assert runner online via GitHub API.
+            # The runner service needs a few seconds after start to open its
+            # websocket to GitHub and appear as 'online'. Poll with backoff
+            # rather than sleeping a fixed amount - most runs will succeed on
+            # the first or second attempt.
+            Write-Host 'Verifying runner online via GitHub API ...' -ForegroundColor Magenta
+            $githubUrl = $configEntry[0].githubUrl
+            $parts     = $githubUrl.TrimEnd('/') -split '/'
+            $apiOwner  = $parts[-2]
+            $apiRepo   = $parts[-1]
 
-        if ($null -eq $registration) {
-            throw "Runner '$runnerName' not found in GitHub API for $githubUrl."
+            $maxAttempts  = 10
+            $delaySeconds = 5
+            $registration = $null
+
+            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+                $response = Invoke-GitHubApi `
+                    -Token    $runnersToken `
+                    -Endpoint "repos/$apiOwner/$apiRepo/actions/runners?per_page=100"
+                $registration = @($response.runners) |
+                    Where-Object { $_.name -eq $runnerName } |
+                    Select-Object -First 1
+
+                if ($null -ne $registration -and $registration.status -eq 'online') {
+                    break
+                }
+
+                $statusMsg = if ($null -eq $registration) { 'not found' }
+                             else { $registration.status }
+                Write-Host ("  [attempt $attempt/$maxAttempts] Runner status: " +
+                    "$statusMsg - waiting ${delaySeconds}s ...") -ForegroundColor Yellow
+                Start-Sleep -Seconds $delaySeconds
+            }
+
+            if ($null -eq $registration) {
+                throw "Runner '$runnerName' not found in GitHub API for $githubUrl."
+            }
+            if ($registration.status -ne 'online') {
+                throw ("Runner '$runnerName' status is '$($registration.status)', " +
+                    "expected 'online'.")
+            }
+            Write-Host "  [OK] runner '$runnerName' online in GitHub." -ForegroundColor Green
         }
-        if ($registration.status -ne 'online') {
-            throw ("Runner '$runnerName' status is '$($registration.status)', " +
-                "expected 'online'.")
-        }
-        Write-Host "  [OK] runner '$runnerName' online in GitHub." -ForegroundColor Green
 
         # Re-provision phases now run against a fully configured VM
         # (users created, runner registered + online). After each phase
@@ -503,19 +537,27 @@ function Invoke-RunnerLifecycleTest {
         $usersEntry = $entry   # captured from Setup; same Entry passed to Teardown
         $githubUrl  = $configEntry[0].githubUrl
 
-        Invoke-VmProvisioningPhase2 -Config $Config -Vm1Def $vmDef -Vm2Def $vm2Def
-        Assert-VmUsersStillIntact     -Config $Config -VmDef  $vmDef -Entry  $usersEntry
-        Assert-RunnerStillOnline      -Config $Config -VmDef  $vmDef `
-                                      -RunnerName    $runnerName `
-                                      -RunnersToken  $runnersToken `
-                                      -GithubUrl     $githubUrl
+        # Phase 2 + reassert: re-provision, then confirm the user and
+        # runner layers survived it. A regression in either surfaces as a
+        # Failed span here rather than only as "VMs gone" after teardown.
+        Measure-TimingSpan -Tree $Tree -Name 'Phase 2 + reassert' -Action {
+            Invoke-VmProvisioningPhase2 -Config $Config -Vm1Def $vmDef -Vm2Def $vm2Def
+            Assert-VmUsersStillIntact     -Config $Config -VmDef  $vmDef -Entry  $usersEntry
+            Assert-RunnerStillOnline      -Config $Config -VmDef  $vmDef `
+                                          -RunnerName    $runnerName `
+                                          -RunnersToken  $runnersToken `
+                                          -GithubUrl     $githubUrl
+        }
 
-        Invoke-VmProvisioningPhase3 -Config $Config -Vm1Def $vmDef -Vm2Def $vm2Def
-        Assert-VmUsersStillIntact     -Config $Config -VmDef  $vmDef -Entry  $usersEntry
-        Assert-RunnerStillOnline      -Config $Config -VmDef  $vmDef `
-                                      -RunnerName    $runnerName `
-                                      -RunnersToken  $runnersToken `
-                                      -GithubUrl     $githubUrl
+        # Phase 3 + reassert: second re-provision with the same guardrails.
+        Measure-TimingSpan -Tree $Tree -Name 'Phase 3 + reassert' -Action {
+            Invoke-VmProvisioningPhase3 -Config $Config -Vm1Def $vmDef -Vm2Def $vm2Def
+            Assert-VmUsersStillIntact     -Config $Config -VmDef  $vmDef -Entry  $usersEntry
+            Assert-RunnerStillOnline      -Config $Config -VmDef  $vmDef `
+                                          -RunnerName    $runnerName `
+                                          -RunnersToken  $runnersToken `
+                                          -GithubUrl     $githubUrl
+        }
 
         $succeeded = $true
     }
@@ -524,66 +566,74 @@ function Invoke-RunnerLifecycleTest {
         throw
     }
     finally {
+        # Teardown phase. Timed on both the clean and the best-effort
+        # path so every run - pass or fail - contributes a Teardown span
+        # to the report. Only one branch runs per invocation, so the
+        # by-name accumulation records a single node either way.
         if ($succeeded) {
-            Invoke-RunnerLifecycleTeardown `
-                -Config       $Config `
-                -VmDef        $vmDef `
-                -RunnersToken $runnersToken `
-                -Entry        $entry
+            Measure-TimingSpan -Tree $Tree -Name 'Teardown' -Action {
+                Invoke-RunnerLifecycleTeardown `
+                    -Config       $Config `
+                    -VmDef        $vmDef `
+                    -RunnersToken $runnersToken `
+                    -Entry        $entry
 
-            # Provisioning-layer teardown post-conditions (both VMs gone,
-            # per-VM disk artifacts gone, host-side JDK cache intact,
-            # switch + NAT removed, VmProvisionerConfig vault entry gone)
-            # have already been verified - Invoke-RunnerLifecycleTeardown
-            # calls Invoke-VmUsersTeardown, which calls
-            # Invoke-VmProvisioningTeardown, which calls
-            # Invoke-VmTeardownAssertions at the end of its own run.
+                # Provisioning-layer teardown post-conditions (both VMs gone,
+                # per-VM disk artifacts gone, host-side JDK cache intact,
+                # switch + NAT removed, VmProvisionerConfig vault entry gone)
+                # have already been verified - Invoke-RunnerLifecycleTeardown
+                # calls Invoke-VmUsersTeardown, which calls
+                # Invoke-VmProvisioningTeardown, which calls
+                # Invoke-VmTeardownAssertions at the end of its own run.
 
-            # Assert VmUsersConfig vault entry was removed (vm-users
-            # layer). Mirrors the same check inside the vm-users
-            # standalone teardown.
-            $usersSecretName = Get-E2ESecretName 'VmUsersConfig'
-            if ($null -ne (Get-SecretInfo -Vault VmUsers -Name $usersSecretName `
-                    -ErrorAction SilentlyContinue)) {
-                throw "Teardown incomplete: $usersSecretName still present in vault."
+                # Assert VmUsersConfig vault entry was removed (vm-users
+                # layer). Mirrors the same check inside the vm-users
+                # standalone teardown.
+                $usersSecretName = Get-E2ESecretName 'VmUsersConfig'
+                if ($null -ne (Get-SecretInfo -Vault VmUsers -Name $usersSecretName `
+                        -ErrorAction SilentlyContinue)) {
+                    throw "Teardown incomplete: $usersSecretName still present in vault."
+                }
+                Write-Host "  [OK] $usersSecretName removed from vault." -ForegroundColor Green
+
+                # Assert GitHubRunnersConfig vault entry was removed (runner
+                # layer's own teardown post-condition).
+                $runnersSecretName = Get-E2ESecretName 'GitHubRunnersConfig'
+                if ($null -ne (Get-SecretInfo -Vault GitHubRunners -Name $runnersSecretName `
+                        -ErrorAction SilentlyContinue)) {
+                    throw "Teardown incomplete: $runnersSecretName still present in vault."
+                }
+                Write-Host "  [OK] $runnersSecretName removed from vault." -ForegroundColor Green
             }
-            Write-Host "  [OK] $usersSecretName removed from vault." -ForegroundColor Green
-
-            # Assert GitHubRunnersConfig vault entry was removed (runner
-            # layer's own teardown post-condition).
-            $runnersSecretName = Get-E2ESecretName 'GitHubRunnersConfig'
-            if ($null -ne (Get-SecretInfo -Vault GitHubRunners -Name $runnersSecretName `
-                    -ErrorAction SilentlyContinue)) {
-                throw "Teardown incomplete: $runnersSecretName still present in vault."
-            }
-            Write-Host "  [OK] $runnersSecretName removed from vault." -ForegroundColor Green
         }
         else {
-            Write-Host 'Test did not complete - running best-effort cleanup ...' `
-                -ForegroundColor Yellow
+            Measure-TimingSpan -Tree $Tree -Name 'Teardown' -Action {
+                Write-Host 'Test did not complete - running best-effort cleanup ...' `
+                    -ForegroundColor Yellow
 
-            # Deregister first if we got a token - removes GitHub registration
-            # and runner files while the VM may still be alive.
-            if ($runnersToken) {
-                try {
-                    & "$($Config.RunnersPath)\hyper-v\ubuntu\PowerShell\deregister-runners.ps1" `
-                        -Token  $runnersToken `
-                        -SecretSuffix $script:E2ETestSecretSuffix `
-                        -Force
+                # Deregister first if we got a token - removes GitHub registration
+                # and runner files while the VM may still be alive.
+                if ($runnersToken) {
+                    try {
+                        & "$($Config.RunnersPath)\hyper-v\ubuntu\PowerShell\deregister-runners.ps1" `
+                            -Token  $runnersToken `
+                            -SecretSuffix $script:E2ETestSecretSuffix `
+                            -Force
+                    }
+                    catch {
+                        Write-Warning "Best-effort deregistration failed: $($_.Exception.Message)"
+                    }
                 }
-                catch {
-                    Write-Warning "Best-effort deregistration failed: $($_.Exception.Message)"
-                }
+
+                try { Invoke-VmProvisioningTeardown -Config $Config }
+                catch { Write-Warning "Best-effort deprovisioning failed: $($_.Exception.Message)" }
+
+                try { Remove-Secret -Vault VmUsers -Name (Get-E2ESecretName 'VmUsersConfig') -ErrorAction SilentlyContinue }
+                catch { Write-Warning "Best-effort secret removal failed: $($_.Exception.Message)" }
+
+                try { Remove-Secret -Vault GitHubRunners -Name (Get-E2ESecretName 'GitHubRunnersConfig') -ErrorAction SilentlyContinue }
+                catch { Write-Warning "Best-effort secret removal failed: $($_.Exception.Message)" }
             }
-
-            try { Invoke-VmProvisioningTeardown -Config $Config }
-            catch { Write-Warning "Best-effort deprovisioning failed: $($_.Exception.Message)" }
-
-            try { Remove-Secret -Vault VmUsers -Name (Get-E2ESecretName 'VmUsersConfig') -ErrorAction SilentlyContinue }
-            catch { Write-Warning "Best-effort secret removal failed: $($_.Exception.Message)" }
-
-            try { Remove-Secret -Vault GitHubRunners -Name (Get-E2ESecretName 'GitHubRunnersConfig') -ErrorAction SilentlyContinue }
-            catch { Write-Warning "Best-effort secret removal failed: $($_.Exception.Message)" }
         }
     }
 }

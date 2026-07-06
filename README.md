@@ -75,7 +75,9 @@ PowerShell 7+ (`pwsh`).
   - `VmUsers` (owned by `Infrastructure-Vm-Users`)
   - `GitHubRunners` (owned by `Infrastructure-GitHubRunners`)
   - `E2EConfig` (owned by this repo - see [GitHub App setup](#github-app-setup))
-- `Common.PowerShell` >= `3.1.0` installed from PSGallery
+- `Common.PowerShell` >= `9.1.0` installed from PSGallery (supplies the
+  N-level timing surface the runner-lifecycle run records its phase / part
+  breakdown with)
 - When `UsersFlow=ansible` (the default since feature 02 of
   `Common-Ansible`), `RunnersFlow=ansible` (opt-in during
   the first validation cycle; the default-flip happens in a follow-up

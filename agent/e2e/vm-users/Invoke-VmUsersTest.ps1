@@ -119,11 +119,23 @@ function Invoke-VmUsersSetup {
         # (e.g. runner lifecycle) pass an extended entry that adds
         # deploy and runner service users on top of the base set.
         [Parameter()]
-        [object] $Entry = $null
+        [object] $Entry = $null,
+
+        # Optional timing context threaded from a parent orchestration
+        # (the runner-lifecycle run). When supplied, the two shell-out
+        # steps below (provision Phase 1, user reconcile) record as spans
+        # under the parent's current node so the parent's report breaks
+        # Setup into its parts. The standalone vm-users flow passes none;
+        # a throwaway tree then absorbs the spans so the wrapping stays
+        # uniform and nothing downstream consumes them.
+        [object] $Tree = $null
     )
 
     if ($null -eq $Entry) {
         $Entry = Get-E2EUsersTestEntry
+    }
+    if ($null -eq $Tree) {
+        $Tree = New-TimingSpanTree -RootName 'vm-users-setup'
     }
 
     # VmUsersConfig must be a JSON array - ConvertFrom-VmUsersConfigJson
@@ -139,7 +151,13 @@ function Invoke-VmUsersSetup {
     # JDK 21 install + file-transfer fixture - users layer needs the VM
     # alive before it can SSH in to reconcile users.
     $vmDef = Invoke-VmProvisioningSetup -Config $Config
-    Invoke-VmProvisioningPhase1 -Config $Config -Vm1Def $vmDef
+    # The baseline provision that brings VM1 up is the first shell-out
+    # part; timed as one span here, deepened into its own internal
+    # breakdown once the provisioner exports its child tree (feature 88
+    # C2/D1).
+    Measure-TimingSpan -Tree $Tree -Name 'provisioning Phase 1' -Action {
+        Invoke-VmProvisioningPhase1 -Config $Config -Vm1Def $vmDef
+    }
 
     Write-Host "Reconciling users via '$($Config.UsersFlow)' flow ..." -ForegroundColor Magenta
     # $Config carries UsersFlow + WslDistro from Start-E2EAgent /
@@ -148,12 +166,15 @@ function Invoke-VmUsersSetup {
     # presence at startup so a missing value fails before the VM is built.
     # The ansible flow's create-users.sh self-resolves the Common-Ansible
     # substrate, so no Common-Ansible path is threaded here.
-    Set-VmUsersForTest `
-        -UsersFlow   $Config.UsersFlow `
-        -UsersPath   $Config.UsersPath `
-        -WslDistro   $Config.WslDistro `
-        -VmDef       $vmDef `
-        -Entry       $Entry
+    # User reconciliation is the second shell-out part - timed as one span.
+    Measure-TimingSpan -Tree $Tree -Name 'reconcile users' -Action {
+        Set-VmUsersForTest `
+            -UsersFlow   $Config.UsersFlow `
+            -UsersPath   $Config.UsersPath `
+            -WslDistro   $Config.WslDistro `
+            -VmDef       $vmDef `
+            -Entry       $Entry
+    }
 
     # Verify SSH is reachable after create-users.ps1 returns. create-users.ps1
     # pings the VM and silently skips it with Write-Warning when ping fails -
