@@ -53,21 +53,11 @@ function Invoke-VmProvisioningPhase2 {
     $toolParams       = $tcx.Params.Tools
     $toolInstallExtra = $tcx.Params.ToolInstallExtra
 
-    # 2a removes every toolchain from VM1 (reconciler: javaDevKit/dotnetSdk
-    # =$null, dotnetTools dropped; ansible: an empty desired state, which the
-    # roles' set-difference reconcile turns into an uninstall). 2b reinstalls
-    # JDK 17 + dotnet SDK 9.0.100 + the tool.
-    $toolchainsDesired2a = New-ToolchainDesiredState
-    $toolchainsDesired2b = New-ToolchainDesiredState `
-        -JdkVersions       @($script:JdkReinstallVersion) `
-        -DotnetSdkVersions @([ordered]@{
-            channel = $script:DotnetReinstallChannel
-            version = $script:DotnetReinstallResolvedVersion
-        }) `
-        -DotnetToolsTools  @([ordered]@{
-            id      = $script:DotnetToolId
-            version = $script:DotnetToolInitialVersion
-        })
+    # 2a removes every toolchain from VM1 (javaDevKit=$null + dotnetSdk=$null,
+    # dotnetTools dropped - all "ensure none" signals both engines honour). 2b
+    # reinstalls JDK 17 + dotnet SDK 9.0.100 + the tool. The desired state is
+    # authored directly in the per-VM VmProvisionerConfig blocks below for both
+    # engines - no separate desired-state document.
 
     Write-Host '' -ForegroundColor Magenta
     Write-Host 'Phase 2a: rewriting VmProvisionerConfig - VM1 javaDevKit=$null + dotnetSdk=$null + add VM2 ...' `
@@ -82,14 +72,14 @@ function Invoke-VmProvisioningPhase2 {
         -VmName    $Vm1Def.vmName `
         -IpAddress $Vm1Def.ipAddress `
         -Password  $Vm1Def.password
-    # Reconciler flow only: explicit JSON null is the "ensure none installed"
-    # signal (the dotnet provider's Get-DesiredVersions returns @() and the
-    # reconciler drives the uninstall path). Under ansible these blocks are
-    # omitted and the empty 2a desired state drives the uninstall instead.
-    if (-not $tcx.IsAnsible) {
-        $vm1Entry.javaDevKit = $null
-        $vm1Entry.dotnetSdk  = $null
-    }
+    # Explicit JSON null is the "ensure none installed" signal for both engines
+    # (ConvertTo-Json renders $null as JSON null; the reconciler's
+    # Get-DesiredVersions maps it to @() and the Ansible per-host projection
+    # maps an all-empty VM to an empty install set the roles reconcile to an
+    # uninstall). dotnetTools is dropped (absent) so the co-tenanted tool is
+    # removed alongside its SDK.
+    $vm1Entry.javaDevKit = $null
+    $vm1Entry.dotnetSdk  = $null
     # Carry the phase-1 files array forward unchanged so the bulk + single
     # idempotence assertions below have something to validate against.
     $vm1Entry.files = @(
@@ -125,14 +115,14 @@ function Invoke-VmProvisioningPhase2 {
 
     Write-Host 'Phase 2a: provisioning (uninstall via absent on VM1, create VM2) ...' `
         -ForegroundColor Magenta
-    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\PowerShell\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
+    Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx
 
-    # Ansible flow: drive the uninstall via the empty 2a desired state (no-op
-    # under custom-powershell, which already uninstalled inside provision.ps1).
+    # Ansible flow: drive the uninstall by reconciling the (now empty) per-VM
+    # toolchain state from VmProvisionerConfig (no-op under custom-powershell,
+    # which already uninstalled inside provision.ps1).
     Set-VmToolchainsForTest `
         -ToolchainsFlow  $tcx.Flow `
         -ProvisionerPath $Config.ProvisionerPath `
-        -DesiredState    $toolchainsDesired2a `
         -WslDistro       $tcx.WslDistro
 
     Write-Host "Phase 2a: verifying uninstall-via-absent on $($Vm1Def.vmName) ..." `
@@ -219,15 +209,14 @@ function Invoke-VmProvisioningPhase2 {
         Invoke-VmReadyAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
         Invoke-StaticNetworkAssertions -SshClient $sshClient -VmDef $Vm2Def
         Invoke-EgressAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
-        # The VM2 "no leak" witness is a reconciler property: the ansible
-        # driver reconciles toolchains globally across the inventory, so it
-        # legitimately installs on VM2 too - there is no per-VM isolation to
-        # witness. Skipped under ansible (the shared cross-engine set is the
-        # VM1 install/swap/uninstall end-states, not this witness).
-        if (-not $tcx.IsAnsible) {
-            Invoke-NoJdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
-            Invoke-NoDotnetSdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
-        }
+        # VM2 "no leak" witness: VM2 carries no toolchain fields, so neither
+        # engine installs on it - the reconciler skips it, and the per-host
+        # Ansible flow omits it from the resolved map (its playbook lookup
+        # defaults to empty). Asserting it clean under BOTH engines is the E2E
+        # proof that per-VM targeting holds - a JDK step on VM1 never leaks to
+        # a co-provisioned VM2.
+        Invoke-NoJdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
+        Invoke-NoDotnetSdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
     }
 
     # ------------------------------------------------------------------
@@ -242,31 +231,28 @@ function Invoke-VmProvisioningPhase2 {
         -VmName    $Vm1Def.vmName `
         -IpAddress $Vm1Def.ipAddress `
         -Password  $Vm1Def.password
-    # Reconciler flow only: re-add the toolchain blocks (JDK 17 + dotnet SDK
-    # 9.0.100 on the *other* channel + the tool) so the reconciler drives a
-    # fresh install (empty -> single version) for every provider in one run.
-    # Under ansible the blocks stay off the entry and the 2b desired state
-    # drives the reinstall via provision-toolchains.sh below.
-    if (-not $tcx.IsAnsible) {
-        $vm1Entry.javaDevKit = [ordered]@{
-            vendor  = $script:JdkTestVendor
-            version = $script:JdkReinstallVersion
-        }
-        $vm1Entry.dotnetSdk = [ordered]@{
-            channel = $script:DotnetReinstallChannel
-            version = $script:DotnetReinstallResolvedVersion
-        }
-        # Re-co-tenant the same tool at its initial pin. Phase 3a then
-        # version-changes it to $DotnetToolReinstallVersion alongside the
-        # SDK version-change so the swap is observable in a single
-        # provision run.
-        $vm1Entry.dotnetTools = @(
-            [ordered]@{
-                id      = $script:DotnetToolId
-                version = $script:DotnetToolInitialVersion
-            }
-        )
+    # Re-add the toolchain blocks (JDK 17 + dotnet SDK 9.0.100 on the *other*
+    # channel + the tool) so a fresh install (empty -> single version) runs for
+    # every provider in one go. Same blocks for both engines; ansible installs
+    # them via provision-toolchains.sh (provision.ps1 -SkipToolchains).
+    $vm1Entry.javaDevKit = [ordered]@{
+        vendor  = $script:JdkTestVendor
+        version = $script:JdkReinstallVersion
     }
+    $vm1Entry.dotnetSdk = [ordered]@{
+        channel = $script:DotnetReinstallChannel
+        version = $script:DotnetReinstallResolvedVersion
+    }
+    # Re-co-tenant the same tool at its initial pin. Phase 3a then
+    # version-changes it to $DotnetToolReinstallVersion alongside the
+    # SDK version-change so the swap is observable in a single
+    # provision run.
+    $vm1Entry.dotnetTools = @(
+        [ordered]@{
+            id      = $script:DotnetToolId
+            version = $script:DotnetToolInitialVersion
+        }
+    )
     # files + envVars carry forward unchanged from 2a so the only diff
     # the reconciler sees is the new javaDevKit field. No mtime-advance
     # assertion here (envVars block content unchanged - the transport
@@ -298,14 +284,14 @@ function Invoke-VmProvisioningPhase2 {
 
     Write-Host 'Phase 2b: provisioning (re-add JDK on VM1) ...' `
         -ForegroundColor Magenta
-    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\PowerShell\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
+    Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx
 
-    # Ansible flow: reinstall via the 2b desired state (no-op under
-    # custom-powershell, which reinstalled inside provision.ps1).
+    # Ansible flow: reinstall by reconciling VM1's per-VM toolchain state from
+    # VmProvisionerConfig (no-op under custom-powershell, which reinstalled
+    # inside provision.ps1).
     Set-VmToolchainsForTest `
         -ToolchainsFlow  $tcx.Flow `
         -ProvisionerPath $Config.ProvisionerPath `
-        -DesiredState    $toolchainsDesired2b `
         -WslDistro       $tcx.WslDistro
 
     Write-Host "Phase 2b: verifying JDK $($script:JdkReinstallVersion) + dotnet SDK $($script:DotnetReinstallResolvedVersion) reinstalled on $($Vm1Def.vmName) ..." `
@@ -335,16 +321,15 @@ function Invoke-VmProvisioningPhase2 {
             @toolParams @toolInstallExtra
     }
 
-    # VM2 "no leak" witness - reconciler-only (see the 2a note): the ansible
-    # driver installs globally across the inventory, so VM2 legitimately
-    # carries the toolchain under that flow. Skip the whole SSH round-trip.
-    if (-not $tcx.IsAnsible) {
-        Write-Host "Phase 2b: re-verifying VM2 has no JDK / dotnet artifacts ($($Vm2Def.vmName)) ..." `
-            -ForegroundColor Magenta
-        Invoke-WithVmSshClient -VmDef $Vm2Def -Assertions {
-            param($sshClient)
-            Invoke-NoJdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
-            Invoke-NoDotnetSdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
-        }
+    # VM2 "no leak" witness (see the 2a note): VM2 carries no toolchain fields,
+    # so under BOTH engines the JDK 17 re-install on VM1 must not appear on VM2
+    # - the per-host Ansible flow omits VM2 from its resolved map exactly as the
+    # reconciler skips it.
+    Write-Host "Phase 2b: re-verifying VM2 has no JDK / dotnet artifacts ($($Vm2Def.vmName)) ..." `
+        -ForegroundColor Magenta
+    Invoke-WithVmSshClient -VmDef $Vm2Def -Assertions {
+        param($sshClient)
+        Invoke-NoJdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
+        Invoke-NoDotnetSdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
     }
 }

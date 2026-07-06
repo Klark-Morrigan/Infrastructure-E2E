@@ -46,7 +46,7 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 . "$PSScriptRoot\Resolve-RouterIpFromKvp.ps1"
 # Toolchain-flow dispatcher (custom-powershell reconciler vs the Ansible
 # provision-toolchains.sh driver). Dot-sourced before the phase files so
-# they can call Set-VmToolchainsForTest / New-ToolchainDesiredState.
+# they can call Set-VmToolchainsForTest.
 . "$PSScriptRoot\Set-VmToolchainsForTest.ps1"
 
 # ---------------------------------------------------------------------------
@@ -605,6 +605,31 @@ function Get-ToolchainPhaseContext {
             $Config.WslDistro
         } else { $null }
     }
+}
+
+# Runs the provisioner for a phase. Under the ansible toolchain flow it passes
+# -SkipToolchains so provision.ps1's in-repo reconciler leaves the toolchains
+# to the separate provision-toolchains.sh driver (Set-VmToolchainsForTest);
+# under custom-powershell the reconciler installs them in-line. The per-VM
+# toolchain fields live in VmProvisionerConfig either way - only this one
+# argument differs by engine, so centralising it keeps every phase's
+# provisioning call identical.
+function Invoke-ProvisionerForPhase {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [PSCustomObject] $Config,
+        [Parameter(Mandatory)] [PSCustomObject] $Tcx
+    )
+
+    # Hashtable splat, NOT an array. Array splatting passes every element
+    # as a POSITIONAL argument - '-SecretSuffix' would bind to provision.ps1's
+    # lone positional slot and 'E2E' would spill over as an unbindable second
+    # positional ("A positional parameter cannot be found that accepts
+    # argument 'E2E'"). A hashtable maps each key to the matching -Named
+    # parameter, and a $true value drives the [switch].
+    $provArgs = @{ SecretSuffix = $script:E2ETestSecretSuffix }
+    if ($Tcx.IsAnsible) { $provArgs['SkipToolchains'] = $true }
+    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\PowerShell\provision.ps1" @provArgs
 }
 
 # Phase functions. One file per phase so each is independently reviewable

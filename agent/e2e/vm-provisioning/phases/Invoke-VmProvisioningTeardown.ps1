@@ -79,18 +79,9 @@ function Invoke-VmProvisioningTeardown {
     Write-Host 'Removing test VmProvisionerConfig from vault ...' -ForegroundColor Magenta
     Remove-Secret -Vault VmProvisioner -Name (Get-E2ESecretName 'VmProvisionerConfig')
 
-    # Under ToolchainsFlow=ansible the phases wrote a ToolchainsConfig entry
-    # for the provision-toolchains.sh driver to read; remove it so a test
-    # run leaves no fixture behind. Best-effort and guarded: the entry only
-    # exists under the ansible flow, the property is absent on the standalone
-    # provisioning test's config (StrictMode-safe access), and the vault
-    # itself is registered lazily by the dispatcher.
-    if ($Config.PSObject.Properties['ToolchainsFlow'] -and
-        $Config.ToolchainsFlow -eq 'ansible') {
-        Write-Host 'Removing test ToolchainsConfig from vault ...' -ForegroundColor Magenta
-        Remove-Secret -Vault Toolchains -Name (Get-E2ESecretName 'ToolchainsConfig') `
-            -ErrorAction SilentlyContinue
-    }
+    # No separate ToolchainsConfig fixture to remove: the ansible flow now reads
+    # the per-VM toolchain fields from VmProvisionerConfig (removed just above),
+    # so there is nothing extra to clean up under ToolchainsFlow=ansible.
 
     Invoke-VmTeardownAssertions -Config $Config
 }
