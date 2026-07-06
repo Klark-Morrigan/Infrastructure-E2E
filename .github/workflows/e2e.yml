@@ -51,8 +51,14 @@ on:
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    # 35 minutes: covers the 30-minute poll window plus startup slack.
-    timeout-minutes: 35
+    # 95 minutes: covers the 90-minute poll window plus startup slack. The
+    # workstation run is a 5-phase install/uninstall/reinstall/version-swap/
+    # remove matrix across jdk + dotnet SDK + tools; the swap phase alone
+    # forces a second toolchain version to be staged (a structural cache miss
+    # of a few hundred MB), so a cold-cache run legitimately approaches an
+    # hour. The window is generous rather than tight so a real green run is
+    # never reported as a false timeout.
+    timeout-minutes: 95
 
     steps:
       - name: Obtain GitHub App token (Infrastructure-E2E)
@@ -142,11 +148,14 @@ jobs:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           DEPLOYMENT_ID: ${{ steps.create-deployment.outputs.deployment-id }}
         run: |
-          # Poll every 30 seconds for up to 30 minutes (60 attempts).
+          # Poll every 30 seconds for up to 90 minutes (180 attempts).
           # The polling agent on the workstation picks up the deployment,
           # runs the full test suite, then posts success or failure here.
+          # 90 minutes covers the cold-cache 5-phase toolchain matrix (the
+          # version-swap phase stages a second toolchain build) with margin;
+          # a warm-cache run finishes well inside it.
           # GitHub returns statuses newest-first, so .[0] is the latest.
-          max_polls=60
+          max_polls=180
           timed_out=true
 
           for i in $(seq 1 $max_polls); do
@@ -167,7 +176,7 @@ jobs:
           done
 
           if [ "$timed_out" = "true" ]; then
-            echo "::error::Timed out after 30 minutes - polling agent did not post a terminal status."
+            echo "::error::Timed out after 90 minutes - agent posted no terminal status."
             exit 1
           fi
 
