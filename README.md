@@ -580,9 +580,26 @@ per-invocation path, so it grafts as a sub-span rather than overwriting
 
 Under `ToolchainsFlow=custom-powershell` the dispatcher shells out to nothing
 (the reconciler installed the toolchains inside `provision.ps1`), so the
-`provision toolchains` span renders empty. The split is inert until the WSL
-opt-in bridge ships (the bash variable does not yet cross into WSL), but it
-readies the part for the toolchains subtree the moment that lands.
+`provision toolchains` span renders empty.
+
+#### Crossing the WSL boundary for bash children
+
+A pwsh child inherits `TIMING_TREE_OUTPUT_PATH` directly, but a bash child
+launched with `wsl -- ...` does not: a Windows environment variable is
+invisible inside WSL unless its name is listed in `WSLENV`, and a path value is
+unusable there without the `/p` translation flag (which maps the Windows temp
+path under `C:` to `/mnt/c/...`). So while it holds the opt-in variable set,
+`Measure-ChildProcessTimingSpan` also appends `TIMING_TREE_OUTPUT_PATH/p` to
+`WSLENV` for the duration of the action and restores the prior `WSLENV` in the
+same `finally` (removed if it did not exist before). The append is guarded
+against duplication, so a nested wrap does not stack a second entry.
+
+Doing this once, in the wrapper that owns the opt-in variable, covers every
+bash child - present and future - with no per-shell-out edits: the bash
+emitters (`register-runners.sh`, `create-users.sh`, `provision-toolchains.sh`)
+write the very file the parent then imports. When the wrapper is not on the
+stack the variable stays unset and `WSLENV` is untouched, so a normal run is
+unchanged.
 
 ---
 

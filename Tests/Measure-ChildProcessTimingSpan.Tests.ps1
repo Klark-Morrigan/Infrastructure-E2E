@@ -14,8 +14,10 @@ Describe 'Measure-ChildProcessTimingSpan' {
 
     BeforeEach {
         # Ensure no ambient opt-in leaks in from a previous test or the host
-        # session; the helper's restore logic is asserted separately.
+        # session; the helper's restore logic is asserted separately. WSLENV is
+        # cleared too so the /p forwarding assertions start from a known state.
         Remove-Item Env:TIMING_TREE_OUTPUT_PATH -ErrorAction SilentlyContinue
+        Remove-Item Env:WSLENV -ErrorAction SilentlyContinue
     }
 
     It 'grafts the child export spans under the correct part node' {
@@ -115,5 +117,89 @@ Describe 'Measure-ChildProcessTimingSpan' {
         @($part.Children | ForEach-Object { $_.Name }) | Should -Be @('partial')
         # Temp file removed on the throw path too.
         Test-Path -LiteralPath $script:tempPath | Should -BeFalse
+    }
+
+    # ----------------------------------------------------------------------
+    # E3: bridge the opt-in across the WSL boundary so bash children under
+    # `wsl -- ...` can see and path-translate TIMING_TREE_OUTPUT_PATH.
+    # ----------------------------------------------------------------------
+
+    It 'forwards TIMING_TREE_OUTPUT_PATH/p in WSLENV during the wrapped action' {
+        $tree = New-TimingSpanTree -RootName 'run'
+        Mock Import-TimingSpanTree { }
+        $script:seenWslEnv = $null
+
+        Measure-ChildProcessTimingSpan -Tree $tree -Name 'p' -Action {
+            $script:seenWslEnv = $env:WSLENV
+        }
+
+        # The /p flag path-translates the Windows temp path to /mnt/c/... for
+        # the bash child; without the entry the var is invisible inside WSL.
+        $script:seenWslEnv | Should -Match 'TIMING_TREE_OUTPUT_PATH/p'
+    }
+
+    It 'removes WSLENV afterwards when it did not exist before' {
+        $tree = New-TimingSpanTree -RootName 'run'
+        Mock Import-TimingSpanTree { }
+
+        Measure-ChildProcessTimingSpan -Tree $tree -Name 'p' -Action { }
+
+        # BeforeEach cleared WSLENV, so a $null prior means it is removed, not
+        # left as an empty string.
+        Test-Path Env:WSLENV | Should -BeFalse
+    }
+
+    It 'restores a pre-existing WSLENV to its prior value afterwards' {
+        $tree = New-TimingSpanTree -RootName 'run'
+        Mock Import-TimingSpanTree { }
+        $env:WSLENV = 'SECRET_SUFFIX/u'
+
+        try {
+            Measure-ChildProcessTimingSpan -Tree $tree -Name 'p' -Action {
+                # The forwarding is appended to, not clobbering, the prior value.
+                $env:WSLENV | Should -Match 'SECRET_SUFFIX/u'
+                $env:WSLENV | Should -Match 'TIMING_TREE_OUTPUT_PATH/p'
+            }
+            $env:WSLENV | Should -Be 'SECRET_SUFFIX/u'
+        }
+        finally {
+            Remove-Item Env:WSLENV -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'does not duplicate the WSLENV entry when a wrap is nested' {
+        $tree = New-TimingSpanTree -RootName 'run'
+        Mock Import-TimingSpanTree { }
+        $script:innerWslEnv = $null
+
+        Measure-ChildProcessTimingSpan -Tree $tree -Name 'outer' -Action {
+            # A nested part (e.g. E2's 'provision toolchains' inside
+            # 'provisioning Phase 1') must not stack a second entry.
+            Measure-ChildProcessTimingSpan -Tree $tree -Name 'inner' -Action {
+                $script:innerWslEnv = $env:WSLENV
+            }
+        }
+
+        $entryCount = ([regex]::Matches($script:innerWslEnv, 'TIMING_TREE_OUTPUT_PATH/p')).Count
+        $entryCount | Should -Be 1
+    }
+
+    It 'restores WSLENV on the throw path too' {
+        $tree = New-TimingSpanTree -RootName 'run'
+        Mock Import-TimingSpanTree { }
+        $env:WSLENV = 'SECRET_SUFFIX/u'
+
+        try {
+            {
+                Measure-ChildProcessTimingSpan -Tree $tree -Name 'p' -Action {
+                    throw 'child boom'
+                }
+            } | Should -Throw '*child boom*'
+
+            $env:WSLENV | Should -Be 'SECRET_SUFFIX/u'
+        }
+        finally {
+            Remove-Item Env:WSLENV -ErrorAction SilentlyContinue
+        }
     }
 }

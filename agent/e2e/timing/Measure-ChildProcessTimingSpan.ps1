@@ -19,6 +19,17 @@
 #   subtree is imported and its top-level spans become the children of this
 #   part's node.
 #
+#   For a bash child under WSL the opt-in also has to cross the WSL boundary:
+#   a Windows env var is invisible inside `wsl -- ...` unless its name is
+#   listed in WSLENV, and a path value is unusable there without the /p
+#   translation flag. This wrapper appends TIMING_TREE_OUTPUT_PATH/p to WSLENV
+#   for the duration of the action so the bash emitters (register-runners.sh,
+#   create-users.sh, provision-toolchains.sh) write the very file the parent
+#   then imports; the pwsh children ignore WSLENV and are unaffected. Doing
+#   the forwarding here - once, in the wrapper that owns the opt-in variable -
+#   covers every bash child, present and future, with no per-shell-out edits
+#   (feature 88 E3).
+#
 #   The graft is graceful by design. Until a given child ships its emitter -
 #   and for any child that crashes before exporting - no file is written, so
 #   the part is simply timed with no children and no error. Each child deepens
@@ -65,6 +76,22 @@ function Measure-ChildProcessTimingSpan {
     $priorOutputPath              = $env:TIMING_TREE_OUTPUT_PATH
     $env:TIMING_TREE_OUTPUT_PATH  = $childTreePath
 
+    # Forward the opt-in across the WSL boundary. The name must be listed in
+    # WSLENV to reach a `wsl -- ...` child at all, and the /p flag path-
+    # translates the Windows temp path (under C:) to /mnt/c/... so the bash
+    # child writes the same file imported below. Saved and restored in the same
+    # finally as the path. Guarded against duplication so a nested wrap does not
+    # stack the entry, mirroring the GH_TOKEN/u forwarding in Set-VmRunnersForTest.
+    $priorWslEnv = $env:WSLENV
+    if ($env:WSLENV) {
+        if ($env:WSLENV -notlike '*TIMING_TREE_OUTPUT_PATH*') {
+            $env:WSLENV = "$env:WSLENV`:TIMING_TREE_OUTPUT_PATH/p"
+        }
+    }
+    else {
+        $env:WSLENV = 'TIMING_TREE_OUTPUT_PATH/p'
+    }
+
     # Resolve the parent up front: Measure-TimingSpan mints the part node as a
     # child of the current node, so after it returns (or throws) the node is
     # found here by name. Captured before the call so the finally graft works
@@ -75,13 +102,22 @@ function Measure-ChildProcessTimingSpan {
         Measure-TimingSpan -Tree $Tree -Name $Name -Action $Action -Source $Source
     }
     finally {
-        # Restore the env var first. A $null prior value means it did not
-        # exist before, so remove it rather than leaving an empty string.
+        # Restore the env vars first. A $null prior value means the variable
+        # did not exist before, so remove it rather than leaving an empty
+        # string. WSLENV is restored alongside the path so the per-invocation
+        # forwarding never accumulates across sibling parts.
         if ($null -eq $priorOutputPath) {
             Remove-Item Env:TIMING_TREE_OUTPUT_PATH -ErrorAction SilentlyContinue
         }
         else {
             $env:TIMING_TREE_OUTPUT_PATH = $priorOutputPath
+        }
+
+        if ($null -eq $priorWslEnv) {
+            Remove-Item Env:WSLENV -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:WSLENV = $priorWslEnv
         }
 
         # Graft the child's exported subtree under the part node. Only import
