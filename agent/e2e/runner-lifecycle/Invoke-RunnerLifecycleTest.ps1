@@ -425,7 +425,9 @@ function Invoke-RunnerLifecycleTest {
         # startup so a missing value fails before the VM is built. The
         # ansible flow resolves register-runners.sh under $RunnersPath
         # (GitHubRunners), which self-resolves the Common-Ansible substrate.
-        Measure-TimingSpan -Tree $Tree -Name 'Register runners' -Action {
+        # Wrapped so register-runners' own exported timing tree grafts under
+        # this span once its emitter ships (feature 88 C2/D2).
+        Measure-ChildProcessTimingSpan -Tree $Tree -Name 'Register runners' -Action {
             Set-VmRunnersForTest `
                 -RunnersFlow  $Config.RunnersFlow `
                 -RunnersPath  $Config.RunnersPath `

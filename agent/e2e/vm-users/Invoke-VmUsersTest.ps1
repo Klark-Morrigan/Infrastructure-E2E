@@ -7,6 +7,12 @@
 
 . "$PSScriptRoot\..\vm-provisioning\Invoke-VmProvisioningTest.ps1"
 
+# Shell-out timing wrapper: sets the TIMING_TREE_OUTPUT_PATH opt-in, times
+# the part, and grafts the child process's exported timing tree under the
+# part's span (feature 88 C2). Used by the two shell-out parts below and by
+# the runner-lifecycle layer that dot-sources this file.
+. "$PSScriptRoot\..\timing\Measure-ChildProcessTimingSpan.ps1"
+
 # Re-verification helper used after phases 2 and 3 to confirm a
 # re-provision did not disturb user / group state.
 . "$PSScriptRoot\Invoke-VmUsersStillIntactAssertions.ps1"
@@ -154,8 +160,9 @@ function Invoke-VmUsersSetup {
     # The baseline provision that brings VM1 up is the first shell-out
     # part; timed as one span here, deepened into its own internal
     # breakdown once the provisioner exports its child tree (feature 88
-    # C2/D1).
-    Measure-TimingSpan -Tree $Tree -Name 'provisioning Phase 1' -Action {
+    # C2/D1). Measure-ChildProcessTimingSpan grafts that export under this
+    # span; until the emitter ships the part is simply timed with no children.
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name 'provisioning Phase 1' -Action {
         Invoke-VmProvisioningPhase1 -Config $Config -Vm1Def $vmDef
     }
 
@@ -166,8 +173,9 @@ function Invoke-VmUsersSetup {
     # presence at startup so a missing value fails before the VM is built.
     # The ansible flow's create-users.sh self-resolves the Common-Ansible
     # substrate, so no Common-Ansible path is threaded here.
-    # User reconciliation is the second shell-out part - timed as one span.
-    Measure-TimingSpan -Tree $Tree -Name 'reconcile users' -Action {
+    # User reconciliation is the second shell-out part - timed as one span,
+    # deepened by the child's exported tree once its emitter ships.
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name 'reconcile users' -Action {
         Set-VmUsersForTest `
             -UsersFlow   $Config.UsersFlow `
             -UsersPath   $Config.UsersPath `
