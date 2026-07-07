@@ -1,7 +1,8 @@
 <#
 .NOTES
     Do not run this file directly. Dot-source it after Common.PowerShell is
-    loaded (the runner-lifecycle chain does this via Invoke-VmUsersTest.ps1).
+    loaded (Invoke-VmProvisioningTest.ps1 does this; the vm-users and
+    runner-lifecycle chains inherit it transitively through that file).
 #>
 
 # ---------------------------------------------------------------------------

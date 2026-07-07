@@ -7,11 +7,10 @@
 
 . "$PSScriptRoot\..\vm-provisioning\Invoke-VmProvisioningTest.ps1"
 
-# Shell-out timing wrapper: sets the TIMING_TREE_OUTPUT_PATH opt-in, times
-# the part, and grafts the child process's exported timing tree under the
-# part's span (feature 88 C2). Used by the two shell-out parts below and by
-# the runner-lifecycle layer that dot-sources this file.
-. "$PSScriptRoot\..\timing\Measure-ChildProcessTimingSpan.ps1"
+# The shell-out timing wrapper (Measure-ChildProcessTimingSpan, feature 88
+# C2) - used by the two setup parts below and by the runner-lifecycle layer
+# that dot-sources this file - is pulled in transitively by the provisioning
+# chain above (its Phase 1 consumes it), so it is not re-sourced here.
 
 # Re-verification helper used after phases 2 and 3 to confirm a
 # re-provision did not disturb user / group state.
@@ -162,8 +161,12 @@ function Invoke-VmUsersSetup {
     # breakdown once the provisioner exports its child tree (feature 88
     # C2/D1). Measure-ChildProcessTimingSpan grafts that export under this
     # span; until the emitter ships the part is simply timed with no children.
+    # -Tree threads this part's context into the phase so its toolchains
+    # shell-out nests as a 'provision toolchains' sub-span under this part
+    # rather than clobbering provision.ps1's export on the shared path
+    # (feature 88 E2).
     Measure-ChildProcessTimingSpan -Tree $Tree -Name 'provisioning Phase 1' -Action {
-        Invoke-VmProvisioningPhase1 -Config $Config -Vm1Def $vmDef
+        Invoke-VmProvisioningPhase1 -Config $Config -Vm1Def $vmDef -Tree $Tree
     }
 
     Write-Host "Reconciling users via '$($Config.UsersFlow)' flow ..." -ForegroundColor Magenta

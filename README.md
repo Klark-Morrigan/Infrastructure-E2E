@@ -557,6 +557,33 @@ The variable name is deliberately neutral: a production script exports to
 whatever path it is handed and never learns that the E2E run is its consumer,
 keeping the child scripts test-agnostic.
 
+#### Parts that shell out to more than one exporting child
+
+`Measure-ChildProcessTimingSpan` hands each part **one** output path, so a part
+that shells out to two exporting children in sequence would have the second
+writer clobber the first. `provisioning Phase 1` is exactly that case under
+`ToolchainsFlow=ansible`: it runs `provision.ps1` (the baseline provision) and
+then `provision-toolchains.sh` (the Ansible toolchain install), and both honour
+the opt-in. To keep the two subtrees separate, the phase wraps the toolchains
+shell-out in a **nested** `provision toolchains` child span with its own
+per-invocation path, so it grafts as a sub-span rather than overwriting
+`provision.ps1`'s export:
+
+```
+    provisioning Phase 1      [OK]     430.10 s  ( 84%)
+      boot VM                 [OK]     120.00 s  ( 28%)   <- from provision.ps1
+      install JDK             [OK]      95.00 s  ( 22%)   <- from provision.ps1
+      provision toolchains    [OK]     180.00 s  ( 42%)   <- nested child span
+        run jdk role          [OK]      90.00 s  ( 50%)   <- from provision-toolchains.sh
+        run dotnet role       [OK]      85.00 s  ( 47%)   <- from provision-toolchains.sh
+```
+
+Under `ToolchainsFlow=custom-powershell` the dispatcher shells out to nothing
+(the reconciler installed the toolchains inside `provision.ps1`), so the
+`provision toolchains` span renders empty. The split is inert until the WSL
+opt-in bridge ships (the bash variable does not yet cross into WSL), but it
+readies the part for the toolchains subtree the moment that lands.
+
 ---
 
 ## Linting and CI
@@ -695,7 +722,10 @@ Tests/
   Set-VmRunnersForTest.Tests.ps1         - Unit tests for the register-side flow dispatcher
   Invoke-RunnerLifecycleTest.Tests.ps1   - Unit tests for the lifecycle timing tree + report emission
   Measure-ChildProcessTimingSpan.Tests.ps1 - Unit tests for the child-tree graft
+  Invoke-VmProvisioningPhase1.Tests.ps1  - Unit tests for the nested provision-toolchains child span
   Publish-E2ETimingReport.Tests.ps1      - Unit tests for the report + artifact + retention
+  support/
+    TimingSpanTestDoubles.ps1            - Shared timing doubles for the three timing suites (not a *.Tests.ps1)
 docs/
   dev/
     implementation/                - Problem and plan docs per implementation phase

@@ -1,68 +1,11 @@
 BeforeAll {
     # ----------------------------------------------------------------------
-    # Timing surface (Common.PowerShell 9.1.0) is not installed in this unit
-    # runspace - like every other Common.PowerShell dependency in this repo's
-    # tests, it is stubbed. These two doubles reproduce the New-/Measure-
-    # TimingSpan contract the instrumentation relies on (find-or-create by
-    # name-within-parent, push/pop nesting, sticky-Failed, pass-through of the
-    # timed action's output) so the assembled tree is real enough to assert
-    # the orchestration shape against. The exhaustive timing semantics are
-    # covered by Common.PowerShell.Tests; here they are a fixture.
+    # Timing surface (Common.PowerShell) is not installed in this unit runspace,
+    # so New-/Measure-TimingSpan are stubbed. The doubles are shared with the
+    # other timing suites via one fixture (see the file's header for the
+    # contract they reproduce); this suite only needs the tree + span doubles.
     # ----------------------------------------------------------------------
-    function New-TimingSpanTree {
-        param(
-            [Parameter(Mandatory)] [string] $RootName,
-            [string] $Source
-        )
-        $root = [pscustomobject]@{
-            Name      = $RootName
-            Status    = 'Running'
-            ElapsedMs = $null
-            Source    = $Source
-            Children  = [System.Collections.Generic.List[object]]::new()
-        }
-        $ctx = [pscustomobject]@{
-            Root  = $root
-            Stack = [System.Collections.Generic.Stack[object]]::new()
-        }
-        $ctx.Stack.Push($root)
-        return $ctx
-    }
-
-    function Measure-TimingSpan {
-        param(
-            [Parameter(Mandatory)] $Tree,
-            [Parameter(Mandatory)] [string] $Name,
-            [Parameter(Mandatory)] [scriptblock] $Action,
-            [string] $Source
-        )
-        $parent = $Tree.Stack.Peek()
-        $node   = @($parent.Children | Where-Object { $_.Name -eq $Name })[0]
-        if (-not $node) {
-            $node = [pscustomobject]@{
-                Name      = $Name
-                Status    = 'Running'
-                ElapsedMs = 0
-                Source    = $Source
-                Children  = [System.Collections.Generic.List[object]]::new()
-            }
-            [void] $parent.Children.Add($node)
-        }
-        $Tree.Stack.Push($node)
-        try {
-            & $Action
-            if ($node.Status -ne 'Failed') { $node.Status = 'OK' }
-        }
-        catch {
-            # Sticky-Failed + re-throw: mirrors the real verb so a mid-run
-            # failure leaves the failing span marked and the exception intact.
-            $node.Status = 'Failed'
-            throw
-        }
-        finally {
-            $Tree.Stack.Pop() | Out-Null
-        }
-    }
+    . "$PSScriptRoot\support\TimingSpanTestDoubles.ps1"
 
     # ----------------------------------------------------------------------
     # Agent-shared helpers + module cmdlets the runner-lifecycle chain calls

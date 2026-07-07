@@ -3,7 +3,7 @@
     Do not run this file directly. Dot-sourced by Invoke-VmProvisioningTest.ps1
     after Common.PowerShell, the assertion helpers, and the shared
     orchestrator helpers (New-VmEntryBase, Write-VmProvisionerConfig,
-    Invoke-WithVmSshClient) are loaded.
+    Invoke-WithVmSshClient, Measure-ChildProcessTimingSpan) are loaded.
 #>
 
 # ---------------------------------------------------------------------------
@@ -30,8 +30,25 @@ function Invoke-VmProvisioningPhase1 {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [PSCustomObject] $Config,
-        [Parameter(Mandatory)] [PSCustomObject] $Vm1Def
+        [Parameter(Mandatory)] [PSCustomObject] $Vm1Def,
+
+        # Optional timing context threaded from the parent orchestration
+        # (the 'provisioning Phase 1' part span in Invoke-VmUsersSetup).
+        # When supplied, the toolchains shell-out below records as a nested
+        # 'provision toolchains' span with its OWN per-invocation output
+        # path, so the bash driver's exported tree grafts separately from
+        # provision.ps1's export (which the parent part already imports).
+        # Without the split, the two co-resident exporting children would
+        # share the part's single TIMING_TREE_OUTPUT_PATH and the second
+        # writer would clobber the first (feature 88 E2). The standalone
+        # provisioning flow passes none; a throwaway tree then absorbs the
+        # span so the wrapping stays uniform and nothing downstream reads it.
+        [object] $Tree = $null
     )
+
+    if ($null -eq $Tree) {
+        $Tree = New-TimingSpanTree -RootName 'vm-provisioning-phase1'
+    }
 
     Write-Host '' -ForegroundColor Magenta
     Write-Host "Phase 1: writing single-VM VmProvisionerConfig (VM1 + JDK $($script:JdkInitialVersion) + dotnet SDK $($script:DotnetInitialResolvedVersion)) ..." `
@@ -125,10 +142,20 @@ function Invoke-VmProvisioningPhase1 {
     # + VM1 up (it reads the same javaDevKit / dotnetSdk / dotnetTools fields
     # from VmProvisionerConfig). A no-op under custom-powershell (the reconciler
     # already installed them inside provision.ps1 above).
-    Set-VmToolchainsForTest `
-        -ToolchainsFlow  $tcx.Flow `
-        -ProvisionerPath $Config.ProvisionerPath `
-        -WslDistro       $tcx.WslDistro
+    #
+    # Wrapped in its own child-process span so the bash driver's exported
+    # timing tree grafts under a nested 'provision toolchains' node with a
+    # fresh output path, distinct from provision.ps1's export that the parent
+    # part imports - the two exporting children no longer share one path
+    # (feature 88 E2). Under custom-powershell the dispatcher shells out to
+    # nothing, so the span renders empty. Inert until E3 bridges the opt-in
+    # across the WSL boundary; harmless structural addition until then.
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name 'provision toolchains' -Action {
+        Set-VmToolchainsForTest `
+            -ToolchainsFlow  $tcx.Flow `
+            -ProvisionerPath $Config.ProvisionerPath `
+            -WslDistro       $tcx.WslDistro
+    }
 
     # Router-side white-box checks (forwarding, nftables/dnsmasq, NAT
     # rules, priv0 IP) are no longer asserted here: provision.ps1's

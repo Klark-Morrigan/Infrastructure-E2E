@@ -1,84 +1,13 @@
 BeforeAll {
     # ----------------------------------------------------------------------
-    # Timing doubles. The Common.PowerShell timing surface is not installed in
-    # this unit runspace, so New-/Measure-TimingSpan and Import-TimingSpanTree
-    # are stubbed. The New-/Measure- doubles reproduce the find-or-create by
-    # name-within-parent + push/pop nesting the helper relies on (same fixture
-    # as Invoke-RunnerLifecycleTest.Tests); Import-TimingSpanTree is stubbed as
-    # a bare declaration so each test Mocks the child export it needs. Real
-    # timing semantics are covered by Common.PowerShell.Tests.
+    # Shared timing doubles (New-/Measure-TimingSpan, the bare Import-Timing
+    # SpanTree each test Mocks, and New-ImportedTreeDouble). The Common.Power
+    # Shell timing surface is not installed in this unit runspace; the fixture
+    # header documents the contract they reproduce.
     # ----------------------------------------------------------------------
-    function New-TimingSpanTree {
-        param(
-            [Parameter(Mandatory)] [string] $RootName,
-            [string] $Source
-        )
-        $root = [pscustomobject]@{
-            Name     = $RootName
-            Status   = 'Running'
-            Source   = $Source
-            Children = [System.Collections.Generic.List[object]]::new()
-        }
-        $ctx = [pscustomobject]@{
-            Root  = $root
-            Stack = [System.Collections.Generic.Stack[object]]::new()
-        }
-        $ctx.Stack.Push($root)
-        return $ctx
-    }
-
-    function Measure-TimingSpan {
-        param(
-            [Parameter(Mandatory)] $Tree,
-            [Parameter(Mandatory)] [string] $Name,
-            [Parameter(Mandatory)] [scriptblock] $Action,
-            [string] $Source
-        )
-        $parent = $Tree.Stack.Peek()
-        $node   = @($parent.Children | Where-Object { $_.Name -eq $Name })[0]
-        if (-not $node) {
-            $node = [pscustomobject]@{
-                Name     = $Name
-                Status   = 'Running'
-                Source   = $Source
-                Children = [System.Collections.Generic.List[object]]::new()
-            }
-            [void] $parent.Children.Add($node)
-        }
-        $Tree.Stack.Push($node)
-        try {
-            & $Action
-            if ($node.Status -ne 'Failed') { $node.Status = 'OK' }
-        }
-        catch {
-            $node.Status = 'Failed'
-            throw
-        }
-        finally {
-            $Tree.Stack.Pop() | Out-Null
-        }
-    }
-
-    # Bare declaration so each test attaches its own Mock. The helper only
-    # reaches this when the action actually wrote a file (its Test-Path guard),
-    # so the absent-file test can assert it was never invoked.
-    function Import-TimingSpanTree { param([string] $Path) }
+    . "$PSScriptRoot\support\TimingSpanTestDoubles.ps1"
 
     . "$PSScriptRoot\..\agent\e2e\timing\Measure-ChildProcessTimingSpan.ps1"
-
-    # Builds an imported-root double whose Children carry the given names -
-    # the shape Import-TimingSpanTree hands back for the graft.
-    function New-ImportedTreeDouble {
-        param([string[]] $ChildNames)
-        $children = [System.Collections.Generic.List[object]]::new()
-        foreach ($name in $ChildNames) {
-            $children.Add([pscustomobject]@{
-                Name     = $name
-                Children = [System.Collections.Generic.List[object]]::new()
-            })
-        }
-        return [pscustomobject]@{ Name = 'child-root'; Children = $children }
-    }
 }
 
 Describe 'Measure-ChildProcessTimingSpan' {

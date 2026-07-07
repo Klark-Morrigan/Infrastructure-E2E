@@ -48,6 +48,12 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 # provision-toolchains.sh driver). Dot-sourced before the phase files so
 # they can call Set-VmToolchainsForTest.
 . "$PSScriptRoot\Set-VmToolchainsForTest.ps1"
+# Shell-out timing wrapper (feature 88 C2). Phase 1 wraps its toolchains
+# shell-out in a nested child-process span (feature 88 E2), so the helper
+# must be loaded before the phase files below. Dot-sourced here - the lowest
+# layer that consumes it - so the standalone provisioning flow resolves it
+# too; the users / runner-lifecycle chains inherit it through this file.
+. "$PSScriptRoot\..\timing\Measure-ChildProcessTimingSpan.ps1"
 
 # ---------------------------------------------------------------------------
 # Test scenario constants
