@@ -13,6 +13,7 @@
 - [How to run individual tests](#how-to-run-individual-tests)
 - [How to trigger](#how-to-trigger)
 - [Test coverage](#test-coverage)
+- [Timing report and artifact](#timing-report-and-artifact)
 - [Linting and CI](#linting-and-ci)
   - [Running the lint suite locally](#running-the-lint-suite-locally)
   - [Known-failing actionlint job](#known-failing-actionlint-job)
@@ -479,6 +480,85 @@ focused stack trace rather than a runner error.
 
 ---
 
+## Timing report and artifact
+
+The runner-lifecycle run is the longest-running thing in the fleet and its
+cost is spread across four repos and several child processes. To make that
+cost visible, every run emits a hierarchical timing report at the end,
+built on the N-level timing surface in `Common.PowerShell`.
+
+### What it shows
+
+A single indented, single-colour console block listing the whole run, each
+phase as a share of the total, and each part as a share of its parent - to
+arbitrary depth, including the internals of the child processes each part
+shells out to. It prints on **both the success and failure paths** (via the
+run's outer `finally`), so a failed or hung run still shows where the time
+went up to the failure point.
+
+```
+=== Timing report: runner-lifecycle ===
+  Setup                       [OK]     512.30 s  ( 84%)
+    provisioning Phase 1      [OK]     430.10 s  ( 84%)
+    reconcile users           [OK]      70.20 s  ( 14%)
+  Register runners            [OK]      41.80 s  (  7%)
+  Verify online               [OK]      18.40 s  (  3%)
+  Phase 2 + reassert          [OK]      15.10 s  (  2%)
+  Phase 3 + reassert          [OK]      14.90 s  (  2%)
+  Teardown                    [OK]       6.70 s  (  1%)
+  --------------------------------------
+  total observed: 609.20 s
+=== Timing report: runner-lifecycle ===
+```
+
+Until a given child process ships its own timing emitter, its part renders
+as a single opaque span (as `provisioning Phase 1` above); once the emitter
+lands, that part deepens into its own sub-steps automatically, with no
+change on the E2E side.
+
+### Where the JSON lands
+
+The same tree is persisted as a machine-readable artifact so successive runs
+can be compared and a regression (a step that suddenly doubled) is visible.
+It is written to:
+
+```
+<vmConfigPath>/diagnostics/timing/<timestamp>.json
+```
+
+next to the run's `runtime-diag.log` / `console.log`, so all artifacts for a
+run stay side by side. `<vmConfigPath>` is the `TestVm.vmConfigPath` from the
+`E2EConfig` vault (default `E:\a_VMs\Hyper-V\Config`). The file is the
+in-house nested-tree shape (schema `e2e-timing/v1`: explicit `children[]`,
+first-class `status`, duration-only `elapsedMs`), not a timestamp trace, so a
+cross-process merge is a subtree graft rather than a clock rebase.
+
+### Retention knob
+
+Old artifacts are pruned at write time via `Common.PowerShell`'s
+`Limit-RetainedItem`, keeping the most recent N `*.json` files in the
+`timing/` folder. N defaults to `20` (the `$script:TimingArtifactRetentionCount`
+default in `Publish-E2ETimingReport.ps1`); pass `-MaxItems` to that function
+to override the rolling-window size.
+
+### Child-process depth: the `TIMING_TREE_OUTPUT_PATH` opt-in
+
+Each part that shells out to a child process is timed by
+`Measure-ChildProcessTimingSpan`, which sets the neutral environment variable
+`TIMING_TREE_OUTPUT_PATH` to a fresh per-invocation temp file before the call.
+A child that honours the opt-in exports its own timing tree to that path (on
+success and failure); after the child returns, the E2E orchestrator imports
+that tree and grafts it as the children of the part's span, then deletes the
+temp file. When the variable is unset - or the child has no emitter yet, or it
+crashes before exporting - nothing is written and the part is simply timed as
+a single span, so the graft is graceful by design.
+
+The variable name is deliberately neutral: a production script exports to
+whatever path it is handed and never learns that the E2E run is its consumer,
+keeping the child scripts test-agnostic.
+
+---
+
 ## Linting and CI
 
 Two delegating workflows lint this repo's non-PowerShell surfaces on every
@@ -603,13 +683,19 @@ agent/
       Invoke-RunnerLifecycleTest.ps1            - Full lifecycle E2E + re-asserts after phases 2, 3
       Invoke-RunnerStillOnlineAssertions.ps1    - "runner still active + online" re-verification block
       Set-VmRunnersForTest.ps1                  - register-side dispatcher (custom-powershell | ansible)
+    timing/
+      Measure-ChildProcessTimingSpan.ps1        - Times a shell-out part + grafts the child's exported tree under it
+      Publish-E2ETimingReport.ps1               - End-of-run console report + rolling JSON artifact + retention
   Initialize-E2EEnvironment.ps1    - Shared module bootstrap (dot-sourced by entry points)
   Start-E2EAgent.ps1               - Polling agent (run manually on workstation)
 Tests/
-  Invoke-E2EAgentLoop.Tests.ps1    - Unit tests for the polling loop
-  Set-VmUsersForTest.Tests.ps1     - Unit tests for the create-side flow dispatcher
-  Remove-VmUsersForTest.Tests.ps1  - Unit tests for the teardown flow dispatcher
-  Set-VmRunnersForTest.Tests.ps1   - Unit tests for the register-side flow dispatcher
+  Invoke-E2EAgentLoop.Tests.ps1          - Unit tests for the polling loop
+  Set-VmUsersForTest.Tests.ps1           - Unit tests for the create-side flow dispatcher
+  Remove-VmUsersForTest.Tests.ps1        - Unit tests for the teardown flow dispatcher
+  Set-VmRunnersForTest.Tests.ps1         - Unit tests for the register-side flow dispatcher
+  Invoke-RunnerLifecycleTest.Tests.ps1   - Unit tests for the lifecycle timing tree + report emission
+  Measure-ChildProcessTimingSpan.Tests.ps1 - Unit tests for the child-tree graft
+  Publish-E2ETimingReport.Tests.ps1      - Unit tests for the report + artifact + retention
 docs/
   dev/
     implementation/                - Problem and plan docs per implementation phase
