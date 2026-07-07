@@ -6,6 +6,11 @@
 
 . "$PSScriptRoot\..\vm-users\Invoke-VmUsersTest.ps1"
 
+# End-of-run timing emission (report + rolling JSON artifact + retention).
+# Dot-sourced here because this file's outer finally is the single point that
+# fires on every exit path (success, failure, best-effort cleanup).
+. "$PSScriptRoot\..\timing\Publish-E2ETimingReport.ps1"
+
 # Register-side dispatcher: symmetric peer of Set-VmUsersForTest, selecting
 # between Infrastructure-GitHubRunners' register-runners.ps1 and its
 # hyper-v/ubuntu/Ansible/ops/register-runners.sh. The lifecycle test
@@ -572,69 +577,93 @@ function Invoke-RunnerLifecycleTest {
         # path so every run - pass or fail - contributes a Teardown span
         # to the report. Only one branch runs per invocation, so the
         # by-name accumulation records a single node either way.
-        if ($succeeded) {
-            Measure-TimingSpan -Tree $Tree -Name 'Teardown' -Action {
-                Invoke-RunnerLifecycleTeardown `
-                    -Config       $Config `
-                    -VmDef        $vmDef `
-                    -RunnersToken $runnersToken `
-                    -Entry        $entry
+        #
+        # Wrapped in an inner try/finally so the timing report + rolling
+        # artifact still emit even when teardown itself throws (e.g. a
+        # success-path post-condition assertion fails): the report must
+        # fire on every exit path, and a teardown failure that reaches
+        # here still propagates out afterwards as the run's outcome.
+        try {
+            if ($succeeded) {
+                Measure-TimingSpan -Tree $Tree -Name 'Teardown' -Action {
+                    Invoke-RunnerLifecycleTeardown `
+                        -Config       $Config `
+                        -VmDef        $vmDef `
+                        -RunnersToken $runnersToken `
+                        -Entry        $entry
 
-                # Provisioning-layer teardown post-conditions (both VMs gone,
-                # per-VM disk artifacts gone, host-side JDK cache intact,
-                # switch + NAT removed, VmProvisionerConfig vault entry gone)
-                # have already been verified - Invoke-RunnerLifecycleTeardown
-                # calls Invoke-VmUsersTeardown, which calls
-                # Invoke-VmProvisioningTeardown, which calls
-                # Invoke-VmTeardownAssertions at the end of its own run.
+                    # Provisioning-layer teardown post-conditions (both VMs gone,
+                    # per-VM disk artifacts gone, host-side JDK cache intact,
+                    # switch + NAT removed, VmProvisionerConfig vault entry gone)
+                    # have already been verified - Invoke-RunnerLifecycleTeardown
+                    # calls Invoke-VmUsersTeardown, which calls
+                    # Invoke-VmProvisioningTeardown, which calls
+                    # Invoke-VmTeardownAssertions at the end of its own run.
 
-                # Assert VmUsersConfig vault entry was removed (vm-users
-                # layer). Mirrors the same check inside the vm-users
-                # standalone teardown.
-                $usersSecretName = Get-E2ESecretName 'VmUsersConfig'
-                if ($null -ne (Get-SecretInfo -Vault VmUsers -Name $usersSecretName `
-                        -ErrorAction SilentlyContinue)) {
-                    throw "Teardown incomplete: $usersSecretName still present in vault."
+                    # Assert VmUsersConfig vault entry was removed (vm-users
+                    # layer). Mirrors the same check inside the vm-users
+                    # standalone teardown.
+                    $usersSecretName = Get-E2ESecretName 'VmUsersConfig'
+                    if ($null -ne (Get-SecretInfo -Vault VmUsers -Name $usersSecretName `
+                            -ErrorAction SilentlyContinue)) {
+                        throw "Teardown incomplete: $usersSecretName still present in vault."
+                    }
+                    Write-Host "  [OK] $usersSecretName removed from vault." -ForegroundColor Green
+
+                    # Assert GitHubRunnersConfig vault entry was removed (runner
+                    # layer's own teardown post-condition).
+                    $runnersSecretName = Get-E2ESecretName 'GitHubRunnersConfig'
+                    if ($null -ne (Get-SecretInfo -Vault GitHubRunners -Name $runnersSecretName `
+                            -ErrorAction SilentlyContinue)) {
+                        throw "Teardown incomplete: $runnersSecretName still present in vault."
+                    }
+                    Write-Host "  [OK] $runnersSecretName removed from vault." -ForegroundColor Green
                 }
-                Write-Host "  [OK] $usersSecretName removed from vault." -ForegroundColor Green
+            }
+            else {
+                Measure-TimingSpan -Tree $Tree -Name 'Teardown' -Action {
+                    Write-Host 'Test did not complete - running best-effort cleanup ...' `
+                        -ForegroundColor Yellow
 
-                # Assert GitHubRunnersConfig vault entry was removed (runner
-                # layer's own teardown post-condition).
-                $runnersSecretName = Get-E2ESecretName 'GitHubRunnersConfig'
-                if ($null -ne (Get-SecretInfo -Vault GitHubRunners -Name $runnersSecretName `
-                        -ErrorAction SilentlyContinue)) {
-                    throw "Teardown incomplete: $runnersSecretName still present in vault."
+                    # Deregister first if we got a token - removes GitHub registration
+                    # and runner files while the VM may still be alive.
+                    if ($runnersToken) {
+                        try {
+                            & "$($Config.RunnersPath)\hyper-v\ubuntu\PowerShell\deregister-runners.ps1" `
+                                -Token  $runnersToken `
+                                -SecretSuffix $script:E2ETestSecretSuffix `
+                                -Force
+                        }
+                        catch {
+                            Write-Warning "Best-effort deregistration failed: $($_.Exception.Message)"
+                        }
+                    }
+
+                    try { Invoke-VmProvisioningTeardown -Config $Config }
+                    catch { Write-Warning "Best-effort deprovisioning failed: $($_.Exception.Message)" }
+
+                    try { Remove-Secret -Vault VmUsers -Name (Get-E2ESecretName 'VmUsersConfig') -ErrorAction SilentlyContinue }
+                    catch { Write-Warning "Best-effort secret removal failed: $($_.Exception.Message)" }
+
+                    try { Remove-Secret -Vault GitHubRunners -Name (Get-E2ESecretName 'GitHubRunnersConfig') -ErrorAction SilentlyContinue }
+                    catch { Write-Warning "Best-effort secret removal failed: $($_.Exception.Message)" }
                 }
-                Write-Host "  [OK] $runnersSecretName removed from vault." -ForegroundColor Green
             }
         }
-        else {
-            Measure-TimingSpan -Tree $Tree -Name 'Teardown' -Action {
-                Write-Host 'Test did not complete - running best-effort cleanup ...' `
-                    -ForegroundColor Yellow
-
-                # Deregister first if we got a token - removes GitHub registration
-                # and runner files while the VM may still be alive.
-                if ($runnersToken) {
-                    try {
-                        & "$($Config.RunnersPath)\hyper-v\ubuntu\PowerShell\deregister-runners.ps1" `
-                            -Token  $runnersToken `
-                            -SecretSuffix $script:E2ETestSecretSuffix `
-                            -Force
-                    }
-                    catch {
-                        Write-Warning "Best-effort deregistration failed: $($_.Exception.Message)"
-                    }
-                }
-
-                try { Invoke-VmProvisioningTeardown -Config $Config }
-                catch { Write-Warning "Best-effort deprovisioning failed: $($_.Exception.Message)" }
-
-                try { Remove-Secret -Vault VmUsers -Name (Get-E2ESecretName 'VmUsersConfig') -ErrorAction SilentlyContinue }
-                catch { Write-Warning "Best-effort secret removal failed: $($_.Exception.Message)" }
-
-                try { Remove-Secret -Vault GitHubRunners -Name (Get-E2ESecretName 'GitHubRunnersConfig') -ErrorAction SilentlyContinue }
-                catch { Write-Warning "Best-effort secret removal failed: $($_.Exception.Message)" }
+        finally {
+            # Emit the console report + rolling JSON artifact on every exit
+            # path, after the Teardown span is recorded so teardown appears in
+            # the report. Best-effort: a diagnostics write must never mask the
+            # run's real outcome - on the failure path the original exception
+            # is still in flight and must win - so any failure here is warned,
+            # not thrown. The artifact lands under the run's diagnostics root,
+            # next to runtime-diag.log / console.log.
+            try {
+                $diagnosticsRoot = Join-Path $Config.TestVm.vmConfigPath 'diagnostics'
+                Publish-E2ETimingReport -Tree $Tree -DiagnosticsRoot $diagnosticsRoot
+            }
+            catch {
+                Write-Warning "Timing report/artifact emission failed: $($_.Exception.Message)"
             }
         }
     }

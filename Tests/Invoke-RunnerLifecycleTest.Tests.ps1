@@ -124,6 +124,9 @@ Describe 'Invoke-RunnerLifecycleTest timing tree' {
             AppId                  = '123'
             RunnersInstallationId  = '456'
             PrivateKeyPath         = 'C:\fake\key.pem'
+            # Diagnostics root source: the outer finally resolves
+            # <TestVm.vmConfigPath>/diagnostics to place the timing artifact.
+            TestVm                 = [pscustomobject]@{ vmConfigPath = 'C:\fake\vmconfig' }
         }
 
         # Fake VM def the provisioning setup hands back; _SecondaryVm is read
@@ -144,6 +147,11 @@ Describe 'Invoke-RunnerLifecycleTest timing tree' {
         Mock Assert-VmUsersStillIntact    { }
         Mock Assert-RunnerStillOnline     { }
         Mock Invoke-RunnerLifecycleTeardown { }
+        # End-of-run emission is exercised by its own suite
+        # (Publish-E2ETimingReport.Tests). Here it is a no-op so these tests
+        # stay focused on the assembled tree shape; the finally still calls it
+        # on every path, which the two assertions below guard.
+        Mock Publish-E2ETimingReport      { }
 
         Mock Set-Secret        { }
         Mock Remove-Secret     { }
@@ -207,6 +215,13 @@ Describe 'Invoke-RunnerLifecycleTest timing tree' {
         foreach ($part in $setup.Children) {
             $part.Status | Should -Be 'OK'
         }
+
+        # The report + rolling artifact fire once on the success path, with
+        # the diagnostics root resolved from the run's vmConfigPath.
+        Should -Invoke Publish-E2ETimingReport -Times 1 -Exactly -ParameterFilter {
+            $Tree -eq $tree -and
+            $DiagnosticsRoot -eq (Join-Path $script:config.TestVm.vmConfigPath 'diagnostics')
+        }
     }
 
     It 'marks the failing span Failed and stops the tree at the failure' {
@@ -232,6 +247,12 @@ Describe 'Invoke-RunnerLifecycleTest timing tree' {
         # contributes a Teardown span.
         $byName.ContainsKey('Teardown') | Should -BeTrue
         $byName['Teardown'].Status      | Should -Be 'OK'
+
+        # The report + rolling artifact still fire on the failure path, so a
+        # failed run shows where the time went up to the failure point.
+        Should -Invoke Publish-E2ETimingReport -Times 1 -Exactly -ParameterFilter {
+            $Tree -eq $tree
+        }
     }
 
     It 'nests the Setup parts under Setup, not under the root' {
