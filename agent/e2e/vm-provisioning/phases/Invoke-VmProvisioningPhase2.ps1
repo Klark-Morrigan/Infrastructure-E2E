@@ -44,8 +44,23 @@ function Invoke-VmProvisioningPhase2 {
     param(
         [Parameter(Mandatory)] [PSCustomObject] $Config,
         [Parameter(Mandatory)] [PSCustomObject] $Vm1Def,
-        [Parameter(Mandatory)] [PSCustomObject] $Vm2Def
+        [Parameter(Mandatory)] [PSCustomObject] $Vm2Def,
+
+        # Timing context threaded from the runner-lifecycle 'Phase 2 +
+        # reassert' span. When supplied, each sub-phase shell-out below
+        # (provision + toolchains) records as a nested child span with its
+        # OWN per-invocation output path, so provision.ps1's and
+        # provision-toolchains.sh's exported trees graft in separately rather
+        # than clobbering each other on one shared path (feature 88 E2) - the
+        # same clobber that hid the real provision cost in Phase 1's report.
+        # The standalone vm-provisioning flow passes none; a throwaway tree
+        # then absorbs the spans so the wrapping stays uniform.
+        [object] $Tree = $null
     )
+
+    if ($null -eq $Tree) {
+        $Tree = New-TimingSpanTree -RootName 'vm-provisioning-phase2'
+    }
 
     $tcx = Get-ToolchainPhaseContext -Config $Config
     $jdkParams        = $tcx.Params.Jdk
@@ -115,15 +130,19 @@ function Invoke-VmProvisioningPhase2 {
 
     Write-Host 'Phase 2a: provisioning (uninstall via absent on VM1, create VM2) ...' `
         -ForegroundColor Magenta
-    Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name '2a provision' -Action {
+        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx
+    }
 
     # Ansible flow: drive the uninstall by reconciling the (now empty) per-VM
     # toolchain state from VmProvisionerConfig (no-op under custom-powershell,
     # which already uninstalled inside provision.ps1).
-    Set-VmToolchainsForTest `
-        -ToolchainsFlow  $tcx.Flow `
-        -ProvisionerPath $Config.ProvisionerPath `
-        -WslDistro       $tcx.WslDistro
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name '2a toolchains' -Action {
+        Set-VmToolchainsForTest `
+            -ToolchainsFlow  $tcx.Flow `
+            -ProvisionerPath $Config.ProvisionerPath `
+            -WslDistro       $tcx.WslDistro
+    }
 
     Write-Host "Phase 2a: verifying uninstall-via-absent on $($Vm1Def.vmName) ..." `
         -ForegroundColor Magenta
@@ -284,15 +303,19 @@ function Invoke-VmProvisioningPhase2 {
 
     Write-Host 'Phase 2b: provisioning (re-add JDK on VM1) ...' `
         -ForegroundColor Magenta
-    Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name '2b provision' -Action {
+        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx
+    }
 
     # Ansible flow: reinstall by reconciling VM1's per-VM toolchain state from
     # VmProvisionerConfig (no-op under custom-powershell, which reinstalled
     # inside provision.ps1).
-    Set-VmToolchainsForTest `
-        -ToolchainsFlow  $tcx.Flow `
-        -ProvisionerPath $Config.ProvisionerPath `
-        -WslDistro       $tcx.WslDistro
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name '2b toolchains' -Action {
+        Set-VmToolchainsForTest `
+            -ToolchainsFlow  $tcx.Flow `
+            -ProvisionerPath $Config.ProvisionerPath `
+            -WslDistro       $tcx.WslDistro
+    }
 
     Write-Host "Phase 2b: verifying JDK $($script:JdkReinstallVersion) + dotnet SDK $($script:DotnetReinstallResolvedVersion) reinstalled on $($Vm1Def.vmName) ..." `
         -ForegroundColor Magenta

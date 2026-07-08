@@ -548,22 +548,38 @@ function Invoke-RunnerLifecycleTest {
         # runner layers survived it. A regression in either surfaces as a
         # Failed span here rather than only as "VMs gone" after teardown.
         Measure-TimingSpan -Tree $Tree -Name 'Phase 2 + reassert' -Action {
-            Invoke-VmProvisioningPhase2 -Config $Config -Vm1Def $vmDef -Vm2Def $vm2Def
-            Assert-VmUsersStillIntact     -Config $Config -VmDef  $vmDef -Entry  $usersEntry
-            Assert-RunnerStillOnline      -Config $Config -VmDef  $vmDef `
+            # -Tree threads this span's context into the phase so its per-sub-
+            # phase provision / toolchains shell-outs nest here as child spans
+            # (2a/2b provision + toolchains) instead of the phase running as
+            # one flat bar.
+            Invoke-VmProvisioningPhase2 -Config $Config -Vm1Def $vmDef -Vm2Def $vm2Def -Tree $Tree
+            Measure-TimingSpan -Tree $Tree -Name 'reassert users' -Action {
+                Assert-VmUsersStillIntact -Config $Config -VmDef $vmDef -Entry $usersEntry
+            }
+            Measure-TimingSpan -Tree $Tree -Name 'reassert runner' -Action {
+                Assert-RunnerStillOnline  -Config $Config -VmDef $vmDef `
                                           -RunnerName    $runnerName `
                                           -RunnersToken  $runnersToken `
                                           -GithubUrl     $githubUrl
+            }
         }
 
         # Phase 3 + reassert: second re-provision with the same guardrails.
         Measure-TimingSpan -Tree $Tree -Name 'Phase 3 + reassert' -Action {
-            Invoke-VmProvisioningPhase3 -Config $Config -Vm1Def $vmDef -Vm2Def $vm2Def
-            Assert-VmUsersStillIntact     -Config $Config -VmDef  $vmDef -Entry  $usersEntry
-            Assert-RunnerStillOnline      -Config $Config -VmDef  $vmDef `
+            # -Tree threads this span's context into the phase so its per-sub-
+            # phase provision / toolchains shell-outs nest here as child spans
+            # (3a/3b provision + toolchains) instead of the phase running as
+            # one flat bar.
+            Invoke-VmProvisioningPhase3 -Config $Config -Vm1Def $vmDef -Vm2Def $vm2Def -Tree $Tree
+            Measure-TimingSpan -Tree $Tree -Name 'reassert users' -Action {
+                Assert-VmUsersStillIntact -Config $Config -VmDef $vmDef -Entry $usersEntry
+            }
+            Measure-TimingSpan -Tree $Tree -Name 'reassert runner' -Action {
+                Assert-RunnerStillOnline  -Config $Config -VmDef $vmDef `
                                           -RunnerName    $runnerName `
                                           -RunnersToken  $runnersToken `
                                           -GithubUrl     $githubUrl
+            }
         }
 
         $succeeded = $true
