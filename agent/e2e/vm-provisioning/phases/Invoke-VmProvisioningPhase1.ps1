@@ -128,7 +128,16 @@ function Invoke-VmProvisioningPhase1 {
     Write-VmProvisionerConfig -Entries @($entry)
 
     Write-Host 'Phase 1: provisioning router + VM1 ...' -ForegroundColor Magenta
-    Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx
+    # Own child span so provision.ps1's exported tree (host network, disk
+    # acquisition, VM creation, wait-for-SSH, post-provisioning) grafts under
+    # a dedicated 'provision' node on its OWN output path. Without this, the
+    # no-op rerun below (custom-powershell only) writes provision.ps1's tree a
+    # second time to the shared parent path and CLOBBERS this real provision -
+    # the report then shows VM creation SKIPPED and buries the ~real creation
+    # cost as unaccounted parent time (feature 88 E2).
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name 'provision' -Action {
+        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx
+    }
 
     # provision.ps1 ran in its own scope and the discovered router IP
     # never made it back to the test's local _RouterVm reference. Look
@@ -269,7 +278,13 @@ function Invoke-VmProvisioningPhase1 {
 
     Write-Host 'Phase 1: re-provisioning VM1 with unchanged JSON (no-op) ...' `
         -ForegroundColor Magenta
-    Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx
+    # Separate child span from the real 'provision' above so this rerun's tree
+    # (VM creation / disk SKIPPED - the idempotency proof) lands on its own path
+    # and does not overwrite the real provision's timings. Reached only under
+    # custom-powershell; the ansible flow returned above before this rerun.
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name 'provision (no-op rerun)' -Action {
+        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx
+    }
 
     Write-Host "Phase 1: verifying no-op rerun did not touch JDK / dotnet artifacts ..." `
         -ForegroundColor Magenta

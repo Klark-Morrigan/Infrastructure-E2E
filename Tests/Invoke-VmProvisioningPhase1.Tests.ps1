@@ -82,7 +82,7 @@ Describe 'Invoke-VmProvisioningPhase1 toolchains child span' {
         }
     }
 
-    It 'grafts provision.ps1 and the toolchains export as distinct subtrees under the part' {
+    It 'grafts the provision and toolchains exports under their own child spans' {
         # Drive the phase exactly as Invoke-VmUsersSetup does: inside the
         # 'provisioning Phase 1' part span, threading the same tree in.
         $tree = New-TimingSpanTree -RootName 'run'
@@ -92,23 +92,29 @@ Describe 'Invoke-VmProvisioningPhase1 toolchains child span' {
 
         $part = $tree.Root.Children | Where-Object { $_.Name -eq 'provisioning Phase 1' }
 
-        # provision.ps1's spans grafted directly under the part (imported from
-        # the part's own output path), plus the nested toolchains part - neither
-        # subtree lost to a shared-path clobber.
-        $childNames = @($part.Children | ForEach-Object { $_.Name })
-        $childNames | Should -Contain 'boot VM'
-        $childNames | Should -Contain 'install JDK'
-        $childNames | Should -Contain 'provision toolchains'
+        # Each shell-out nests under its OWN child span so their exports land on
+        # separate output paths - no shared-path clobber. Ansible flow: real
+        # provision + toolchains, and no no-op rerun (the phase returns before
+        # it).
+        $partChildNames = @($part.Children | ForEach-Object { $_.Name })
+        $partChildNames | Should -Contain 'provision'
+        $partChildNames | Should -Contain 'provision toolchains'
+
+        $provision = $part.Children | Where-Object { $_.Name -eq 'provision' }
+        @($provision.Children | ForEach-Object { $_.Name }) |
+            Should -Be @('boot VM', 'install JDK')
 
         $toolchains = $part.Children | Where-Object { $_.Name -eq 'provision toolchains' }
         @($toolchains.Children | ForEach-Object { $_.Name }) |
             Should -Be @('run jdk role', 'run dotnet role')
     }
 
-    It 'leaves provision toolchains empty under custom-powershell and keeps the provision.ps1 tree' {
-        # custom-powershell: the dispatcher shells out to nothing, so its child
-        # writes no tree - the nested span renders empty while provision.ps1's
-        # own export still grafts.
+    It 'nests provision, an empty toolchains span, and the no-op rerun under custom-powershell' {
+        # custom-powershell: the dispatcher shells out to nothing, so the
+        # toolchains span renders empty; the phase then runs the no-op
+        # idempotency rerun as its OWN span, kept separate from the real
+        # provision so the rerun's tree never clobbers it (the bug this split
+        # fixes).
         $script:config.ToolchainsFlow = 'custom-powershell'
         Mock Set-VmToolchainsForTest { }
 
@@ -117,20 +123,31 @@ Describe 'Invoke-VmProvisioningPhase1 toolchains child span' {
             Invoke-VmProvisioningPhase1 -Config $script:config -Vm1Def $script:vm1Def -Tree $tree
         }
 
-        $part       = $tree.Root.Children | Where-Object { $_.Name -eq 'provisioning Phase 1' }
+        $part = $tree.Root.Children | Where-Object { $_.Name -eq 'provisioning Phase 1' }
+
+        # Real provision, empty toolchains, and the separately-spanned rerun.
+        @($part.Children | ForEach-Object { $_.Name }) |
+            Should -Be @('provision', 'provision toolchains', 'provision (no-op rerun)')
+
         $toolchains = $part.Children | Where-Object { $_.Name -eq 'provision toolchains' }
         $toolchains.Children.Count | Should -Be 0
 
-        $childNames = @($part.Children | ForEach-Object { $_.Name })
-        $childNames | Should -Contain 'boot VM'
-        $childNames | Should -Contain 'install JDK'
+        # Both the real provision and the rerun keep their own grafted tree -
+        # proof neither overwrote the other.
+        $provision = $part.Children | Where-Object { $_.Name -eq 'provision' }
+        @($provision.Children | ForEach-Object { $_.Name }) |
+            Should -Be @('boot VM', 'install JDK')
+
+        $rerun = $part.Children | Where-Object { $_.Name -eq 'provision (no-op rerun)' }
+        @($rerun.Children | ForEach-Object { $_.Name }) |
+            Should -Be @('boot VM', 'install JDK')
     }
 
-    It 'marks provision toolchains Failed but still grafts provision.ps1 when the driver throws' {
-        # Failure path: the toolchains driver throws AFTER provision.ps1 has
-        # already exported. The nested wrap must restore the part's output path
-        # so the outer finally still imports provision.ps1's tree - proof the
-        # restore fires on the throw path too.
+    It 'marks provision toolchains Failed but still keeps the provision span when the driver throws' {
+        # Failure path: the toolchains driver throws AFTER the provision span has
+        # already exported. The nested wrap must restore the outer path so the
+        # real provision's grafted tree survives - proof the restore fires on the
+        # throw path too.
         Mock Set-VmToolchainsForTest { throw 'toolchains boom' }
 
         $tree = New-TimingSpanTree -RootName 'run'
@@ -146,8 +163,10 @@ Describe 'Invoke-VmProvisioningPhase1 toolchains child span' {
         $toolchains = $part.Children | Where-Object { $_.Name -eq 'provision toolchains' }
         $toolchains.Status | Should -Be 'Failed'
 
-        $childNames = @($part.Children | ForEach-Object { $_.Name })
-        $childNames | Should -Contain 'boot VM'
-        $childNames | Should -Contain 'install JDK'
+        # The real provision span completed before the throw and kept its tree.
+        $provision = $part.Children | Where-Object { $_.Name -eq 'provision' }
+        $provision.Status | Should -Be 'OK'
+        @($provision.Children | ForEach-Object { $_.Name }) |
+            Should -Be @('boot VM', 'install JDK')
     }
 }
