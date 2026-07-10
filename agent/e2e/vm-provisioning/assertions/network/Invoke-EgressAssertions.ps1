@@ -19,11 +19,23 @@
 #                              regression in TLS or DNS surfaces here
 #                              against the same surface dotnetTools uses.
 #
-#   Each endpoint is fetched with `curl -fsS --max-time 30` so a hung
+#   Each endpoint is fetched with `curl -4 -fsS --max-time 30` so a hung
 #   handshake bounds quickly (curl's default is too long for a test
 #   loop). -f turns 4xx/5xx into failures; both endpoints return small
 #   JSON documents, so a successful exit code is sufficient evidence
 #   the egress path is healthy.
+#
+#   -4 (force IPv4) is load-bearing, not cosmetic. The router VM is a
+#   single-purpose IPv4 NAT+DNS gateway; the private switch has no IPv6
+#   route at all. These CDN hosts publish AAAA records, and dnsmasq
+#   intermittently hands back an AAAA-only answer - when it does, an
+#   unpinned curl has only a v6 address to try, black-holes on the dead
+#   route until --max-time (observed: ~11s first connect, then instant
+#   0ms failures against the now-known-unreachable dest), and burns all
+#   4 retries against the same trap. Every attempt resolves to the same
+#   unusable family, so retries cannot absorb it. Pinning to IPv4 makes
+#   the probe test the one address family this datapath actually
+#   supports; an AAAA-only answer is a trap, not a real regression.
 #
 #   Retries: --retry 3 --retry-delay 3 --retry-all-errors. The egress
 #   targets are real production CDNs (api.nuget.org sits behind Azure
@@ -63,7 +75,7 @@ function Invoke-EgressAssertions {
     foreach ($endpoint in $endpoints) {
         $r = Invoke-SshClientCommand `
             -SshClient $SshClient `
-            -Command  ("curl -fsS --max-time 30 --retry 3 --retry-delay 3 " +
+            -Command  ("curl -4 -fsS --max-time 30 --retry 3 --retry-delay 3 " +
                        "--retry-all-errors '$endpoint' -o /dev/null")
         if ($r.ExitStatus -ne 0) {
             $diag = Get-EgressFailureDiagnostics -SshClient $SshClient -Endpoint $endpoint
