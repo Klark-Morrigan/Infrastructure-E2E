@@ -96,6 +96,12 @@ function Set-VmToolchainsForTest {
     # swallowed by any caller in an assignment / subexpression context, leaving
     # an exit code with no error text. Same gotcha as Set-VmRunnersForTest /
     # Set-VmUsersForTest; see those for the full note.
+    #
+    # Per-task timing needs nothing here: when the run is instrumented,
+    # Measure-ChildProcessTimingSpan sets TIMING_TREE_OUTPUT_PATH (forwarded via
+    # WSLENV), provision-toolchains.sh points the timing_tree callback at a rows
+    # file, and the per-role/per-task nodes graft under the 'run playbook' span
+    # inside this flow's exported tree - no separate artifact, no E2E-side wiring.
     Push-Location $ProvisionerPath
     try {
         Write-Host "Provisioning toolchains via ansible flow (WSL '$WslDistro') ..." `

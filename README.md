@@ -541,6 +541,45 @@ Old artifacts are pruned at write time via `Common.PowerShell`'s
 default in `Publish-E2ETimingReport.ps1`); pass `-MaxItems` to that function
 to override the rolling-window size.
 
+### Per-task depth inside `run playbook` (Ansible toolchains)
+
+A toolchain playbook run is over half the runner-lifecycle wall clock under
+`ToolchainsFlow=ansible`, and it happens five times (Setup + 2a/2b + 3a/3b). Left
+as one `run playbook` span it hides *where* the time goes - fact gathering and
+per-task round trips over the two-hop proxy versus real extract /
+`dotnet tool install` work. So that span deepens into per-role -> per-task
+children **in the same tree** (no sidecar artifact):
+
+```
+    run playbook              [OK]  300.48 s
+      Gathering Facts         [OK]   41.20 s   <- fixed overhead, now visible
+      jdk                     [OK]   19.00 s
+        install tarball       [OK]   18.10 s
+        symlink JAVA_HOME     [OK]    0.90 s
+      dotnet_sdk              [OK]   52.40 s
+        extract               [OK]   52.40 s
+```
+
+The mechanism reuses the same `TIMING_TREE_OUTPUT_PATH` opt-in, so it is on
+automatically whenever the run is instrumented (and inert otherwise):
+
+- **`timing_tree` callback** (Common-Ansible `callback_plugins/`) records each
+  task's duration and its role (`task._role`), and on playbook end writes
+  `role<TAB>task<TAB>elapsed_ms<TAB>status` rows. It is an *aggregate* callback,
+  so it runs alongside the stdout callback, and self-gates on
+  `TIMING_TASKS_OUTPUT_PATH` - unset, it writes nothing.
+- **`provision-toolchains.sh`** sets `TIMING_TASKS_OUTPUT_PATH` to a temp file
+  for the timed run, then calls **`timing_graft_children_from`** (a verb in
+  Common-Automation `scripts/timing.sh`) inside the `run playbook` span to fold
+  those rows in as children - roleless tasks (Gathering Facts) as direct leaves,
+  same-role tasks under one role node whose elapsed is their sum. The bash side
+  owns the JSON schema, so grafted nodes match native spans exactly.
+
+Nothing is wired on the E2E side: `Set-VmToolchainsForTest` is unchanged from its
+plain dispatch. The Common-Ansible bridge enables the callback when
+`TIMING_TASKS_OUTPUT_PATH` is set (an env-gated asymmetry documented in its
+`ansible.cfg`), the same posture every other timing emitter takes.
+
 ### Child-process depth: the `TIMING_TREE_OUTPUT_PATH` opt-in
 
 Each part that shells out to a child process is timed by
@@ -559,28 +598,40 @@ keeping the child scripts test-agnostic.
 
 #### Parts that shell out to more than one exporting child
 
-`Measure-ChildProcessTimingSpan` hands each part **one** output path, so a part
-that shells out to two exporting children in sequence would have the second
-writer clobber the first. `provisioning Phase 1` is exactly that case under
-`ToolchainsFlow=ansible`: it runs `provision.ps1` (the baseline provision) and
-then `provision-toolchains.sh` (the Ansible toolchain install), and both honour
-the opt-in. To keep the two subtrees separate, the phase wraps the toolchains
-shell-out in a **nested** `provision toolchains` child span with its own
-per-invocation path, so it grafts as a sub-span rather than overwriting
-`provision.ps1`'s export:
+`Measure-ChildProcessTimingSpan` hands each part **one** output path, so two
+exporting children that ran in sequence on that same path would have the second
+writer clobber the first. `provisioning Phase 1` is exactly that case: it runs
+`provision.ps1` (the baseline provision), then `provision-toolchains.sh` (the
+Ansible toolchain install under `ToolchainsFlow=ansible`), and then - under
+`ToolchainsFlow=custom-powershell` only - `provision.ps1` a **second** time as a
+no-op idempotency rerun. All are exporting children. Left on one shared path the
+no-op rerun's tree (VM creation `SKIPPED`, disk `SKIPPED`) would overwrite the
+real provision's, hiding the ~real VM-creation cost as unaccounted parent time.
+
+To keep every subtree separate, the phase wraps **each** shell-out in its own
+nested child span - `provision`, `provision toolchains`, and (custom-powershell)
+`provision (no-op rerun)` - each with its own per-invocation path, so none can
+overwrite another:
 
 ```
-    provisioning Phase 1      [OK]     430.10 s  ( 84%)
-      boot VM                 [OK]     120.00 s  ( 28%)   <- from provision.ps1
-      install JDK             [OK]      95.00 s  ( 22%)   <- from provision.ps1
-      provision toolchains    [OK]     180.00 s  ( 42%)   <- nested child span
-        run jdk role          [OK]      90.00 s  ( 50%)   <- from provision-toolchains.sh
-        run dotnet role       [OK]      85.00 s  ( 47%)   <- from provision-toolchains.sh
+    provisioning Phase 1        [OK]     767.80 s
+      provision                 [OK]     451.12 s   <- nested: provision.ps1's tree
+        Host network setup      [OK]       9.40 s
+        Disk image acquisition  [OK]      80.06 s
+        VM creation             [OK]     290.46 s
+        Post-provisioning       [OK]      64.36 s
+      provision toolchains      [OK]     307.26 s   <- nested: provision-toolchains.sh
+        run playbook            [OK]     300.48 s
+      provision (no-op rerun)   [OK]       ...       <- custom-powershell only
 ```
 
-Under `ToolchainsFlow=custom-powershell` the dispatcher shells out to nothing
-(the reconciler installed the toolchains inside `provision.ps1`), so the
-`provision toolchains` span renders empty.
+Under `ToolchainsFlow=custom-powershell` the toolchains dispatcher shells out to
+nothing (the reconciler installed them inside `provision.ps1`), so the
+`provision toolchains` span renders empty; the no-op rerun span then proves the
+reconciler took its diff's no-op branch without touching the real provision's
+timings. Phases 2 and 3 apply the same discipline per sub-phase, wrapping each
+`provision` and `toolchains` shell-out as its own child span (`2a provision`,
+`2a toolchains`, `2b provision`, ... `3b toolchains`).
 
 #### Crossing the WSL boundary for bash children
 
