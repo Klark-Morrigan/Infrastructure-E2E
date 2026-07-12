@@ -2,15 +2,19 @@
 .NOTES
     Dispatcher for the register-side of the runner-lifecycle E2E layer.
     Selects between the bespoke PowerShell flow
-    (Infrastructure-GitHubRunners\hyper-v\ubuntu\register-runners.ps1) and
-    the Ansible flow (Infrastructure-VM-Ansible's
-    ops/register-runners.sh). Both flows reconcile the same on-VM state
-    from the same GitHubRunnersConfig vault entry; the test layer treats
-    them as first-class peers.
+    (Infrastructure-GitHubRunners\hyper-v\ubuntu\PowerShell\register-runners.ps1) and
+    the Ansible flow (Infrastructure-GitHubRunners'
+    hyper-v\ubuntu\Ansible\ops\register-runners.sh). Both impls now live in
+    the runner domain owner repo (GitHubRunners); the Ansible wrapper
+    consumes the Common-Ansible substrate (roles + bridge) as a sibling
+    checkout it resolves itself, so this layer no longer needs a
+    Common-Ansible path. Both flows reconcile the same on-VM state from the
+    same GitHubRunnersConfig vault entry; the test layer treats them as
+    first-class peers.
 
     The deregister half stays on
-    Infrastructure-GitHubRunners\hyper-v\ubuntu\deregister-runners.ps1 for
-    both flows until feature 09 in Infrastructure-VM-Ansible introduces
+    Infrastructure-GitHubRunners\hyper-v\ubuntu\PowerShell\deregister-runners.ps1 for
+    both flows until feature 09 in Common-Ansible introduces
     the symmetric remove-side fork. The PowerShell removal script tears
     down runners installed by either flow (it operates on systemd units
     and GitHub registrations by name, not on flow-specific state).
@@ -39,17 +43,13 @@ function Set-VmRunnersForTest {
         [ValidateSet('custom-powershell', 'ansible')]
         [string] $RunnersFlow,
 
-        # Infrastructure-GitHubRunners repo root. Required for both flows
-        # because deregister-runners.ps1 from this repo is still the
-        # teardown path regardless of which create flow ran.
+        # Infrastructure-GitHubRunners repo root. Required for both flows:
+        # it is the register-runners.ps1 home under custom-powershell, the
+        # hyper-v/ubuntu/Ansible/ops/register-runners.sh home under ansible,
+        # and the deregister-runners.ps1 teardown path regardless of which
+        # create flow ran.
         [Parameter(Mandatory)]
         [string] $RunnersPath,
-
-        # Infrastructure-VM-Ansible repo root. Required when
-        # RunnersFlow=ansible; ignored otherwise. The dispatcher validates
-        # presence at call time so a misconfigured session fails here
-        # rather than at the underlying wsl invocation.
-        [string] $AnsiblePath,
 
         # Name of the WSL distro the Ansible bridge runs inside.
         # Required when RunnersFlow=ansible; ignored otherwise. Passed to
@@ -83,7 +83,7 @@ function Set-VmRunnersForTest {
             # The invocation that lived inline in Invoke-RunnerLifecycleTest
             # before this step. Identical surface so the existing flow
             # remains a first-class peer of the Ansible one.
-            & "$RunnersPath\hyper-v\ubuntu\register-runners.ps1" `
+            & "$RunnersPath\hyper-v\ubuntu\PowerShell\register-runners.ps1" `
                 -Token        $Token `
                 -SecretSuffix $SecretSuffix
             if ($LASTEXITCODE -ne 0) {
@@ -91,13 +91,16 @@ function Set-VmRunnersForTest {
             }
         }
         'ansible' {
-            if (-not $AnsiblePath) {
-                throw 'RunnersFlow=ansible requires -AnsiblePath'
-            }
             if (-not $WslDistro) {
                 throw 'RunnersFlow=ansible requires -WslDistro'
             }
             # Push-Location + `wsl -d <distro> --`:
+            #
+            # cwd is $RunnersPath - the register-runners.sh wrapper's owner
+            # repo (GitHubRunners). The wrapper resolves the Common-Ansible
+            # substrate (roles + bridge) itself via its own
+            # ops/imports/_common-ansible-root.sh sibling-checkout resolver,
+            # so this layer passes no Common-Ansible path.
             #
             # `-d <distro>` targets the bash-having Linux distro the
             # operator bootstrapped against, regardless of what the
@@ -108,8 +111,9 @@ function Set-VmRunnersForTest {
             # `env: can't execute 'bash': No such file or directory`
             # the next time Docker Desktop is installed or upgraded.
             #
-            # Push-Location anchors PowerShell's cwd at the repo root so
-            # wsl inherits it as the Linux cwd. `wsl --cd <path>` would
+            # Push-Location anchors PowerShell's cwd at the GitHubRunners
+            # repo root so wsl inherits it as the Linux cwd, letting the
+            # relative wrapper path below resolve. `wsl --cd <path>` would
             # do the same, but it routes the command through a
             # /bin/sh -c "cd <path>; <cmd>" interop layer with a sparse
             # PATH inherited from the calling PS process - and that sh
@@ -122,7 +126,7 @@ function Set-VmRunnersForTest {
             # extra-vars file). Setting it process-wide here is safe
             # because the agent is single-threaded between tests; the
             # finally block clears it whether wsl threw or returned.
-            Push-Location $AnsiblePath
+            Push-Location $RunnersPath
             $env:GH_TOKEN = $Token
             # Windows env vars do NOT cross into `wsl -- ...` unless their
             # names are listed in WSLENV. register-runners.sh reads
@@ -152,7 +156,7 @@ function Set-VmRunnersForTest {
                 # error text. Same gotcha as Set-VmUsersForTest's wsl
                 # invocation; see that file for the canonical
                 # explanation.
-                & wsl -d $WslDistro -- ./ops/register-runners.sh 2>&1 | Out-Host
+                & wsl -d $WslDistro -- ./hyper-v/ubuntu/Ansible/ops/register-runners.sh 2>&1 | Out-Host
             }
             finally {
                 # Belt-and-braces: clear GH_TOKEN even on throw so the

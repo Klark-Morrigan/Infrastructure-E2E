@@ -15,18 +15,22 @@
 #     - 'java -version' exits 0 and reports a build whose prefix matches the
 #       requested version. Prefix match (not equality) because the resolver
 #       legitimately upgrades "21" to a concrete build like "21.0.6+7".
-#     - A manifest file exists under /var/lib/infra-provisioner/manifests/
-#       matching javaDevKit-*.json. The manifest is the reconciler's truth
-#       source for "what is installed"; an install that left no manifest
-#       cannot be uninstalled or version-changed by future runs.
+#     - A manifest file exists under the manifest store matching the
+#       '<manifest-file-prefix>*.json' glob. The manifest is the engine's
+#       truth source for "what is installed"; an install that left no
+#       manifest cannot be uninstalled or version-changed by future runs.
 #
 #   Throws on the first failure with a message naming the VM and the observed
 #   value. The outer try/finally in Invoke-VmProvisioningTest still runs
 #   teardown.
 #
-#   $InstallPrefix is passed in (rather than read from a script-scope global)
-#   so this function is self-contained and unit-testable in isolation - the
-#   caller decides what vendor prefix is expected on disk.
+#   The paths that differ by provisioning engine - install prefix, manifest
+#   store dir, manifest filename prefix - are parameters defaulting to the
+#   PowerShell reconciler's layout, so the same end-state checks can be
+#   driven against the Ansible toolchain engine (which uses
+#   /var/lib/common-ansible/toolchains/manifests, jdk-<v>.json filenames,
+#   and the /opt/jdk- install prefix) by overriding them. This also keeps
+#   the function self-contained and unit-testable in isolation.
 # ---------------------------------------------------------------------------
 
 function Invoke-JdkInstallAssertions {
@@ -43,10 +47,17 @@ function Invoke-JdkInstallAssertions {
         [Parameter(Mandatory)]
         [string] $RequestedVersion,
 
-        # Expected on-disk install prefix, e.g. '/opt/jdk-temurin-'. Both
-        # JAVA_HOME and the resolved 'java' binary must live under this.
-        [Parameter(Mandatory)]
-        [string] $InstallPrefix
+        # Expected on-disk install prefix. Both JAVA_HOME and the resolved
+        # 'java' binary must live under this. The Ansible engine passes
+        # '/opt/jdk-' (no vendor infix).
+        [string] $InstallPrefix = '/opt/jdk-temurin-',
+
+        # Manifest store directory, no trailing slash.
+        [string] $ManifestStoreDir = '/var/lib/infra-provisioner/manifests',
+
+        # Manifest filename prefix; the store is probed with the glob
+        # '<prefix>*.json'. The Ansible engine passes 'jdk-'.
+        [string] $ManifestFilePrefix = 'javaDevKit-'
     )
 
     # 1) JAVA_HOME under a login shell - confirms /etc/profile.d/jdk.sh
@@ -127,14 +138,14 @@ function Invoke-JdkInstallAssertions {
     Write-Host "  [OK] java -version reports '$RequestedVersion': $firstLine" `
         -ForegroundColor Green
 
-    # 4) Manifest file present under the reconciler store. ls -1 of the
+    # 4) Manifest file present under the engine's store. ls -1 of the
     #    provider-scoped glob: exit 0 + one or more lines = manifest(s)
     #    written; exit 2 (no match) = the install path skipped the
     #    manifest write, which is the regression this check guards.
     $result = Invoke-SshClientCommand `
         -SshClient $SshClient `
-        -Command  ("bash -c 'ls -1 /var/lib/infra-provisioner/manifests/" +
-                   "javaDevKit-*.json 2>/dev/null'")
+        -Command  ("bash -c 'ls -1 $ManifestStoreDir/" +
+                   "$ManifestFilePrefix*.json 2>/dev/null'")
     if ($result.ExitStatus -ne 0) {
         throw "Manifest glob probe failed on $VmName " +
             "(exit $($result.ExitStatus)): $($result.Error)"
@@ -143,9 +154,8 @@ function Invoke-JdkInstallAssertions {
         -not [string]::IsNullOrWhiteSpace($_)
     } | ForEach-Object { $_.Trim() })
     if (@($manifestPaths).Count -lt 1) {
-        throw "No JDK manifest file under " +
-            "/var/lib/infra-provisioner/manifests/ on $VmName. " +
-            "The reconciler's truth source is missing - uninstall and " +
+        throw "No JDK manifest file under $ManifestStoreDir/ on $VmName. " +
+            "The engine's truth source is missing - uninstall and " +
             "version-change paths will not work on the next run."
     }
     Write-Host "  [OK] manifest present: $($manifestPaths -join ', ')" `

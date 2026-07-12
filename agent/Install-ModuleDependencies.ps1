@@ -80,14 +80,17 @@ if (-not $_nuget -or $_nuget.Version -lt [Version]'2.8.5.201') {
 
 # Step 2 - Common.PowerShell (provides Invoke-ModuleInstall).
 #
-# 9.0.1 for Invoke-ModuleInstall's -Global fix: the imports below land in
-# this script's scope, not Common.PowerShell's. The floor also satisfies
+# 9.1.0 for the N-level timing surface (New-TimingSpanTree /
+# Measure-TimingSpan) that the runner-lifecycle orchestration wraps its
+# phases and parts with (feature 88 C1). That release also carries the
+# 9.0.1 Invoke-ModuleInstall -Global fix - the imports below land in this
+# script's scope, not Common.PowerShell's - and satisfies
 # Infrastructure.Secrets 4.0.0 (needs >= 9.0.0) and Assert-WslHasBash. Keep
 # the Get-Module gate and the Install-Module pin in lockstep.
 $_common = Get-Module -ListAvailable -Name Common.PowerShell |
     Sort-Object Version -Descending | Select-Object -First 1
-if (-not $_common -or $_common.Version -lt [Version]'9.0.1') {
-    Install-PowerShellCommonWithRetry -MinimumVersion '9.0.1'
+if (-not $_common -or $_common.Version -lt [Version]'9.1.0') {
+    Install-PowerShellCommonWithRetry -MinimumVersion '9.1.0'
     # Re-query so the comparison below uses the freshly installed version.
     $_common = Get-Module -ListAvailable -Name Common.PowerShell |
         Sort-Object Version -Descending | Select-Object -First 1

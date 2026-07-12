@@ -74,10 +74,14 @@ function Invoke-VmProvisioningTeardown {
     }
 
     Write-Host 'Deprovisioning VM(s) ...' -ForegroundColor Magenta
-    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\deprovision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
+    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\PowerShell\deprovision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
 
     Write-Host 'Removing test VmProvisionerConfig from vault ...' -ForegroundColor Magenta
     Remove-Secret -Vault VmProvisioner -Name (Get-E2ESecretName 'VmProvisionerConfig')
+
+    # No separate ToolchainsConfig fixture to remove: the ansible flow now reads
+    # the per-VM toolchain fields from VmProvisionerConfig (removed just above),
+    # so there is nothing extra to clean up under ToolchainsFlow=ansible.
 
     Invoke-VmTeardownAssertions -Config $Config
 }

@@ -3,7 +3,7 @@
     Do not run this file directly. Dot-sourced by Invoke-VmProvisioningTest.ps1
     after Common.PowerShell, the assertion helpers, and the shared
     orchestrator helpers (New-VmEntryBase, Write-VmProvisionerConfig,
-    Invoke-WithVmSshClient) are loaded.
+    Invoke-WithVmSshClient, Measure-ChildProcessTimingSpan) are loaded.
 #>
 
 # ---------------------------------------------------------------------------
@@ -30,36 +30,70 @@ function Invoke-VmProvisioningPhase1 {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [PSCustomObject] $Config,
-        [Parameter(Mandatory)] [PSCustomObject] $Vm1Def
+        [Parameter(Mandatory)] [PSCustomObject] $Vm1Def,
+
+        # Optional timing context threaded from the parent orchestration
+        # (the 'provisioning Phase 1' part span in Invoke-VmUsersSetup).
+        # When supplied, the toolchains shell-out below records as a nested
+        # 'provision toolchains' span with its OWN per-invocation output
+        # path, so the bash driver's exported tree grafts separately from
+        # provision.ps1's export (which the parent part already imports).
+        # Without the split, the two co-resident exporting children would
+        # share the part's single TIMING_TREE_OUTPUT_PATH and the second
+        # writer would clobber the first (feature 88 E2). The standalone
+        # provisioning flow passes none; a throwaway tree then absorbs the
+        # span so the wrapping stays uniform and nothing downstream reads it.
+        [object] $Tree = $null
     )
+
+    if ($null -eq $Tree) {
+        $Tree = New-TimingSpanTree -RootName 'vm-provisioning-phase1'
+    }
 
     Write-Host '' -ForegroundColor Magenta
     Write-Host "Phase 1: writing single-VM VmProvisionerConfig (VM1 + JDK $($script:JdkInitialVersion) + dotnet SDK $($script:DotnetInitialResolvedVersion)) ..." `
         -ForegroundColor Magenta
+
+    # Toolchain engine for this run (ansible default, or custom-powershell
+    # from the deployment payload). $tcx bundles the flow, the branch boolean,
+    # the engine-specific assertion params, and the WSL distro.
+    $tcx = Get-ToolchainPhaseContext -Config $Config
+    # Splat-ready engine params for this phase's assertions (reconciler
+    # defaults under custom-powershell; the common-ansible store + prefix
+    # under ansible). Splatting needs simple variables, hence the locals.
+    $jdkParams        = $tcx.Params.Jdk
+    $sdkParams        = $tcx.Params.Sdk
+    $toolParams       = $tcx.Params.Tools
+    $toolInstallExtra = $tcx.Params.ToolInstallExtra
 
     $entry = New-VmEntryBase `
         -Config    $Config `
         -VmName    $Vm1Def.vmName `
         -IpAddress $Vm1Def.ipAddress `
         -Password  $Vm1Def.password
+    # Toolchain blocks: JDK 21 + dotnet SDK 8.0.100 + one global tool. The same
+    # per-VM desired state feeds both engines - custom-powershell installs them
+    # via provision.ps1's reconciler; ansible leaves them for
+    # provision-toolchains.sh (provision.ps1 runs -SkipToolchains). Both read
+    # these fields from VmProvisionerConfig.
     $entry.javaDevKit = [ordered]@{
         vendor  = $script:JdkTestVendor
         version = $script:JdkInitialVersion
     }
-    # Co-tenant the dotnet SDK on VM1 from phase 1. Running JDK +
-    # dotnetSdk through the same provision exercises the reconciler's
-    # multi-provider dispatch order (JdkProvider then DotnetSdkProvider
-    # per Get-Providers) and proves the two providers do not interfere
-    # with each other's manifest writes.
+    # Co-tenant the dotnet SDK on VM1 from phase 1. Running JDK + dotnetSdk
+    # through the same provision exercises the reconciler's multi-provider
+    # dispatch order (JdkProvider then DotnetSdkProvider per Get-Providers) and
+    # proves the two providers do not interfere with each other's manifest
+    # writes.
     $entry.dotnetSdk = [ordered]@{
         channel = $script:DotnetInitialChannel
         version = $script:DotnetInitialResolvedVersion
     }
-    # Co-tenant a single .NET global tool from phase 1. Together with
-    # dotnetSdk above this drives DotnetToolsProvider end-to-end through
-    # the nested-provider walker contract: SDK installs first, then the
-    # tool installs against the host-prefetched .nupkg, and the SDK
-    # manifest's children array gains a reference to the tool manifest.
+    # Co-tenant a single .NET global tool from phase 1. Together with dotnetSdk
+    # above this drives DotnetToolsProvider end-to-end through the
+    # nested-provider walker contract: SDK installs first, then the tool
+    # installs against the host-prefetched .nupkg, and the SDK manifest's
+    # children array gains a reference to the tool manifest.
     $entry.dotnetTools = @(
         [ordered]@{
             id      = $script:DotnetToolId
@@ -94,7 +128,16 @@ function Invoke-VmProvisioningPhase1 {
     Write-VmProvisionerConfig -Entries @($entry)
 
     Write-Host 'Phase 1: provisioning router + VM1 ...' -ForegroundColor Magenta
-    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
+    # Own child span so provision.ps1's exported tree (host network, disk
+    # acquisition, VM creation, wait-for-SSH, post-provisioning) grafts under
+    # a dedicated 'provision' node on its OWN output path. Without this, the
+    # no-op rerun below (custom-powershell only) writes provision.ps1's tree a
+    # second time to the shared parent path and CLOBBERS this real provision -
+    # the report then shows VM creation SKIPPED and buries the ~real creation
+    # cost as unaccounted parent time (feature 88 E2).
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name 'provision' -Action {
+        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx
+    }
 
     # provision.ps1 ran in its own scope and the discovered router IP
     # never made it back to the test's local _RouterVm reference. Look
@@ -102,6 +145,26 @@ function Invoke-VmProvisioningPhase1 {
     # post-condition checks below, and phases 2 / 3 - the same Vm1Def
     # carries forward) has a populated ipAddress to dial.
     Resolve-RouterIpFromKvp -RouterVmDef $Vm1Def._RouterVm
+
+    # Under the ansible flow, install the toolchains via
+    # provision-toolchains.sh now that provision.ps1 has brought the router
+    # + VM1 up (it reads the same javaDevKit / dotnetSdk / dotnetTools fields
+    # from VmProvisionerConfig). A no-op under custom-powershell (the reconciler
+    # already installed them inside provision.ps1 above).
+    #
+    # Wrapped in its own child-process span so the bash driver's exported
+    # timing tree grafts under a nested 'provision toolchains' node with a
+    # fresh output path, distinct from provision.ps1's export that the parent
+    # part imports - the two exporting children no longer share one path
+    # (feature 88 E2). Under custom-powershell the dispatcher shells out to
+    # nothing, so the span renders empty. Inert until E3 bridges the opt-in
+    # across the WSL boundary; harmless structural addition until then.
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name 'provision toolchains' -Action {
+        Set-VmToolchainsForTest `
+            -ToolchainsFlow  $tcx.Flow `
+            -ProvisionerPath $Config.ProvisionerPath `
+            -WslDistro       $tcx.WslDistro
+    }
 
     # Router-side white-box checks (forwarding, nftables/dnsmasq, NAT
     # rules, priv0 IP) are no longer asserted here: provision.ps1's
@@ -127,24 +190,27 @@ function Invoke-VmProvisioningPhase1 {
             -SshClient        $sshClient `
             -VmName           $Vm1Def.vmName `
             -RequestedVersion $script:JdkInitialVersion `
-            -InstallPrefix    $script:JdkInstallPrefix
+            @jdkParams
 
         Invoke-DotnetSdkInstallAssertions `
             -SshClient       $sshClient `
             -VmName          $Vm1Def.vmName `
             -ResolvedVersion $script:DotnetInitialResolvedVersion `
-            -InstallPrefix   $script:DotnetInstallPrefix
+            @sdkParams
 
         # Tool install assertions follow the SDK install assertions
-        # because I5 reads the parent SDK manifest - the SDK assertions
-        # have already verified that manifest is present and well-formed
-        # at this point.
+        # because I5 reads the parent SDK manifest (reconciler flow) - the
+        # SDK assertions have already verified that manifest is present and
+        # well-formed at this point. Under ansible, @toolInstallExtra carries
+        # -SkipReconcilerManifestSchema so the content + walker checks (which
+        # that engine does not produce) are bypassed.
         Invoke-DotnetToolsInstallAssertions `
             -SshClient   $sshClient `
             -VmName      $Vm1Def.vmName `
             -ToolId      $script:DotnetToolId `
             -ToolVersion $script:DotnetToolInitialVersion `
-            -Command     $script:DotnetToolCommand
+            -Command     $script:DotnetToolCommand `
+            @toolParams @toolInstallExtra
 
         # Capture VM-side SHA-256s so phase 2 can assert idempotence by
         # snapshot. Helpers also assert C2-C5 (single) / C1-C4 (bulk)
@@ -182,25 +248,43 @@ function Invoke-VmProvisioningPhase1 {
 
         # Snapshot the JDK artifacts AFTER the install assertions pass
         # so the no-op rerun below can prove the reconciler did not
-        # touch them.
-        $script:Phase1JdkSnapshot = Get-JdkArtifactSnapshot `
-            -SshClient     $sshClient `
-            -VmName        $Vm1Def.vmName `
-            -InstallPrefix $script:JdkInstallPrefix
+        # touch them. Reconciler-only: the no-op rerun probes provision.ps1's
+        # diff branch, but under ansible provision.ps1 runs -SkipToolchains so
+        # the reconciler never touches toolchains and there is no no-op branch
+        # to probe. Capture the snapshots only when they will be consumed.
+        if (-not $tcx.IsAnsible) {
+            $script:Phase1JdkSnapshot = Get-JdkArtifactSnapshot `
+                -SshClient     $sshClient `
+                -VmName        $Vm1Def.vmName `
+                -InstallPrefix $script:JdkInstallPrefix
 
-        # Same snapshot for the dotnet SDK so the no-op rerun proves
-        # the DotnetSdkProvider also took the diff's no-op branch.
-        $script:Phase1DotnetSnapshot = Get-DotnetSdkArtifactSnapshot `
-            -SshClient     $sshClient `
-            -VmName        $Vm1Def.vmName `
-            -InstallPrefix $script:DotnetInstallPrefix
+            # Same snapshot for the dotnet SDK so the no-op rerun proves
+            # the DotnetSdkProvider also took the diff's no-op branch.
+            $script:Phase1DotnetSnapshot = Get-DotnetSdkArtifactSnapshot `
+                -SshClient     $sshClient `
+                -VmName        $Vm1Def.vmName `
+                -InstallPrefix $script:DotnetInstallPrefix
+        }
     }
 
     # No-op rerun. Same VmProvisionerConfig already on disk - the
-    # reconciler must take the diff's no-op branch for every artifact.
+    # reconciler must take the diff's no-op branch for every artifact. This
+    # asserts a property of the PowerShell reconciler (re-provision does not
+    # re-extract unchanged toolchains); under ansible provision.ps1 runs
+    # -SkipToolchains, so re-running it never touches toolchains and there is
+    # no equivalent no-op branch to probe - the
+    # ansible flow is done after its install assertions above.
+    if ($tcx.IsAnsible) { return }
+
     Write-Host 'Phase 1: re-provisioning VM1 with unchanged JSON (no-op) ...' `
         -ForegroundColor Magenta
-    & "$($Config.ProvisionerPath)\hyper-v\ubuntu\provision.ps1" -SecretSuffix $script:E2ETestSecretSuffix
+    # Separate child span from the real 'provision' above so this rerun's tree
+    # (VM creation / disk SKIPPED - the idempotency proof) lands on its own path
+    # and does not overwrite the real provision's timings. Reached only under
+    # custom-powershell; the ansible flow returned above before this rerun.
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name 'provision (no-op rerun)' -Action {
+        Invoke-ProvisionerForPhase -Config $Config -Tcx $tcx
+    }
 
     Write-Host "Phase 1: verifying no-op rerun did not touch JDK / dotnet artifacts ..." `
         -ForegroundColor Magenta

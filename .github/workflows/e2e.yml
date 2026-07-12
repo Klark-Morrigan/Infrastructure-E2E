@@ -21,23 +21,26 @@ on:
     inputs:
       flow-spec:
         description: >-
-          JSON selecting which create/remove implementation each layer runs,
-          e.g. {"usersFlow":"ansible","runnersFlow":"ansible"}. Values are
-          'ansible' or 'custom-powershell'. Omit for the ansible scenario.
+          JSON selecting which implementation each layer runs, e.g.
+          {"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible"}.
+          Values are 'ansible' or 'custom-powershell'. All three layers
+          default to 'ansible'; omit a key to take its default or set it to
+          'custom-powershell' to exercise the PowerShell engine.
         required: false
         type: string
-        default: '{"usersFlow":"ansible","runnersFlow":"ansible"}'
+        default: '{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible"}'
   workflow_call:
     inputs:
       flow-spec:
         description: >-
-          JSON selecting which create/remove implementation each layer runs.
-          Callers pass {"usersFlow":"...","runnersFlow":"..."} with values
-          'ansible' (default) or 'custom-powershell'. Omitted => ansible, so
-          a caller that does not set it gets the default ansible scenario.
+          JSON selecting which implementation each layer runs. Callers pass
+          {"usersFlow":"...","runnersFlow":"...","toolchainsFlow":"..."} with
+          values 'ansible' or 'custom-powershell'. All three layers default
+          to 'ansible'. Any key may be omitted to take that layer's default;
+          set a key to 'custom-powershell' to exercise the PowerShell engine.
         required: false
         type: string
-        default: '{"usersFlow":"ansible","runnersFlow":"ansible"}'
+        default: '{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible"}'
     secrets:
       GH_APP_ID:
         required: true
@@ -163,7 +166,7 @@ jobs:
           done
 
           if [ "$timed_out" = "true" ]; then
-            echo "::error::Timed out after 30 minutes - polling agent did not post a terminal status."
+            echo "::error::Timed out after 30 minutes - polling agent posted no terminal status."
             exit 1
           fi
 

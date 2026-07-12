@@ -96,7 +96,10 @@ if ($MyInvocation.InvocationName -ne '.') {
     #   "ProvisionerPath":     "C:\\a_Code\\Infrastructure-Vm-Provisioner",
     #   "UsersPath":           "C:\\a_Code\\Infrastructure-Vm-Users",
     #   "RunnersPath":         "C:\\a_Code\\Infrastructure-GitHubRunners",
-    #   "RunnersFlow":         "custom-powershell",
+    #   "UsersFlow":           "ansible",
+    #   "RunnersFlow":         "ansible",
+    #   "ToolchainsFlow":      "ansible",
+    #   "WslDistro":           "Ubuntu-24.04",
     #   "HostTarballCachePath": "C:\\cache\\github-runners",
     #   "TestVm": {
     #     "ubuntuVersion":       "24.04",
@@ -133,31 +136,31 @@ if ($MyInvocation.InvocationName -ne '.') {
     # deadline is checked at session boundaries so the agent stops without
     # operator intervention. PipelineStoppedException (Ctrl+C) is re-thrown
     # so the operator can also stop it early.
-    # UsersFlow / RunnersFlow / AnsiblePath / WslDistro are optional in
-    # the vault payload so older E2EConfig files do not need a re-write
-    # to keep working. When absent, Invoke-E2EAgentLoop's defaults
-    # (UsersFlow=ansible, RunnersFlow=custom-powershell) apply, and
-    # WslDistro has no default - if either flow is 'ansible' the loop
-    # fail-fasts with a named error so the operator adds it to the vault
-    # rather than the agent guessing. Strict mode requires guarded
-    # property access.
+    # UsersFlow / RunnersFlow / ToolchainsFlow / WslDistro are optional in
+    # the vault payload so older E2EConfig files do not need a re-write to
+    # keep working. When absent, Invoke-E2EAgentLoop's defaults
+    # (UsersFlow=ansible, RunnersFlow=ansible,
+    # ToolchainsFlow=ansible) apply, and WslDistro has no default
+    # - if any flow is 'ansible' the loop fail-fasts with a named error so
+    # the operator adds it to the vault rather than the agent guessing.
+    # Strict mode requires guarded property access.
     # These vault values are the session defaults only; an individual
-    # deployment may override UsersFlow/RunnersFlow for that one run via
-    # its payload (set by the e2e.yml flow-spec input), so each calling
-    # repo's PR exercises the create/remove path it owns.
+    # deployment may override UsersFlow/RunnersFlow/ToolchainsFlow for that
+    # one run via its payload (set by the e2e.yml flow-spec input), so each
+    # calling repo's PR exercises the create/remove/install path it owns.
     # DeploymentLookbackHours is likewise optional: absent vault payloads
     # fall back to Invoke-E2EAgentLoop's 1h default. An operator only sets
     # it to tune the lookback (see the parameter docstring); the default is
     # safe for normal operation.
     $vaultUsersFlow              = $null
     $vaultRunnersFlow            = $null
-    $vaultAnsiblePath            = $null
+    $vaultToolchainsFlow         = $null
     $vaultWslDistro              = $null
     $vaultDeploymentLookbackHours = $null
-    if ($config.PSObject.Properties['UsersFlow'])   { $vaultUsersFlow   = $config.UsersFlow }
-    if ($config.PSObject.Properties['RunnersFlow']) { $vaultRunnersFlow = $config.RunnersFlow }
-    if ($config.PSObject.Properties['AnsiblePath']) { $vaultAnsiblePath = $config.AnsiblePath }
-    if ($config.PSObject.Properties['WslDistro'])   { $vaultWslDistro   = $config.WslDistro }
+    if ($config.PSObject.Properties['UsersFlow'])      { $vaultUsersFlow      = $config.UsersFlow }
+    if ($config.PSObject.Properties['RunnersFlow'])    { $vaultRunnersFlow    = $config.RunnersFlow }
+    if ($config.PSObject.Properties['ToolchainsFlow']) { $vaultToolchainsFlow = $config.ToolchainsFlow }
+    if ($config.PSObject.Properties['WslDistro'])      { $vaultWslDistro      = $config.WslDistro }
     if ($config.PSObject.Properties['DeploymentLookbackHours']) {
         $vaultDeploymentLookbackHours = $config.DeploymentLookbackHours
     }
@@ -180,10 +183,10 @@ if ($MyInvocation.InvocationName -ne '.') {
                 PollIntervalSeconds   = $config.PollIntervalSeconds
                 TimeoutMinutes        = $config.TimeoutMinutes
             }
-            if ($vaultUsersFlow)   { $loopParams['UsersFlow']   = $vaultUsersFlow }
-            if ($vaultRunnersFlow) { $loopParams['RunnersFlow'] = $vaultRunnersFlow }
-            if ($vaultAnsiblePath) { $loopParams['AnsiblePath'] = $vaultAnsiblePath }
-            if ($vaultWslDistro)   { $loopParams['WslDistro']   = $vaultWslDistro }
+            if ($vaultUsersFlow)      { $loopParams['UsersFlow']      = $vaultUsersFlow }
+            if ($vaultRunnersFlow)    { $loopParams['RunnersFlow']    = $vaultRunnersFlow }
+            if ($vaultToolchainsFlow) { $loopParams['ToolchainsFlow'] = $vaultToolchainsFlow }
+            if ($vaultWslDistro)      { $loopParams['WslDistro']      = $vaultWslDistro }
             if ($vaultDeploymentLookbackHours) {
                 $loopParams['DeploymentLookbackHours'] = $vaultDeploymentLookbackHours
             }

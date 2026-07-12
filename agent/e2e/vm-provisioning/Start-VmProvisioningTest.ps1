@@ -70,7 +70,21 @@ param(
     [string] $VmConfigPath = 'E:\a_VMs\Hyper-V\Config',
 
     # Workstation path for the test VHDX files.
-    [string] $VhdPath = 'E:\a_VMs\Hyper-V\Disks'
+    [string] $VhdPath = 'E:\a_VMs\Hyper-V\Disks',
+
+    # Which engine installs the jdk / dotnet toolchains. 'ansible' (default)
+    # drives Infrastructure-Vm-Provisioner's provision-toolchains.sh
+    # (requires -WslDistro); 'custom-powershell' keeps the PowerShell
+    # reconciler installing them inside provision.ps1. The same jdk / dotnet
+    # assertions run for both. See Set-VmToolchainsForTest.
+    [ValidateSet('custom-powershell', 'ansible')]
+    [string] $ToolchainsFlow = 'ansible',
+
+    # WSL distro the Ansible bridge runs inside. Required when
+    # -ToolchainsFlow ansible; ignored otherwise. Passed via `wsl -d <name>`
+    # so the run does not depend on the workstation's WSL default (Docker
+    # Desktop silently moves it to its no-bash 'docker-desktop' distro).
+    [string] $WslDistro = ''
 )
 
 Set-StrictMode -Version Latest
@@ -84,6 +98,8 @@ $ErrorActionPreference = 'Stop'
 
 Invoke-VmProvisioningTest -Config ([PSCustomObject]@{
     ProvisionerPath = $ProvisionerPath
+    ToolchainsFlow  = $ToolchainsFlow
+    WslDistro       = $WslDistro
     TestVm          = [PSCustomObject]@{
         ubuntuVersion         = $UbuntuVersion
         dns                   = $Dns

@@ -13,6 +13,7 @@
 - [How to run individual tests](#how-to-run-individual-tests)
 - [How to trigger](#how-to-trigger)
 - [Test coverage](#test-coverage)
+- [Timing report and artifact](#timing-report-and-artifact)
 - [Linting and CI](#linting-and-ci)
   - [Running the lint suite locally](#running-the-lint-suite-locally)
   - [Known-failing actionlint job](#known-failing-actionlint-job)
@@ -34,12 +35,20 @@ polling agent that receives signals from GitHub Actions workflows.
 - Unit or integration tests for individual repos - those live in their
   own repos.
 - Provisioning, user management, or runner registration - those are
-  delegated to `Infrastructure-Vm-Provisioner`,
-  `Infrastructure-VM-Ansible` (primary) and `Infrastructure-Vm-Users`
-  (custom-powershell flow), and `Infrastructure-GitHubRunners`
-  respectively. User reconciliation, user removal, and runner
-  registration each have two first-class implementations selected at
-  agent startup via `UsersFlow` and `RunnersFlow`.
+  delegated to `Infrastructure-Vm-Provisioner`, `Infrastructure-Vm-Users`,
+  and `Infrastructure-GitHubRunners` respectively. Each domain owns both
+  of its flows: `custom-powershell` and `ansible` implementations live
+  side by side in the owner repo, and the `ansible` wrappers consume the
+  `Common-Ansible` substrate (roles + bridge) as a sibling checkout they
+  resolve themselves. User reconciliation, user removal, runner
+  registration, and jdk / dotnet toolchain installation each have two
+  first-class implementations selected at agent startup via `UsersFlow`,
+  `RunnersFlow`, and `ToolchainsFlow`. `ToolchainsFlow` gates only which
+  engine installs the toolchains: `ansible` (the default) drives
+  `Infrastructure-Vm-Provisioner`'s `provision-toolchains.sh`, while
+  `custom-powershell` leaves the PowerShell reconciler doing it inside
+  `provision.ps1`. The same jdk / dotnet end-state assertions run for both
+  engines, so the two are measured against one bar.
 
 ---
 
@@ -57,25 +66,37 @@ PowerShell 7+ (`pwsh`).
   - `Infrastructure-Vm-Provisioner`
   - `Infrastructure-Vm-Users`
   - `Infrastructure-GitHubRunners`
+  - `Common-Ansible` - required only when running an `ansible` flow.
+    It is not a configured path: the `ansible` wrappers under
+    `Infrastructure-Vm-Users` / `Infrastructure-GitHubRunners` resolve it
+    as a sibling checkout (a directory named `Common-Ansible` alongside
+    the owner repo), so it must sit next to the other repos.
 - `Infrastructure.Secrets` module configured with vaults:
   - `VmProvisioner` (owned by `Infrastructure-Vm-Provisioner`)
   - `VmUsers` (owned by `Infrastructure-Vm-Users`)
   - `GitHubRunners` (owned by `Infrastructure-GitHubRunners`)
   - `E2EConfig` (owned by this repo - see [GitHub App setup](#github-app-setup))
-- `Common.PowerShell` >= `3.1.0` installed from PSGallery
-- When `UsersFlow=ansible` (the default since feature 02 of
-  `Infrastructure-VM-Ansible`) or `RunnersFlow=ansible` (opt-in during
-  the first validation cycle; the default-flip happens in a follow-up
-  bump), the agent runs that flow inside WSL2; the Ansible controller
+- `Common.PowerShell` >= `9.1.0` installed from PSGallery (supplies the
+  N-level timing surface the runner-lifecycle run records its phase / part
+  breakdown with)
+- All three layers default to `ansible`: `UsersFlow` since feature 02 of
+  `Common-Ansible`, and `RunnersFlow` / `ToolchainsFlow` since their
+  Ansible paths validated. When a layer is `ansible` the agent runs that
+  flow inside WSL2 via the owner repo's wrapper, which resolves the
+  `Common-Ansible` substrate as a sibling checkout; the Ansible controller
   must have been bootstrapped once via
-  `Infrastructure-VM-Ansible/ops/bootstrap-controller.ps1`. Pass
+  `Common-Ansible/ops/bootstrap-controller.ps1`. Pass
   `-UsersFlow custom-powershell` to fall back to the original
-  Infrastructure-Vm-Users flow, or `-RunnersFlow ansible` to opt the
-  register-runners half into the Ansible path. The two flow switches
-  are independent: an `ansible` create-users can be paired with a
-  `custom-powershell` register-runners and vice versa, because both
-  directions reconcile the same on-VM contract regardless of which
-  side ran which step.
+  Infrastructure-Vm-Users flow, `-RunnersFlow custom-powershell` to keep
+  the register-runners half on `register-runners.ps1`, or
+  `-ToolchainsFlow custom-powershell` to install the jdk / dotnet
+  toolchains via the PowerShell reconciler instead of
+  `Infrastructure-Vm-Provisioner`'s `provision-toolchains.sh`. The flow
+  switches are independent: each layer reconciles the same on-VM contract
+  regardless of which engine ran it. The
+  `ToolchainsFlow=ansible` path reads its desired versions from a
+  `Toolchains` vault entry the test writes; that vault is registered lazily
+  on first use, so no manual `Toolchains` vault setup is required.
 
 ---
 
@@ -128,7 +149,7 @@ Install the app on all four repos:
    - `Infrastructure-E2E`
    - `Infrastructure-Vm-Provisioner`
    - `Infrastructure-Vm-Users`
-   - `Infrastructure-VM-Ansible`
+   - `Common-Ansible`
    - `Infrastructure-GitHubRunners`
 
 After installing, GitHub redirects to the installation page. The installation
@@ -146,7 +167,7 @@ Scoping the runners token to one repo and one permission at mint time means
 `Administration` access is never granted to the other repos in the installation.
 
 The other three repos (`Infrastructure-Vm-Provisioner`,
-`Infrastructure-Vm-Users`, `Infrastructure-VM-Ansible`) are installed
+`Infrastructure-Vm-Users`, `Common-Ansible`) are installed
 so the app can receive `workflow_call` triggers from their CI workflows
 - their installation IDs are not needed in the vault.
 
@@ -169,10 +190,10 @@ following in the `E2EConfig` vault:
   "ProvisionerPath":     "C:\\a_Code\\Infrastructure-Vm-Provisioner",
   "UsersPath":           "C:\\a_Code\\Infrastructure-Vm-Users",
   "UsersFlow":           "ansible",                                   // optional session default - 'ansible' (default) or 'custom-powershell'; a caller's flow-spec overrides per run
-  "AnsiblePath":         "C:\\a_Code\\Infrastructure-VM-Ansible",     // required when either flow resolves to 'ansible' - the default scenario, so effectively always on a workstation serving these repos' PRs
-  "WslDistro":           "Ubuntu-24.04",                              // required alongside AnsiblePath whenever a flow is 'ansible'; see Infrastructure-VM-Ansible README Troubleshooting
+  "WslDistro":           "Ubuntu-24.04",                              // required when any flow is 'ansible' (all three default to ansible); the WSL2 distro the ansible wrappers run in. Each wrapper (under UsersPath / RunnersPath / ProvisionerPath) self-resolves the Common-Ansible substrate as a sibling checkout, so no Common-Ansible path is configured here. See Common-Ansible README Troubleshooting
   "RunnersPath":         "C:\\a_Code\\Infrastructure-GitHubRunners",
-  "RunnersFlow":         "custom-powershell",                         // optional session default - 'custom-powershell' (default) or 'ansible'; a caller's flow-spec overrides per run
+  "RunnersFlow":         "ansible",                                   // optional session default - 'ansible' (default, register-runners.sh under RunnersPath) or 'custom-powershell' (register-runners.ps1); a caller's flow-spec overrides per run
+  "ToolchainsFlow":      "ansible",                                   // optional session default - 'ansible' (default, provision-toolchains.sh under ProvisionerPath) or 'custom-powershell' (the jdk/dotnet reconciler); a caller's flow-spec overrides per run
   "HostTarballCachePath": "C:\\cache\\github-runners",
   "TestVm": {
     "ubuntuVersion":  "24.04",
@@ -189,7 +210,7 @@ following in the `E2EConfig` vault:
 ### 4. Store Actions secrets in upstream repos
 
 In each of the four upstream repos (`Infrastructure-Vm-Provisioner`,
-`Infrastructure-Vm-Users`, `Infrastructure-VM-Ansible`,
+`Infrastructure-Vm-Users`, `Common-Ansible`,
 `Infrastructure-GitHubRunners`), add the following GitHub Actions
 secrets:
 
@@ -323,6 +344,37 @@ workstations. The file-transfer fixtures live under
 is computed per workstation. VM2's IP is derived from VM1's by
 incrementing the last octet - operator config still pins a single IP.
 
+The jdk / dotnet toolchain assertion helpers (under
+`agent/e2e/vm-provisioning/assertions/`) take the engine-specific parts
+of the on-disk layout as parameters: the manifest store directory, the
+manifest filename prefix, and the JDK install prefix. The filename
+prefix is the leading segment of the manifest basename - the jdk /
+dotnet_sdk helpers derive their `<prefix>*.json` listing glob from it,
+while the dotnet_tools helpers build the exact
+`<prefix><id>-<version>.json` name they probe (and the tools install
+helper also takes the parent-SDK prefix for its walker-contract check).
+Every parameter defaults to the PowerShell reconciler's layout
+(`/var/lib/infra-provisioner/manifests`; `javaDevKit-` / `dotnetSdk-` /
+`dotnetTools-`; `/opt/jdk-temurin-`), so the phase files pass nothing
+and keep driving the `custom-powershell` flow unchanged. A caller
+driving the Common-Ansible toolchain engine reuses the same end-state
+checks by passing that engine's store
+(`/var/lib/common-ansible/toolchains/manifests`), filename prefixes
+(`jdk-` / `dotnet-` / `dotnettool-`), and the `/opt/jdk-` install
+prefix.
+
+Manifest *content* differs by engine as well, and only the dotnet_tools
+install helper reads it: its I4 field assertions (`rawVersion`,
+`ownedSymlinks`) and its I5 parent-SDK `children` walker link are the
+PowerShell reconciler's truth-source schema. The Common-Ansible engine
+tracks tool manifests independently (a `version` / `symlinks` schema with
+no `children` array), verifying that schema in its own role molecule
+tests, so its caller passes `-SkipReconcilerManifestSchema` to run only
+the engine-agnostic checks (store dir, `/usr/local/bin` symlink, apphost
+launch, and tool-manifest presence). The observable end-state those
+reconciler-only checks stand in for stays covered by the presence and
+symlink probes.
+
 ```powershell
 # Standard VmLAN setup - no arguments needed:
 .\agent\e2e\vm-provisioning\Start-VmProvisioningTest.ps1
@@ -361,33 +413,38 @@ gh workflow run e2e.yml --repo <owner>/Infrastructure-E2E
 ### Automatic (PR check in upstream repos)
 
 Pull requests in `Infrastructure-Vm-Provisioner`, `Infrastructure-Vm-Users`,
-`Infrastructure-VM-Ansible`, and `Infrastructure-GitHubRunners` call this
+`Common-Ansible`, and `Infrastructure-GitHubRunners` call this
 workflow via `workflow_call` as a required status check. The full
 lifecycle layer always runs regardless of which upstream repo the PR is
 in - so an Ansible role change cannot merge to master without proving
 the new code still reconciles users and brings up an online runner on a
 real VM.
 
-Each caller selects which create/remove implementation the run
-exercises through the `flow-spec` input - a JSON object
-`{"usersFlow":"...","runnersFlow":"..."}` with values `ansible` or
-`custom-powershell`. The workflow embeds that JSON in the GitHub
-Deployment payload; the polling agent reads it and overrides its vault
-`UsersFlow` / `RunnersFlow` defaults for that one run, so a repo's PR
-exercises the path it owns:
+Each caller selects which implementation the run exercises through the
+`flow-spec` input - a JSON object
+`{"usersFlow":"...","runnersFlow":"...","toolchainsFlow":"..."}` with
+values `ansible` or `custom-powershell`. The workflow embeds that JSON in
+the GitHub Deployment payload; the polling agent reads it and overrides
+its vault `UsersFlow` / `RunnersFlow` / `ToolchainsFlow` defaults for that
+one run, so a repo's PR exercises the path it owns. Any key may be omitted
+- each omitted key falls back to the agent's vault / parameter default,
+which is `ansible` for all three layers:
 
 | Caller repo | `flow-spec` | Tests |
 |---|---|---|
-| `Infrastructure-VM-Ansible` | `{"usersFlow":"ansible","runnersFlow":"ansible"}` | the Ansible create-users + register-runners scripts |
-| `Infrastructure-Vm-Users` | `{"usersFlow":"custom-powershell","runnersFlow":"custom-powershell"}` | the PowerShell users scripts |
-| `Infrastructure-GitHubRunners` | `{"usersFlow":"custom-powershell","runnersFlow":"custom-powershell"}` | the PowerShell runner-registration script |
-| `Infrastructure-Vm-Provisioner` | omitted | the default ansible scenario |
+| `Common-Ansible` (users/runners) | `{"usersFlow":"ansible","runnersFlow":"ansible"}` | the Ansible create-users + register-runners scripts |
+| `Common-Ansible` (toolchains) | `{"toolchainsFlow":"ansible"}` | `provision-toolchains.sh` installs jdk / dotnet; the shared install / swap / uninstall assertions run against it |
+| `Infrastructure-Vm-Users` | `{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible"}` | the Ansible users flow; runner + toolchain layers cascade on the full Ansible stack |
+| `Infrastructure-GitHubRunners` | `{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible"}` | the Ansible runner-registration flow; users + toolchain layers cascade |
+| `Infrastructure-Vm-Provisioner` | `{"usersFlow":"ansible","runnersFlow":"ansible","toolchainsFlow":"ansible"}` | the Ansible toolchain flow via `provision-toolchains.sh`; users + runner layers cascade |
 
-`ansible` is the default scenario: a caller that omits `flow-spec` (and a
-manual `workflow_dispatch` left at its default) runs both layers on the
-Ansible path. A `flow-spec` that names an unknown flow, or that upgrades a
-layer to `ansible` on an agent without `AnsiblePath` / `WslDistro`
-configured, fails the deployment with a named error rather than guessing.
+All three layers default to `ansible`. A caller that omits a key - or a
+manual `workflow_dispatch` left at its default - runs that layer on the
+Ansible path, and a repo that wants the PowerShell engine opts that layer
+down to `custom-powershell` through its `flow-spec`.
+A `flow-spec` that names an unknown flow, or that upgrades a layer to
+`ansible` on an agent without `WslDistro` configured, fails the deployment
+with a named error rather than guessing.
 
 ### Reading results
 
@@ -411,13 +468,187 @@ its own assertions on top.
 | Layer | Script | Asserts |
 |---|---|---|
 | VM provisioning | `agent/e2e/vm-provisioning/Invoke-VmProvisioningTest.ps1` | Four-phase install / uninstall / re-install / deprovision lifecycle over two VMs (see [VM provisioning test](#vm-provisioning-test)). Each phase asserts: VM is reachable via SSH; cloud-init completed; root filesystem not full. Per-phase: phase 1 - JDK 21 installed on VM1 (`JAVA_HOME`, login + non-login `PATH`, `java -version` prefix), mixed `files` array landed - single fixture at target + three `*.jar` fixtures under `/opt/ci-jars` (per-file SHA-256, `root:root`, `0644`); phase 2 - VM1 JDK removed (install dir, `/etc/profile.d/jdk.sh`, stale symlinks all gone), VM2 has no JDK artifacts, file-transfer targets on VM1 idempotent vs phase-1 snapshot; phase 3 - JDK 17 active on VM1, VM2 still has no JDK artifacts; phase 4 - both VMs and their disk artifacts removed, host-side JDK cache for both versions preserved |
-| VM users | `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` | Expected OS groups exist; expected users exist with correct shell and group membership; sudoers files are in place. The create half dispatches via [`Set-VmUsersForTest.ps1`](agent/e2e/vm-users/Set-VmUsersForTest.ps1) - selecting `UsersFlow=ansible` (default) runs `Infrastructure-VM-Ansible/ops/create-users.sh` under WSL; `UsersFlow=custom-powershell` runs `Infrastructure-Vm-Users/hyper-v/ubuntu/create-users.ps1`. The teardown half dispatches symmetrically via [`Remove-VmUsersForTest.ps1`](agent/e2e/vm-users/Remove-VmUsersForTest.ps1) - `UsersFlow=ansible` runs `Infrastructure-VM-Ansible/ops/remove-users.sh` (feature 03 of that repo); `UsersFlow=custom-powershell` runs `Infrastructure-Vm-Users/hyper-v/ubuntu/remove-users.ps1`. Both halves are first-class permanent peers and either pairing is supported - an `ansible` create can be torn down by a `custom-powershell` remove and vice versa, because both directions reconcile by username against the same on-VM contract. |
-| Runner lifecycle | `agent/e2e/runner-lifecycle/Invoke-RunnerLifecycleTest.ps1` | Runner systemd service is active; runner appears online in the GitHub API. The register half dispatches via [`Set-VmRunnersForTest.ps1`](agent/e2e/runner-lifecycle/Set-VmRunnersForTest.ps1) - `RunnersFlow=custom-powershell` (current default) runs `Infrastructure-GitHubRunners/hyper-v/ubuntu/register-runners.ps1`; `RunnersFlow=ansible` runs `Infrastructure-VM-Ansible/ops/register-runners.sh` under WSL. The default-flip to `ansible` happens in a follow-up bump after the Ansible path validates on real hardware. The teardown half stays on `Infrastructure-GitHubRunners/hyper-v/ubuntu/deregister-runners.ps1` for both flows until feature 09 of `Infrastructure-VM-Ansible` introduces the symmetric remove-side fork. As with `UsersFlow`, either pairing is supported - an `ansible` register can be torn down by the PowerShell deregister and vice versa, because both directions reconcile against the same on-VM and GitHub-API contracts. |
+| VM users | `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` | Expected OS groups exist; expected users exist with correct shell and group membership; sudoers files are in place. The create half dispatches via [`Set-VmUsersForTest.ps1`](agent/e2e/vm-users/Set-VmUsersForTest.ps1) - both flows resolve under `$UsersPath` (`Infrastructure-Vm-Users`, the user domain owner): `UsersFlow=ansible` (default) runs `Infrastructure-Vm-Users/hyper-v/ubuntu/Ansible/ops/create-users.sh` under WSL (the wrapper self-resolves the `Common-Ansible` substrate as a sibling checkout); `UsersFlow=custom-powershell` runs `Infrastructure-Vm-Users/hyper-v/ubuntu/PowerShell/create-users.ps1`. The teardown half dispatches symmetrically via [`Remove-VmUsersForTest.ps1`](agent/e2e/vm-users/Remove-VmUsersForTest.ps1) - `UsersFlow=ansible` runs `Infrastructure-Vm-Users/hyper-v/ubuntu/Ansible/ops/remove-users.sh`; `UsersFlow=custom-powershell` runs `Infrastructure-Vm-Users/hyper-v/ubuntu/PowerShell/remove-users.ps1`. Both halves are first-class permanent peers and either pairing is supported - an `ansible` create can be torn down by a `custom-powershell` remove and vice versa, because both directions reconcile by username against the same on-VM contract. |
+| Runner lifecycle | `agent/e2e/runner-lifecycle/Invoke-RunnerLifecycleTest.ps1` | Runner systemd service is active; runner appears online in the GitHub API. The register half dispatches via [`Set-VmRunnersForTest.ps1`](agent/e2e/runner-lifecycle/Set-VmRunnersForTest.ps1) - both flows resolve under `$RunnersPath` (`Infrastructure-GitHubRunners`, the runner domain owner): `RunnersFlow=ansible` (default) runs `Infrastructure-GitHubRunners/hyper-v/ubuntu/Ansible/ops/register-runners.sh` under WSL (the wrapper self-resolves the `Common-Ansible` substrate as a sibling checkout); `RunnersFlow=custom-powershell` runs `Infrastructure-GitHubRunners/hyper-v/ubuntu/register-runners.ps1`. The teardown half stays on `Infrastructure-GitHubRunners/hyper-v/ubuntu/deregister-runners.ps1` for both flows until the symmetric remove-side fork lands in GitHubRunners. As with `UsersFlow`, either pairing is supported - an `ansible` register can be torn down by the PowerShell deregister and vice versa, because both directions reconcile against the same on-VM and GitHub-API contracts. |
 
 The polling agent (`Start-E2EAgent.ps1`) always runs the full runner
 lifecycle test, which transitively exercises all three layers. The
 lower-layer scripts exist so a provisioning or users failure produces a
 focused stack trace rather than a runner error.
+
+---
+
+## Timing report and artifact
+
+The runner-lifecycle run is the longest-running thing in the fleet and its
+cost is spread across four repos and several child processes. To make that
+cost visible, every run emits a hierarchical timing report at the end,
+built on the N-level timing surface in `Common.PowerShell`.
+
+### What it shows
+
+A single indented, single-colour console block listing the whole run, each
+phase as a share of the total, and each part as a share of its parent - to
+arbitrary depth, including the internals of the child processes each part
+shells out to. It prints on **both the success and failure paths** (via the
+run's outer `finally`), so a failed or hung run still shows where the time
+went up to the failure point.
+
+```
+=== Timing report: runner-lifecycle ===
+  Setup                       [OK]     512.30 s  ( 84%)
+    provisioning Phase 1      [OK]     430.10 s  ( 84%)
+    reconcile users           [OK]      70.20 s  ( 14%)
+  Register runners            [OK]      41.80 s  (  7%)
+  Verify online               [OK]      18.40 s  (  3%)
+  Phase 2 + reassert          [OK]      15.10 s  (  2%)
+  Phase 3 + reassert          [OK]      14.90 s  (  2%)
+  Teardown                    [OK]       6.70 s  (  1%)
+  --------------------------------------
+  total observed: 609.20 s
+=== Timing report: runner-lifecycle ===
+```
+
+Until a given child process ships its own timing emitter, its part renders
+as a single opaque span (as `provisioning Phase 1` above); once the emitter
+lands, that part deepens into its own sub-steps automatically, with no
+change on the E2E side.
+
+### Where the JSON lands
+
+The same tree is persisted as a machine-readable artifact so successive runs
+can be compared and a regression (a step that suddenly doubled) is visible.
+It is written to:
+
+```
+<vmConfigPath>/diagnostics/timing/<timestamp>.json
+```
+
+next to the run's `runtime-diag.log` / `console.log`, so all artifacts for a
+run stay side by side. `<vmConfigPath>` is the `TestVm.vmConfigPath` from the
+`E2EConfig` vault (default `E:\a_VMs\Hyper-V\Config`). The file is the
+in-house nested-tree shape (schema `e2e-timing/v1`: explicit `children[]`,
+first-class `status`, duration-only `elapsedMs`), not a timestamp trace, so a
+cross-process merge is a subtree graft rather than a clock rebase.
+
+### Retention knob
+
+Old artifacts are pruned at write time via `Common.PowerShell`'s
+`Limit-RetainedItem`, keeping the most recent N `*.json` files in the
+`timing/` folder. N defaults to `20` (the `$script:TimingArtifactRetentionCount`
+default in `Publish-E2ETimingReport.ps1`); pass `-MaxItems` to that function
+to override the rolling-window size.
+
+### Per-task depth inside `run playbook` (Ansible toolchains)
+
+A toolchain playbook run is over half the runner-lifecycle wall clock under
+`ToolchainsFlow=ansible`, and it happens five times (Setup + 2a/2b + 3a/3b). Left
+as one `run playbook` span it hides *where* the time goes - fact gathering and
+per-task round trips over the two-hop proxy versus real extract /
+`dotnet tool install` work. So that span deepens into per-role -> per-task
+children **in the same tree** (no sidecar artifact):
+
+```
+    run playbook              [OK]  300.48 s
+      Gathering Facts         [OK]   41.20 s   <- fixed overhead, now visible
+      jdk                     [OK]   19.00 s
+        install tarball       [OK]   18.10 s
+        symlink JAVA_HOME     [OK]    0.90 s
+      dotnet_sdk              [OK]   52.40 s
+        extract               [OK]   52.40 s
+```
+
+The mechanism reuses the same `TIMING_TREE_OUTPUT_PATH` opt-in, so it is on
+automatically whenever the run is instrumented (and inert otherwise):
+
+- **`timing_tree` callback** (Common-Ansible `callback_plugins/`) records each
+  task's duration and its role (`task._role`), and on playbook end writes
+  `role<TAB>task<TAB>elapsed_ms<TAB>status` rows. It is an *aggregate* callback,
+  so it runs alongside the stdout callback, and self-gates on
+  `TIMING_TASKS_OUTPUT_PATH` - unset, it writes nothing.
+- **`provision-toolchains.sh`** sets `TIMING_TASKS_OUTPUT_PATH` to a temp file
+  for the timed run, then calls **`timing_graft_children_from`** (a verb in
+  Common-Automation `scripts/timing.sh`) inside the `run playbook` span to fold
+  those rows in as children - roleless tasks (Gathering Facts) as direct leaves,
+  same-role tasks under one role node whose elapsed is their sum. The bash side
+  owns the JSON schema, so grafted nodes match native spans exactly.
+
+Nothing is wired on the E2E side: `Set-VmToolchainsForTest` is unchanged from its
+plain dispatch. The Common-Ansible bridge enables the callback when
+`TIMING_TASKS_OUTPUT_PATH` is set (an env-gated asymmetry documented in its
+`ansible.cfg`), the same posture every other timing emitter takes.
+
+### Child-process depth: the `TIMING_TREE_OUTPUT_PATH` opt-in
+
+Each part that shells out to a child process is timed by
+`Measure-ChildProcessTimingSpan`, which sets the neutral environment variable
+`TIMING_TREE_OUTPUT_PATH` to a fresh per-invocation temp file before the call.
+A child that honours the opt-in exports its own timing tree to that path (on
+success and failure); after the child returns, the E2E orchestrator imports
+that tree and grafts it as the children of the part's span, then deletes the
+temp file. When the variable is unset - or the child has no emitter yet, or it
+crashes before exporting - nothing is written and the part is simply timed as
+a single span, so the graft is graceful by design.
+
+The variable name is deliberately neutral: a production script exports to
+whatever path it is handed and never learns that the E2E run is its consumer,
+keeping the child scripts test-agnostic.
+
+#### Parts that shell out to more than one exporting child
+
+`Measure-ChildProcessTimingSpan` hands each part **one** output path, so two
+exporting children that ran in sequence on that same path would have the second
+writer clobber the first. `provisioning Phase 1` is exactly that case: it runs
+`provision.ps1` (the baseline provision), then `provision-toolchains.sh` (the
+Ansible toolchain install under `ToolchainsFlow=ansible`), and then - under
+`ToolchainsFlow=custom-powershell` only - `provision.ps1` a **second** time as a
+no-op idempotency rerun. All are exporting children. Left on one shared path the
+no-op rerun's tree (VM creation `SKIPPED`, disk `SKIPPED`) would overwrite the
+real provision's, hiding the ~real VM-creation cost as unaccounted parent time.
+
+To keep every subtree separate, the phase wraps **each** shell-out in its own
+nested child span - `provision`, `provision toolchains`, and (custom-powershell)
+`provision (no-op rerun)` - each with its own per-invocation path, so none can
+overwrite another:
+
+```
+    provisioning Phase 1        [OK]     767.80 s
+      provision                 [OK]     451.12 s   <- nested: provision.ps1's tree
+        Host network setup      [OK]       9.40 s
+        Disk image acquisition  [OK]      80.06 s
+        VM creation             [OK]     290.46 s
+        Post-provisioning       [OK]      64.36 s
+      provision toolchains      [OK]     307.26 s   <- nested: provision-toolchains.sh
+        run playbook            [OK]     300.48 s
+      provision (no-op rerun)   [OK]       ...       <- custom-powershell only
+```
+
+Under `ToolchainsFlow=custom-powershell` the toolchains dispatcher shells out to
+nothing (the reconciler installed them inside `provision.ps1`), so the
+`provision toolchains` span renders empty; the no-op rerun span then proves the
+reconciler took its diff's no-op branch without touching the real provision's
+timings. Phases 2 and 3 apply the same discipline per sub-phase, wrapping each
+`provision` and `toolchains` shell-out as its own child span (`2a provision`,
+`2a toolchains`, `2b provision`, ... `3b toolchains`).
+
+#### Crossing the WSL boundary for bash children
+
+A pwsh child inherits `TIMING_TREE_OUTPUT_PATH` directly, but a bash child
+launched with `wsl -- ...` does not: a Windows environment variable is
+invisible inside WSL unless its name is listed in `WSLENV`, and a path value is
+unusable there without the `/p` translation flag (which maps the Windows temp
+path under `C:` to `/mnt/c/...`). So while it holds the opt-in variable set,
+`Measure-ChildProcessTimingSpan` also appends `TIMING_TREE_OUTPUT_PATH/p` to
+`WSLENV` for the duration of the action and restores the prior `WSLENV` in the
+same `finally` (removed if it did not exist before). The append is guarded
+against duplication, so a nested wrap does not stack a second entry.
+
+Doing this once, in the wrapper that owns the opt-in variable, covers every
+bash child - present and future - with no per-shell-out edits: the bash
+emitters (`register-runners.sh`, `create-users.sh`, `provision-toolchains.sh`)
+write the very file the parent then imports. When the wrapper is not on the
+stack the variable stays unset and `WSLENV` is untouched, so a normal run is
+unchanged.
 
 ---
 
@@ -545,13 +776,22 @@ agent/
       Invoke-RunnerLifecycleTest.ps1            - Full lifecycle E2E + re-asserts after phases 2, 3
       Invoke-RunnerStillOnlineAssertions.ps1    - "runner still active + online" re-verification block
       Set-VmRunnersForTest.ps1                  - register-side dispatcher (custom-powershell | ansible)
+    timing/
+      Measure-ChildProcessTimingSpan.ps1        - Times a shell-out part + grafts the child's exported tree under it
+      Publish-E2ETimingReport.ps1               - End-of-run console report + rolling JSON artifact + retention
   Initialize-E2EEnvironment.ps1    - Shared module bootstrap (dot-sourced by entry points)
   Start-E2EAgent.ps1               - Polling agent (run manually on workstation)
 Tests/
-  Invoke-E2EAgentLoop.Tests.ps1    - Unit tests for the polling loop
-  Set-VmUsersForTest.Tests.ps1     - Unit tests for the create-side flow dispatcher
-  Remove-VmUsersForTest.Tests.ps1  - Unit tests for the teardown flow dispatcher
-  Set-VmRunnersForTest.Tests.ps1   - Unit tests for the register-side flow dispatcher
+  Invoke-E2EAgentLoop.Tests.ps1          - Unit tests for the polling loop
+  Set-VmUsersForTest.Tests.ps1           - Unit tests for the create-side flow dispatcher
+  Remove-VmUsersForTest.Tests.ps1        - Unit tests for the teardown flow dispatcher
+  Set-VmRunnersForTest.Tests.ps1         - Unit tests for the register-side flow dispatcher
+  Invoke-RunnerLifecycleTest.Tests.ps1   - Unit tests for the lifecycle timing tree + report emission
+  Measure-ChildProcessTimingSpan.Tests.ps1 - Unit tests for the child-tree graft
+  Invoke-VmProvisioningPhase1.Tests.ps1  - Unit tests for the nested provision-toolchains child span
+  Publish-E2ETimingReport.Tests.ps1      - Unit tests for the report + artifact + retention
+  support/
+    TimingSpanTestDoubles.ps1            - Shared timing doubles for the three timing suites (not a *.Tests.ps1)
 docs/
   dev/
     implementation/                - Problem and plan docs per implementation phase

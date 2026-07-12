@@ -35,8 +35,8 @@ function Invoke-PreTeardownRuntimeDiagCapture {
         [PSCustomObject] $Config
     )
 
-    $diagRoot     = Join-Path $Config.ProvisionerPath 'hyper-v\ubuntu\common\diag'
-    $networkRoot  = Join-Path $Config.ProvisionerPath 'hyper-v\ubuntu\common\network'
+    $diagRoot     = Join-Path $Config.ProvisionerPath 'hyper-v\ubuntu\PowerShell\common\diag'
+    $networkRoot  = Join-Path $Config.ProvisionerPath 'hyper-v\ubuntu\PowerShell\common\network'
     $diagScript   = Join-Path $diagRoot    'Invoke-VmRuntimeDiag.ps1'
     $folderScript = Join-Path $diagRoot    'Get-VmDiagFolder.ps1'
     $ipScript     = Join-Path $networkRoot 'Get-VmAdapterIPv4.ps1'

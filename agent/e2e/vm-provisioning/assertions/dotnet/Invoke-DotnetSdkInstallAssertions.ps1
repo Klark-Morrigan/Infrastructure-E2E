@@ -18,10 +18,16 @@
 #       text.
 #     - DOTNET_CLI_TELEMETRY_OPTOUT is set to 1 in a login shell - the
 #       opt-out is per-shell so the provisioner writes it into profile.d.
-#     - A manifest file exists under /var/lib/infra-provisioner/manifests/
-#       matching dotnetSdk-*.json. The manifest is the reconciler's truth
-#       source for "what is installed"; an install that left no manifest
-#       cannot be uninstalled or version-changed by future runs.
+#     - A manifest file exists under the manifest store matching the
+#       '<manifest-file-prefix>*.json' glob. The manifest is the engine's
+#       truth source for "what is installed"; an install that left no
+#       manifest cannot be uninstalled or version-changed by future runs.
+#
+#   The manifest store dir and filename prefix differ by provisioning
+#   engine and are parameters defaulting to the PowerShell reconciler's
+#   layout; the Ansible toolchain engine passes its own store
+#   (/var/lib/common-ansible/toolchains/manifests) and 'dotnet_sdk-'
+#   prefix. The /opt/dotnet- install prefix is identical across engines.
 #
 #   Throws on the first failure with a message naming the VM and the observed
 #   value. The outer try/finally in Invoke-VmProvisioningTest still runs
@@ -53,7 +59,14 @@ function Invoke-DotnetSdkInstallAssertions {
         # Expected on-disk install prefix, e.g. '/opt/dotnet-'. Both
         # DOTNET_ROOT and the resolved 'dotnet' binary must live under this.
         [Parameter(Mandatory)]
-        [string] $InstallPrefix
+        [string] $InstallPrefix,
+
+        # Manifest store directory, no trailing slash.
+        [string] $ManifestStoreDir = '/var/lib/infra-provisioner/manifests',
+
+        # Manifest filename prefix; the store is probed with the glob
+        # '<prefix>*.json'. The Ansible engine passes 'dotnet_sdk-'.
+        [string] $ManifestFilePrefix = 'dotnetSdk-'
     )
 
     # 1) DOTNET_ROOT under a login shell - confirms /etc/profile.d/dotnet.sh
@@ -166,14 +179,14 @@ function Invoke-DotnetSdkInstallAssertions {
     Write-Host "  [OK] /etc/dotnet/install_location: $installLocation" `
         -ForegroundColor Green
 
-    # 5) Manifest file present under the reconciler store. ls -1 of the
+    # 5) Manifest file present under the engine's store. ls -1 of the
     #    provider-scoped glob: exit 0 + one or more lines = manifest(s)
     #    written; exit 2 (no match) = the install path skipped the
     #    manifest write, which is the regression this check guards.
     $result = Invoke-SshClientCommand `
         -SshClient $SshClient `
-        -Command  ("bash -c 'ls -1 /var/lib/infra-provisioner/manifests/" +
-                   "dotnetSdk-*.json 2>/dev/null'")
+        -Command  ("bash -c 'ls -1 $ManifestStoreDir/" +
+                   "$ManifestFilePrefix*.json 2>/dev/null'")
     if ($result.ExitStatus -ne 0) {
         throw "Manifest glob probe failed on $VmName " +
             "(exit $($result.ExitStatus)): $($result.Error)"
@@ -182,9 +195,9 @@ function Invoke-DotnetSdkInstallAssertions {
         -not [string]::IsNullOrWhiteSpace($_)
     } | ForEach-Object { $_.Trim() })
     if (@($manifestPaths).Count -lt 1) {
-        throw "No dotnet SDK manifest file under " +
-            "/var/lib/infra-provisioner/manifests/ on $VmName. " +
-            "The reconciler's truth source is missing - uninstall and " +
+        throw "No dotnet SDK manifest file under $ManifestStoreDir/ " +
+            "on $VmName. " +
+            "The engine's truth source is missing - uninstall and " +
             "version-change paths will not work on the next run."
     }
     Write-Host "  [OK] manifest present: $($manifestPaths -join ', ')" `

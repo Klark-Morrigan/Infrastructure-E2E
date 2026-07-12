@@ -1,13 +1,17 @@
 <#
 .NOTES
     Dispatcher for the create-side of the vm-users E2E layer. Selects
-    between the bespoke PowerShell flow (Infrastructure-Vm-Users) and the
-    Ansible flow (Infrastructure-VM-Ansible). Both flows reconcile the
+    between the bespoke PowerShell flow and the Ansible flow. Both flows
+    now resolve within Infrastructure-Vm-Users (the user domain owner):
+    custom-powershell runs hyper-v/ubuntu/PowerShell/create-users.ps1, ansible
+    runs hyper-v/ubuntu/Ansible/ops/create-users.sh - the latter consuming the
+    Common-Ansible substrate (roles + bridge) as a sibling checkout. Each impl
+    is a self-contained slice under hyper-v/ubuntu/. Both reconcile the
     same on-VM state from the same VmUsersConfig vault entry; the test
     layer treats them as first-class peers.
 
     The teardown half stays on remove-users.ps1 for both flows for now -
-    feature 03 in Infrastructure-VM-Ansible introduces the symmetric
+    feature 03 in Common-Ansible introduces the symmetric
     remove-side fork. Until then the PowerShell removal script handles
     users created by either flow (it deletes Linux accounts by name).
 
@@ -34,17 +38,12 @@ function Set-VmUsersForTest {
         [ValidateSet('custom-powershell', 'ansible')]
         [string] $UsersFlow,
 
-        # Infrastructure-Vm-Users repo root. Required for both flows
-        # because teardown still uses remove-users.ps1 from this repo
-        # regardless of which create flow ran.
+        # Infrastructure-Vm-Users repo root. Required for both flows: it
+        # is the create-users.ps1 home under custom-powershell and the
+        # ops/create-users.sh home under ansible (both user
+        # implementations live in their owner repo as of feature 19).
         [Parameter(Mandatory)]
         [string] $UsersPath,
-
-        # Infrastructure-VM-Ansible repo root. Required when
-        # UsersFlow=ansible; ignored otherwise. The dispatcher validates
-        # presence at call time so a misconfigured session fails here
-        # rather than at the underlying wsl invocation.
-        [string] $AnsiblePath,
 
         # Name of the WSL distro the Ansible bridge runs inside.
         # Required when UsersFlow=ansible; ignored otherwise. Passed to
@@ -65,19 +64,23 @@ function Set-VmUsersForTest {
             # The invocation that lived inline in Invoke-VmUsersSetup
             # before this step. Identical surface so the existing flow
             # remains a first-class peer of the Ansible one.
-            & "$UsersPath\hyper-v\ubuntu\create-users.ps1" -SecretSuffix $script:E2ETestSecretSuffix
+            & "$UsersPath\hyper-v\ubuntu\PowerShell\create-users.ps1" -SecretSuffix $script:E2ETestSecretSuffix
             if ($LASTEXITCODE -ne 0) {
                 throw "custom-powershell create-users.ps1 exited $LASTEXITCODE"
             }
         }
         'ansible' {
-            if (-not $AnsiblePath) {
-                throw 'UsersFlow=ansible requires -AnsiblePath'
-            }
             if (-not $WslDistro) {
                 throw 'UsersFlow=ansible requires -WslDistro'
             }
             # Push-Location + `wsl -d <distro> --`:
+            #
+            # The create-users.sh wrapper lives in the user domain owner
+            # (Infrastructure-Vm-Users), so cwd is $UsersPath - the
+            # wrapper's repo. The wrapper resolves the Common-Ansible
+            # substrate (roles + bridge) itself as a sibling checkout via
+            # ops/imports/_common-ansible-root.sh, so this layer passes no
+            # Common-Ansible path.
             #
             # `-d <distro>` targets the bash-having Linux distro the
             # operator bootstrapped against, regardless of what the
@@ -88,15 +91,15 @@ function Set-VmUsersForTest {
             # `env: can't execute 'bash': No such file or directory`
             # the next time Docker Desktop is installed or upgraded.
             #
-            # Push-Location anchors PowerShell's cwd at the repo root
-            # so wsl inherits it as the Linux cwd. `wsl --cd <path>`
+            # Push-Location anchors PowerShell's cwd at the wrapper's repo
+            # root so wsl inherits it as the Linux cwd. `wsl --cd <path>`
             # would do the same, but it routes the command through a
             # /bin/sh -c "cd <path>; <cmd>" interop layer with a sparse
             # PATH inherited from the calling PS process - and that sh
             # layer cannot find `bash` by name. Push-Location avoids
             # that wrapper entirely; wsl execs the script directly with
             # its normal startup PATH.
-            Push-Location $AnsiblePath
+            Push-Location $UsersPath
             try {
                 # -vvv goes to a file, summary stays on the terminal.
                 # The verbose stream localizes any future SSH-via-WSL
@@ -139,7 +142,7 @@ function Set-VmUsersForTest {
                 $summaryPattern =
                     '^(PLAY|TASK|PLAY RECAP|fatal:|ok:|changed:|skipped:|failed:|unreachable:|\s*=+\s*$|.*\| (ok|changed|failed|skipping|fatal): \[)'
 
-                & wsl -d $WslDistro -- ./ops/create-users.sh -vvv 2>&1 |
+                & wsl -d $WslDistro -- ./hyper-v/ubuntu/Ansible/ops/create-users.sh -vvv 2>&1 |
                     Tee-Object -FilePath $logPath |
                     Where-Object { $_ -match $summaryPattern } |
                     Out-Host

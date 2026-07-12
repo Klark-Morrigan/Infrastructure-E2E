@@ -6,7 +6,7 @@
 
 # ---------------------------------------------------------------------------
 # Get-JdkArtifactSnapshot
-#   Snapshots the mtimes of the three JDK artifacts the reconciler owns on
+#   Snapshots the mtimes of the three JDK artifacts the engine owns on
 #   a VM (install dir, profile.d script, manifest file). Used in pairs:
 #   once before a no-op re-provision, once after; equality across both
 #   snapshots proves the reconciler took the no-op branch and did not
@@ -29,10 +29,13 @@ function Get-JdkArtifactSnapshot {
         [Parameter(Mandatory)] [object] $SshClient,
         [Parameter(Mandatory)] [string] $VmName,
 
-        # Same vendor-prefix convention as the install/uninstall helpers,
-        # e.g. '/opt/jdk-temurin-'. Resolved to a concrete install dir via
-        # a glob below.
-        [Parameter(Mandatory)] [string] $InstallPrefix
+        # Same engine-parameter convention as the install/uninstall
+        # helpers (PowerShell-reconciler defaults; the Ansible engine
+        # passes '/opt/jdk-', its own store, and 'jdk-'). The install
+        # prefix is resolved to a concrete install dir via a glob below.
+        [string] $InstallPrefix = '/opt/jdk-temurin-',
+        [string] $ManifestStoreDir = '/var/lib/infra-provisioner/manifests',
+        [string] $ManifestFilePrefix = 'javaDevKit-'
     )
 
     # One-shot stat across the three known globs. stat prints
@@ -42,7 +45,7 @@ function Get-JdkArtifactSnapshot {
     $cmd = (
         "stat -c '%n %Y' ${InstallPrefix}* " +
             "/etc/profile.d/jdk.sh " +
-            "/var/lib/infra-provisioner/manifests/javaDevKit-*.json"
+            "$ManifestStoreDir/$ManifestFilePrefix*.json"
     )
 
     $result = Invoke-SshClientCommand -SshClient $SshClient -Command $cmd
@@ -71,7 +74,7 @@ function Get-JdkArtifactSnapshot {
         elseif ($path -eq '/etc/profile.d/jdk.sh') {
             $snapshot.ProfileMtime = $mtime
         }
-        elseif ($path.StartsWith('/var/lib/infra-provisioner/manifests/')) {
+        elseif ($path.StartsWith("$ManifestStoreDir/")) {
             $snapshot.ManifestPath  = $path
             $snapshot.ManifestMtime = $mtime
         }
@@ -101,15 +104,21 @@ function Invoke-JdkNoopAssertions {
     param(
         [Parameter(Mandatory)] [object] $SshClient,
         [Parameter(Mandatory)] [string] $VmName,
-        [Parameter(Mandatory)] [string] $InstallPrefix,
 
         # Snapshot from Get-JdkArtifactSnapshot taken before the no-op
         # provision run. Must have come from the same VM.
-        [Parameter(Mandatory)] [PSCustomObject] $PreviousSnapshot
+        [Parameter(Mandatory)] [PSCustomObject] $PreviousSnapshot,
+
+        # Engine parameters forwarded to Get-JdkArtifactSnapshot; must
+        # match the values the previous snapshot was taken with.
+        [string] $InstallPrefix = '/opt/jdk-temurin-',
+        [string] $ManifestStoreDir = '/var/lib/infra-provisioner/manifests',
+        [string] $ManifestFilePrefix = 'javaDevKit-'
     )
 
     $now = Get-JdkArtifactSnapshot `
-        -SshClient $SshClient -VmName $VmName -InstallPrefix $InstallPrefix
+        -SshClient $SshClient -VmName $VmName -InstallPrefix $InstallPrefix `
+        -ManifestStoreDir $ManifestStoreDir -ManifestFilePrefix $ManifestFilePrefix
 
     # Install dir identity also must not change - a regression that
     # uninstalled + re-installed under the same version pin would still

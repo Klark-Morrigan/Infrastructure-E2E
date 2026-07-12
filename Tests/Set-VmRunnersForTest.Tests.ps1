@@ -34,7 +34,10 @@ Describe 'Set-VmRunnersForTest' {
             # RunnersPath that points at a real fixture script the test
             # creates, then assert its side effect.
             $Script:RunnersPath = Join-Path $TestDrive 'GitHubRunners'
-            New-Item -Path "$Script:RunnersPath\hyper-v\ubuntu" `
+            # register-runners.ps1 lives in the PowerShell/ slice (the
+            # sliced hyper-v\ubuntu layout), so the fixture dir must carry
+            # it or Set-Content on the script below has no parent to land in.
+            New-Item -Path "$Script:RunnersPath\hyper-v\ubuntu\PowerShell" `
                      -ItemType Directory -Force | Out-Null
             # Marker file the fixture script writes - asserting its
             # presence proves the dispatcher reached the register call.
@@ -47,7 +50,7 @@ Describe 'Set-VmRunnersForTest' {
             # test's value - .ps1 scripts that fall off the end leave
             # $LASTEXITCODE untouched.
             Set-Content `
-                -Path  "$Script:RunnersPath\hyper-v\ubuntu\register-runners.ps1" `
+                -Path  "$Script:RunnersPath\hyper-v\ubuntu\PowerShell\register-runners.ps1" `
                 -Value @'
 param($Token, $SecretSuffix)
 Set-Content -Path ([Environment]::GetEnvironmentVariable('MARKER_PATH')) `
@@ -75,7 +78,7 @@ exit 0
 
         It 'throws with the exit code when register-runners.ps1 fails' {
             Set-Content `
-                -Path  "$Script:RunnersPath\hyper-v\ubuntu\register-runners.ps1" `
+                -Path  "$Script:RunnersPath\hyper-v\ubuntu\PowerShell\register-runners.ps1" `
                 -Value 'exit 7'
 
             { Set-VmRunnersForTest `
@@ -90,7 +93,7 @@ exit 0
 
         It 'does not invoke wsl' {
             Set-Content `
-                -Path  "$Script:RunnersPath\hyper-v\ubuntu\register-runners.ps1" `
+                -Path  "$Script:RunnersPath\hyper-v\ubuntu\PowerShell\register-runners.ps1" `
                 -Value 'exit 0'
             # Shadow wsl - if the dispatcher reaches it the test fails
             # with the marker. Function shadowing takes precedence over
@@ -114,21 +117,23 @@ exit 0
     # ------------------------------------------------------------------
 
         BeforeEach {
-            $Script:AnsiblePath = Join-Path $TestDrive 'Ansible'
-            New-Item -Path $Script:AnsiblePath -ItemType Directory -Force | Out-Null
+            # RunnersPath is the wrapper's owner repo (GitHubRunners) and
+            # the ansible flow's Push-Location target, so it must exist on
+            # disk for Push-Location to anchor cwd there.
             $Script:RunnersPath = Join-Path $TestDrive 'GitHubRunners'
+            New-Item -Path $Script:RunnersPath -ItemType Directory -Force | Out-Null
         }
 
-        It 'invokes wsl with the WslDistro targeting register-runners.sh from AnsiblePath' {
+        It 'invokes wsl with the WslDistro targeting register-runners.sh from RunnersPath' {
             $Script:Captured       = [System.Collections.Generic.List[string]]::new()
             $Script:CapturedCwd    = $null
             $Script:CapturedToken  = $null
             # Function shadow for wsl. $args captures all unparsed tokens
             # so we can assert the full surface, not just presence. The
             # dispatcher anchors cwd via Push-Location, so we capture
-            # (Get-Location) at call time to assert it equals
-            # AnsiblePath. GH_TOKEN must be set when wsl is invoked
-            # (the bridge consumes it via env).
+            # (Get-Location) at call time to assert it equals RunnersPath
+            # (the wrapper's owner repo). GH_TOKEN must be set when wsl is
+            # invoked (the bridge consumes it via env).
             function wsl {
                 foreach ($a in $args) { $Script:Captured.Add([string]$a) }
                 $Script:CapturedCwd   = (Get-Location).Path
@@ -139,7 +144,6 @@ exit 0
             Set-VmRunnersForTest `
                 -RunnersFlow  'ansible' `
                 -RunnersPath  $Script:RunnersPath `
-                -AnsiblePath  $Script:AnsiblePath `
                 -WslDistro    'Ubuntu-24.04' `
                 -Token        $Script:Token `
                 -SecretSuffix $Script:SecretSuffix `
@@ -151,8 +155,8 @@ exit 0
             # it - but production wsl.exe (a native exe) does receive
             # the '--' verbatim. Assert the surrounding tokens only.
             $joined = $Script:Captured -join ' '
-            $joined | Should -Match '^-d Ubuntu-24\.04(\s+--)?\s+\./ops/register-runners\.sh$'
-            $Script:CapturedCwd   | Should -Be $Script:AnsiblePath
+            $joined | Should -Match '^-d Ubuntu-24\.04(\s+--)?\s+\./hyper-v/ubuntu/Ansible/ops/register-runners\.sh$'
+            $Script:CapturedCwd   | Should -Be $Script:RunnersPath
             $Script:CapturedToken | Should -Be $Script:Token
         }
 
@@ -163,7 +167,6 @@ exit 0
             Set-VmRunnersForTest `
                 -RunnersFlow  'ansible' `
                 -RunnersPath  $Script:RunnersPath `
-                -AnsiblePath  $Script:AnsiblePath `
                 -WslDistro    'Ubuntu-24.04' `
                 -Token        $Script:Token `
                 -SecretSuffix $Script:SecretSuffix `
@@ -179,7 +182,6 @@ exit 0
             { Set-VmRunnersForTest `
                 -RunnersFlow  'ansible' `
                 -RunnersPath  $Script:RunnersPath `
-                -AnsiblePath  $Script:AnsiblePath `
                 -WslDistro    'Ubuntu-24.04' `
                 -Token        $Script:Token `
                 -SecretSuffix $Script:SecretSuffix `
@@ -203,7 +205,6 @@ exit 0
             Set-VmRunnersForTest `
                 -RunnersFlow  'ansible' `
                 -RunnersPath  $Script:RunnersPath `
-                -AnsiblePath  $Script:AnsiblePath `
                 -WslDistro    'Ubuntu-24.04' `
                 -Token        $Script:Token `
                 -SecretSuffix $Script:SecretSuffix `
@@ -220,7 +221,6 @@ exit 0
             Set-VmRunnersForTest `
                 -RunnersFlow  'ansible' `
                 -RunnersPath  $Script:RunnersPath `
-                -AnsiblePath  $Script:AnsiblePath `
                 -WslDistro    'Ubuntu-24.04' `
                 -Token        $Script:Token `
                 -SecretSuffix $Script:SecretSuffix `
@@ -238,7 +238,6 @@ exit 0
                 Set-VmRunnersForTest `
                     -RunnersFlow  'ansible' `
                     -RunnersPath  $Script:RunnersPath `
-                    -AnsiblePath  $Script:AnsiblePath `
                     -WslDistro    'Ubuntu-24.04' `
                     -Token        $Script:Token `
                     -SecretSuffix $Script:SecretSuffix `
@@ -252,22 +251,10 @@ exit 0
             }
         }
 
-        It 'throws when AnsiblePath is missing' {
-            { Set-VmRunnersForTest `
-                -RunnersFlow  'ansible' `
-                -RunnersPath  $Script:RunnersPath `
-                -Token        $Script:Token `
-                -SecretSuffix $Script:SecretSuffix `
-                -VmDef        $Script:VmDef `
-                -Entry        $Script:Entry
-            } | Should -Throw '*requires -AnsiblePath*'
-        }
-
         It 'throws when WslDistro is missing' {
             { Set-VmRunnersForTest `
                 -RunnersFlow  'ansible' `
                 -RunnersPath  $Script:RunnersPath `
-                -AnsiblePath  $Script:AnsiblePath `
                 -Token        $Script:Token `
                 -SecretSuffix $Script:SecretSuffix `
                 -VmDef        $Script:VmDef `
@@ -279,16 +266,15 @@ exit 0
             function wsl { $global:LASTEXITCODE = 0 }
             # Drop a poisoned register-runners.ps1 - if the dispatcher
             # reaches it the test fails loudly.
-            New-Item -Path "$Script:RunnersPath\hyper-v\ubuntu" `
+            New-Item -Path "$Script:RunnersPath\hyper-v\ubuntu\PowerShell" `
                      -ItemType Directory -Force | Out-Null
             Set-Content `
-                -Path  "$Script:RunnersPath\hyper-v\ubuntu\register-runners.ps1" `
+                -Path  "$Script:RunnersPath\hyper-v\ubuntu\PowerShell\register-runners.ps1" `
                 -Value 'throw "ansible flow must not invoke PS register-runners"'
 
             { Set-VmRunnersForTest `
                 -RunnersFlow  'ansible' `
                 -RunnersPath  $Script:RunnersPath `
-                -AnsiblePath  $Script:AnsiblePath `
                 -WslDistro    'Ubuntu-24.04' `
                 -Token        $Script:Token `
                 -SecretSuffix $Script:SecretSuffix `

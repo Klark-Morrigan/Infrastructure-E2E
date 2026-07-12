@@ -39,7 +39,7 @@ Describe 'Remove-VmUsersForTest' {
             # use a UsersPath that points at a real fixture script
             # the test creates, then assert its side effect.
             $Script:UsersPath = Join-Path $TestDrive 'Vm-Users'
-            New-Item -Path "$Script:UsersPath\hyper-v\ubuntu" -ItemType Directory -Force | Out-Null
+            New-Item -Path "$Script:UsersPath\hyper-v\ubuntu\PowerShell" -ItemType Directory -Force | Out-Null
             # Marker file the fixture script writes - asserting its
             # presence proves the dispatcher reached the remove call.
             $Script:Marker = Join-Path $TestDrive 'remove-users-ran.txt'
@@ -51,7 +51,7 @@ Describe 'Remove-VmUsersForTest' {
             # test's value - .ps1 scripts that fall off the end leave
             # $LASTEXITCODE untouched.
             Set-Content `
-                -Path  "$Script:UsersPath\hyper-v\ubuntu\remove-users.ps1" `
+                -Path  "$Script:UsersPath\hyper-v\ubuntu\PowerShell\remove-users.ps1" `
                 -Value "Set-Content -Path '$Script:Marker' -Value ran; exit 0"
 
             Remove-VmUsersForTest `
@@ -67,7 +67,7 @@ Describe 'Remove-VmUsersForTest' {
             # exit inside a dot-script propagates to $LASTEXITCODE for
             # the call-operator path the dispatcher uses.
             Set-Content `
-                -Path  "$Script:UsersPath\hyper-v\ubuntu\remove-users.ps1" `
+                -Path  "$Script:UsersPath\hyper-v\ubuntu\PowerShell\remove-users.ps1" `
                 -Value 'exit 7'
 
             { Remove-VmUsersForTest `
@@ -80,7 +80,7 @@ Describe 'Remove-VmUsersForTest' {
 
         It 'does not invoke wsl' {
             Set-Content `
-                -Path  "$Script:UsersPath\hyper-v\ubuntu\remove-users.ps1" `
+                -Path  "$Script:UsersPath\hyper-v\ubuntu\PowerShell\remove-users.ps1" `
                 -Value 'exit 0'
             # Shadow wsl - if the dispatcher reaches it the test fails
             # with the marker. Function shadowing takes precedence over
@@ -102,29 +102,31 @@ Describe 'Remove-VmUsersForTest' {
     # ------------------------------------------------------------------
 
         BeforeEach {
-            $Script:AnsiblePath = Join-Path $TestDrive 'Ansible'
-            New-Item -Path $Script:AnsiblePath -ItemType Directory -Force | Out-Null
+            # UsersPath is the wrapper's owner repo and the ansible flow's
+            # Push-Location target, so it must exist on disk.
             $Script:UsersPath   = Join-Path $TestDrive 'Vm-Users'
+            New-Item -Path $Script:UsersPath -ItemType Directory -Force | Out-Null
         }
 
-        It 'invokes wsl with the WslDistro targeting remove-users.sh from AnsiblePath' {
-            $Script:Captured    = [System.Collections.Generic.List[string]]::new()
-            $Script:CapturedCwd = $null
+        It 'invokes wsl with the WslDistro targeting remove-users.sh from UsersPath' {
+            $Script:Captured     = [System.Collections.Generic.List[string]]::new()
+            $Script:CapturedCwd  = $null
             # Function shadow for wsl. $args captures all unparsed tokens
             # so we can assert the full surface, not just presence. The
             # dispatcher anchors cwd via Push-Location instead of
-            # `wsl --cd`, so we capture (Get-Location) at call time to
-            # assert it equals AnsiblePath.
+            # `wsl --cd`, so we capture (Get-Location) at call time and
+            # assert it equals UsersPath (the wrapper's owner repo). The
+            # wrapper self-resolves the Common-Ansible substrate, so no
+            # COMMON_ANSIBLE_ROOT is set or forwarded here.
             function wsl {
                 foreach ($a in $args) { $Script:Captured.Add([string]$a) }
-                $Script:CapturedCwd  = (Get-Location).Path
-                $global:LASTEXITCODE = 0
+                $Script:CapturedCwd    = (Get-Location).Path
+                $global:LASTEXITCODE   = 0
             }
 
             Remove-VmUsersForTest `
                 -UsersFlow   'ansible' `
                 -UsersPath   $Script:UsersPath `
-                -AnsiblePath $Script:AnsiblePath `
                 -WslDistro   'Ubuntu-24.04' `
                 -VmDef       $Script:VmDef `
                 -Entry       $Script:Entry
@@ -134,24 +136,14 @@ Describe 'Remove-VmUsersForTest' {
             # it - but production wsl.exe (a native exe) does receive
             # the '--' verbatim. Assert the surrounding tokens only.
             $joined = $Script:Captured -join ' '
-            $joined | Should -Match '^-d Ubuntu-24\.04(\s+--)?\s+\./ops/remove-users\.sh$'
-            $Script:CapturedCwd | Should -Be $Script:AnsiblePath
-        }
-
-        It 'throws when AnsiblePath is missing' {
-            { Remove-VmUsersForTest `
-                -UsersFlow 'ansible' `
-                -UsersPath $Script:UsersPath `
-                -VmDef     $Script:VmDef `
-                -Entry     $Script:Entry
-            } | Should -Throw '*requires -AnsiblePath*'
+            $joined | Should -Match '^-d Ubuntu-24\.04(\s+--)?\s+\./hyper-v/ubuntu/Ansible/ops/remove-users\.sh$'
+            $Script:CapturedCwd    | Should -Be $Script:UsersPath
         }
 
         It 'throws when WslDistro is missing' {
             { Remove-VmUsersForTest `
                 -UsersFlow   'ansible' `
                 -UsersPath   $Script:UsersPath `
-                -AnsiblePath $Script:AnsiblePath `
                 -VmDef       $Script:VmDef `
                 -Entry       $Script:Entry
             } | Should -Throw '*requires -WslDistro*'
@@ -163,7 +155,6 @@ Describe 'Remove-VmUsersForTest' {
             { Remove-VmUsersForTest `
                 -UsersFlow   'ansible' `
                 -UsersPath   $Script:UsersPath `
-                -AnsiblePath $Script:AnsiblePath `
                 -WslDistro   'Ubuntu-24.04' `
                 -VmDef       $Script:VmDef `
                 -Entry       $Script:Entry
@@ -174,15 +165,14 @@ Describe 'Remove-VmUsersForTest' {
             function wsl { $global:LASTEXITCODE = 0 }
             # Drop a poisoned remove-users.ps1 - if the dispatcher reaches
             # it the test fails loudly.
-            New-Item -Path "$Script:UsersPath\hyper-v\ubuntu" -ItemType Directory -Force | Out-Null
+            New-Item -Path "$Script:UsersPath\hyper-v\ubuntu\PowerShell" -ItemType Directory -Force | Out-Null
             Set-Content `
-                -Path  "$Script:UsersPath\hyper-v\ubuntu\remove-users.ps1" `
+                -Path  "$Script:UsersPath\hyper-v\ubuntu\PowerShell\remove-users.ps1" `
                 -Value 'throw "ansible flow must not invoke PS remove-users"'
 
             { Remove-VmUsersForTest `
                 -UsersFlow   'ansible' `
                 -UsersPath   $Script:UsersPath `
-                -AnsiblePath $Script:AnsiblePath `
                 -WslDistro   'Ubuntu-24.04' `
                 -VmDef       $Script:VmDef `
                 -Entry       $Script:Entry

@@ -36,8 +36,8 @@ function Invoke-VmRuntimeDiag {
 }
 '
         )
-        $diagRoot    = Join-Path $Root 'hyper-v\ubuntu\common\diag'
-        $networkRoot = Join-Path $Root 'hyper-v\ubuntu\common\network'
+        $diagRoot    = Join-Path $Root 'hyper-v\ubuntu\PowerShell\common\diag'
+        $networkRoot = Join-Path $Root 'hyper-v\ubuntu\PowerShell\common\network'
         New-Item -ItemType Directory -Path $diagRoot    -Force | Out-Null
         New-Item -ItemType Directory -Path $networkRoot -Force | Out-Null
         Set-Content -Path (Join-Path $diagRoot    'Get-VmDiagFolder.ps1')      -Value $DiagBody
@@ -210,13 +210,13 @@ Describe 'Invoke-VmProvisioningTeardown - diag failure does not cancel deprovisi
         New-Item -ItemType Directory -Path $script:provRoot | Out-Null
         # Minimal deprovision.ps1 stub at the path the teardown
         # function invokes via & "$ProvisionerPath\hyper-v\ubuntu\
-        # deprovision.ps1". The body records the call by dropping a
-        # marker file beside itself ($PSScriptRoot resolves to the
-        # stub's own dir at invocation), letting the test assert
+        # PowerShell\deprovision.ps1". The body records the call by
+        # dropping a marker file beside itself ($PSScriptRoot resolves
+        # to the stub's own dir at invocation), letting the test assert
         # "deprovision ran" via Test-Path. The stub runs in its own
         # script scope, so a marker file - not a cross-script global -
         # is the signal channel back to the test.
-        $deprovDir = Join-Path $script:provRoot 'hyper-v\ubuntu'
+        $deprovDir = Join-Path $script:provRoot 'hyper-v\ubuntu\PowerShell'
         New-Item -ItemType Directory -Path $deprovDir -Force | Out-Null
         $deprovScript = Join-Path $deprovDir 'deprovision.ps1'
         Set-Content -Path $deprovScript -Value @'

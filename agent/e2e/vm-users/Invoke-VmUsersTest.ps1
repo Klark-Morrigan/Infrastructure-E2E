@@ -7,6 +7,11 @@
 
 . "$PSScriptRoot\..\vm-provisioning\Invoke-VmProvisioningTest.ps1"
 
+# The shell-out timing wrapper (Measure-ChildProcessTimingSpan, feature 88
+# C2) - used by the two setup parts below and by the runner-lifecycle layer
+# that dot-sources this file - is pulled in transitively by the provisioning
+# chain above (its Phase 1 consumes it), so it is not re-sourced here.
+
 # Re-verification helper used after phases 2 and 3 to confirm a
 # re-provision did not disturb user / group state.
 . "$PSScriptRoot\Invoke-VmUsersStillIntactAssertions.ps1"
@@ -19,7 +24,7 @@
 # Remove-side dispatcher: symmetric peer of Set-VmUsersForTest, selecting
 # the same UsersFlow. Replaces the inline remove-users.ps1 invocation
 # that used to live in Invoke-VmUsersTeardown. Lets the Ansible
-# remove-users.sh path (feature 03 of Infrastructure-VM-Ansible) run
+# remove-users.sh path (feature 03 of Common-Ansible) run
 # under UsersFlow=ansible while custom-powershell keeps the legacy
 # Vm-Users path as a first-class peer.
 . "$PSScriptRoot\Remove-VmUsersForTest.ps1"
@@ -119,11 +124,23 @@ function Invoke-VmUsersSetup {
         # (e.g. runner lifecycle) pass an extended entry that adds
         # deploy and runner service users on top of the base set.
         [Parameter()]
-        [object] $Entry = $null
+        [object] $Entry = $null,
+
+        # Optional timing context threaded from a parent orchestration
+        # (the runner-lifecycle run). When supplied, the two shell-out
+        # steps below (provision Phase 1, user reconcile) record as spans
+        # under the parent's current node so the parent's report breaks
+        # Setup into its parts. The standalone vm-users flow passes none;
+        # a throwaway tree then absorbs the spans so the wrapping stays
+        # uniform and nothing downstream consumes them.
+        [object] $Tree = $null
     )
 
     if ($null -eq $Entry) {
         $Entry = Get-E2EUsersTestEntry
+    }
+    if ($null -eq $Tree) {
+        $Tree = New-TimingSpanTree -RootName 'vm-users-setup'
     }
 
     # VmUsersConfig must be a JSON array - ConvertFrom-VmUsersConfigJson
@@ -139,21 +156,36 @@ function Invoke-VmUsersSetup {
     # JDK 21 install + file-transfer fixture - users layer needs the VM
     # alive before it can SSH in to reconcile users.
     $vmDef = Invoke-VmProvisioningSetup -Config $Config
-    Invoke-VmProvisioningPhase1 -Config $Config -Vm1Def $vmDef
+    # The baseline provision that brings VM1 up is the first shell-out
+    # part; timed as one span here, deepened into its own internal
+    # breakdown once the provisioner exports its child tree (feature 88
+    # C2/D1). Measure-ChildProcessTimingSpan grafts that export under this
+    # span; until the emitter ships the part is simply timed with no children.
+    # -Tree threads this part's context into the phase so its toolchains
+    # shell-out nests as a 'provision toolchains' sub-span under this part
+    # rather than clobbering provision.ps1's export on the shared path
+    # (feature 88 E2).
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name 'provisioning Phase 1' -Action {
+        Invoke-VmProvisioningPhase1 -Config $Config -Vm1Def $vmDef -Tree $Tree
+    }
 
     Write-Host "Reconciling users via '$($Config.UsersFlow)' flow ..." -ForegroundColor Magenta
-    # $Config carries UsersFlow + AnsiblePath + WslDistro from
-    # Start-E2EAgent / Start-VmUsersTest. AnsiblePath and WslDistro
-    # are optional in the dispatcher and ignored unless
-    # UsersFlow=ansible; the agent-loop validates their presence at
-    # startup so a missing value fails before the VM is built.
-    Set-VmUsersForTest `
-        -UsersFlow   $Config.UsersFlow `
-        -UsersPath   $Config.UsersPath `
-        -AnsiblePath $Config.AnsiblePath `
-        -WslDistro   $Config.WslDistro `
-        -VmDef       $vmDef `
-        -Entry       $Entry
+    # $Config carries UsersFlow + WslDistro from Start-E2EAgent /
+    # Start-VmUsersTest. WslDistro is optional in the dispatcher and
+    # ignored unless UsersFlow=ansible; the agent-loop validates its
+    # presence at startup so a missing value fails before the VM is built.
+    # The ansible flow's create-users.sh self-resolves the Common-Ansible
+    # substrate, so no Common-Ansible path is threaded here.
+    # User reconciliation is the second shell-out part - timed as one span,
+    # deepened by the child's exported tree once its emitter ships.
+    Measure-ChildProcessTimingSpan -Tree $Tree -Name 'reconcile users' -Action {
+        Set-VmUsersForTest `
+            -UsersFlow   $Config.UsersFlow `
+            -UsersPath   $Config.UsersPath `
+            -WslDistro   $Config.WslDistro `
+            -VmDef       $vmDef `
+            -Entry       $Entry
+    }
 
     # Verify SSH is reachable after create-users.ps1 returns. create-users.ps1
     # pings the VM and silently skips it with Write-Warning when ping fails -
@@ -280,16 +312,14 @@ function Invoke-VmUsersTeardown {
 
     try {
         Write-Host "Removing users via '$($Config.UsersFlow)' flow ..." -ForegroundColor Magenta
-        # $Config carries UsersFlow + AnsiblePath + WslDistro from
-        # Start-E2EAgent / Start-VmUsersTest, same chain that feeds the
-        # create-side dispatcher above. AnsiblePath / WslDistro are
-        # validated at agent startup so a misconfigured session fails
-        # before any VM is built; the dispatcher re-checks them here as
-        # belt-and-braces.
+        # $Config carries UsersFlow + WslDistro from Start-E2EAgent /
+        # Start-VmUsersTest, same chain that feeds the create-side
+        # dispatcher above. WslDistro is validated at agent startup so a
+        # misconfigured session fails before any VM is built; the
+        # dispatcher re-checks it here as belt-and-braces.
         Remove-VmUsersForTest `
             -UsersFlow   $Config.UsersFlow `
             -UsersPath   $Config.UsersPath `
-            -AnsiblePath $Config.AnsiblePath `
             -WslDistro   $Config.WslDistro `
             -VmDef       $VmDef `
             -Entry       $Entry
