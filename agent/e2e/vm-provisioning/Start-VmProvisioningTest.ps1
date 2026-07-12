@@ -72,13 +72,13 @@ param(
     # Workstation path for the test VHDX files.
     [string] $VhdPath = 'E:\a_VMs\Hyper-V\Disks',
 
-    # Which engine installs the jdk / dotnet toolchains. 'custom-powershell'
-    # (default) keeps the PowerShell reconciler installing them inside
-    # provision.ps1; 'ansible' drives Infrastructure-Vm-Provisioner's
-    # provision-toolchains.sh instead (requires -WslDistro). The same
-    # jdk / dotnet assertions run for both. See Set-VmToolchainsForTest.
+    # Which engine installs the jdk / dotnet toolchains. 'ansible' (default)
+    # drives Infrastructure-Vm-Provisioner's provision-toolchains.sh
+    # (requires -WslDistro); 'custom-powershell' keeps the PowerShell
+    # reconciler installing them inside provision.ps1. The same jdk / dotnet
+    # assertions run for both. See Set-VmToolchainsForTest.
     [ValidateSet('custom-powershell', 'ansible')]
-    [string] $ToolchainsFlow = 'custom-powershell',
+    [string] $ToolchainsFlow = 'ansible',
 
     # WSL distro the Ansible bridge runs inside. Required when
     # -ToolchainsFlow ansible; ignored otherwise. Passed via `wsl -d <name>`

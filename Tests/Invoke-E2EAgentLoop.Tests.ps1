@@ -484,6 +484,52 @@ Describe 'Invoke-E2EAgentLoop' {
             $Script:_def_config.UsersFlow | Should -Be 'ansible'
         }
 
+        It 'defaults ToolchainsFlow to ansible when callers do not pass one' {
+            # The Ansible toolchain path is the primary engine now that it
+            # has validated. A regression that re-flips the default to
+            # custom-powershell would silently route every unpinned run
+            # through the reconciler - this fails such a regression at unit
+            # time. BaseParams does not set ToolchainsFlow, so the parameter
+            # default is what reaches the config here.
+            $Script:_tcdef_config = $null
+            Mock Get-GitHubAppToken { $Script:FreshToken }
+            $script:_tcdefCount = 0
+            Mock Get-PendingDeployment {
+                $script:_tcdefCount++
+                if ($script:_tcdefCount -eq 1) { return [PSCustomObject]@{ id = 96 } }
+                return $null
+            }
+            Mock Set-DeploymentStatus {}
+            Mock Invoke-RunnerLifecycleTest { $Script:_tcdef_config = $Config }
+
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            $Script:_tcdef_config.ToolchainsFlow | Should -Be 'ansible'
+        }
+
+        It 'defaults RunnersFlow to ansible when callers do not pass one' {
+            # The runner Ansible path is now the primary engine too. A
+            # regression that re-flips the default to custom-powershell
+            # would silently route every unpinned run through the older
+            # register-runners.ps1 - this fails such a regression at unit
+            # time. BaseParams does not set RunnersFlow, so the parameter
+            # default is what reaches the config here.
+            $Script:_rndef_config = $null
+            Mock Get-GitHubAppToken { $Script:FreshToken }
+            $script:_rndefCount = 0
+            Mock Get-PendingDeployment {
+                $script:_rndefCount++
+                if ($script:_rndefCount -eq 1) { return [PSCustomObject]@{ id = 97 } }
+                return $null
+            }
+            Mock Set-DeploymentStatus {}
+            Mock Invoke-RunnerLifecycleTest { $Script:_rndef_config = $Config }
+
+            Invoke-E2EAgentLoop @Script:BaseParams
+
+            $Script:_rndef_config.RunnersFlow | Should -Be 'ansible'
+        }
+
         It "throws at startup when UsersFlow='ansible' and WslDistro is missing" {
             # No mocks reachable: the validation runs before the polling
             # loop starts, so no token / deployment calls happen.
@@ -578,15 +624,17 @@ Describe 'Invoke-E2EAgentLoop' {
             Invoke-E2EAgentLoop @Script:BaseParams
 
             # BaseParams sets UsersFlow=ansible and leaves RunnersFlow /
-            # ToolchainsFlow at their parameter defaults (custom-powershell).
+            # ToolchainsFlow at their parameter defaults, which are both
+            # ansible now that all three layers default to the Ansible path.
             $Script:_nopl_config.UsersFlow      | Should -Be 'ansible'
-            $Script:_nopl_config.RunnersFlow    | Should -Be 'custom-powershell'
-            $Script:_nopl_config.ToolchainsFlow | Should -Be 'custom-powershell'
+            $Script:_nopl_config.RunnersFlow    | Should -Be 'ansible'
+            $Script:_nopl_config.ToolchainsFlow | Should -Be 'ansible'
         }
 
         It 'overrides ToolchainsFlow from the payload, keeping the other layers at the session value' {
-            # The Common-Ansible toolchain PR opts its layer into ansible via
-            # the payload while users / runners stay on their session flows.
+            # A repo pinning custom-powershell toolchains opts its layer down
+            # via the payload while users / runners stay on their session
+            # flows; proves the payload wins over the ansible default.
             $Script:_tc_config = $null
             $script:_tcCount = 0
             Mock Get-PendingDeployment {
@@ -594,7 +642,7 @@ Describe 'Invoke-E2EAgentLoop' {
                 if ($script:_tcCount -eq 1) {
                     return [PSCustomObject]@{
                         id      = 81
-                        payload = [PSCustomObject]@{ toolchainsFlow = 'ansible' }
+                        payload = [PSCustomObject]@{ toolchainsFlow = 'custom-powershell' }
                     }
                 }
                 return $null
@@ -603,9 +651,9 @@ Describe 'Invoke-E2EAgentLoop' {
 
             Invoke-E2EAgentLoop @Script:BaseParams
 
-            $Script:_tc_config.ToolchainsFlow | Should -Be 'ansible'   # from payload
+            $Script:_tc_config.ToolchainsFlow | Should -Be 'custom-powershell'  # from payload
             $Script:_tc_config.UsersFlow      | Should -Be 'ansible'   # session default
-            $Script:_tc_config.RunnersFlow    | Should -Be 'custom-powershell'  # param default
+            $Script:_tc_config.RunnersFlow    | Should -Be 'ansible'   # param default
         }
 
         It 'applies only the flow present in the payload, keeping the other at the session value' {
@@ -616,7 +664,7 @@ Describe 'Invoke-E2EAgentLoop' {
                 if ($script:_partialCount -eq 1) {
                     return [PSCustomObject]@{
                         id      = 79
-                        payload = [PSCustomObject]@{ runnersFlow = 'ansible' }
+                        payload = [PSCustomObject]@{ runnersFlow = 'custom-powershell' }
                     }
                 }
                 return $null
@@ -626,7 +674,7 @@ Describe 'Invoke-E2EAgentLoop' {
             Invoke-E2EAgentLoop @Script:BaseParams
 
             $Script:_partial_config.UsersFlow   | Should -Be 'ansible'   # session default
-            $Script:_partial_config.RunnersFlow | Should -Be 'ansible'   # from payload
+            $Script:_partial_config.RunnersFlow | Should -Be 'custom-powershell'   # from payload
         }
 
         It 'posts failure for an unknown flow value in the payload instead of crashing' {
@@ -671,10 +719,13 @@ Describe 'Invoke-E2EAgentLoop' {
 
             # Session is custom-powershell with no WslDistro, so startup
             # validation passes; the payload's ansible upgrade is caught
-            # per-run instead.
+            # per-run instead. All three layers are pinned to
+            # custom-powershell - ToolchainsFlow defaults to ansible, which
+            # would otherwise trip the startup gate before the payload runs.
             $params = $Script:BaseParams.Clone()
-            $params['UsersFlow']   = 'custom-powershell'
-            $params['RunnersFlow'] = 'custom-powershell'
+            $params['UsersFlow']      = 'custom-powershell'
+            $params['RunnersFlow']    = 'custom-powershell'
+            $params['ToolchainsFlow'] = 'custom-powershell'
             $params.Remove('WslDistro')
 
             { Invoke-E2EAgentLoop @params } | Should -Not -Throw

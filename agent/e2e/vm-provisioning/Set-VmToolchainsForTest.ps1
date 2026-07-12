@@ -4,12 +4,12 @@
     phases install jdk / dotnet toolchains one of two ways, selected by
     $Config.ToolchainsFlow (threaded from Start-E2EAgent):
 
-      custom-powershell (default) - the PowerShell reconciler installs the
+      custom-powershell - the PowerShell reconciler installs the
         toolchains inside provision.ps1, reconciling the javaDevKit / dotnetSdk
         / dotnetTools blocks in VmProvisionerConfig. This dispatcher is then a
         no-op.
 
-      ansible - the phases author the SAME javaDevKit / dotnetSdk / dotnetTools
+      ansible (default) - the phases author the SAME javaDevKit / dotnetSdk / dotnetTools
         blocks in VmProvisionerConfig (the single desired-state source both
         engines read), but provision.ps1 runs with -SkipToolchains so its
         reconciler leaves them alone, and this dispatcher runs

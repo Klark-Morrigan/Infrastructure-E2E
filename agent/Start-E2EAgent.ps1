@@ -97,8 +97,8 @@ if ($MyInvocation.InvocationName -ne '.') {
     #   "UsersPath":           "C:\\a_Code\\Infrastructure-Vm-Users",
     #   "RunnersPath":         "C:\\a_Code\\Infrastructure-GitHubRunners",
     #   "UsersFlow":           "ansible",
-    #   "RunnersFlow":         "custom-powershell",
-    #   "ToolchainsFlow":      "custom-powershell",
+    #   "RunnersFlow":         "ansible",
+    #   "ToolchainsFlow":      "ansible",
     #   "WslDistro":           "Ubuntu-24.04",
     #   "HostTarballCachePath": "C:\\cache\\github-runners",
     #   "TestVm": {
@@ -139,8 +139,8 @@ if ($MyInvocation.InvocationName -ne '.') {
     # UsersFlow / RunnersFlow / ToolchainsFlow / WslDistro are optional in
     # the vault payload so older E2EConfig files do not need a re-write to
     # keep working. When absent, Invoke-E2EAgentLoop's defaults
-    # (UsersFlow=ansible, RunnersFlow=custom-powershell,
-    # ToolchainsFlow=custom-powershell) apply, and WslDistro has no default
+    # (UsersFlow=ansible, RunnersFlow=ansible,
+    # ToolchainsFlow=ansible) apply, and WslDistro has no default
     # - if any flow is 'ansible' the loop fail-fasts with a named error so
     # the operator adds it to the vault rather than the agent guessing.
     # Strict mode requires guarded property access.

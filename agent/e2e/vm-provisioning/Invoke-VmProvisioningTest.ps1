@@ -523,11 +523,11 @@ function Assert-EtcEnvironmentMtimeAdvanced {
         -ForegroundColor Green
 }
 
-# StrictMode-safe read of the session's ToolchainsFlow off $Config. The
-# agent threads it from the deployment payload; the standalone
-# Start-VmProvisioningTest config omits it, so an absent property defaults
-# to the reconciler - keeping the standalone run and any pre-5.5-B caller
-# on today's behaviour.
+# StrictMode-safe read of the session's ToolchainsFlow off $Config. Both
+# the agent (from the deployment payload) and the standalone
+# Start-VmProvisioningTest thread it into the Config; the fallback below
+# fires only for a Config that omits the property and mirrors the
+# agent-loop default, so an absent value lands on the same engine.
 function Resolve-ToolchainsFlow {
     [CmdletBinding()]
     param([Parameter(Mandatory)] [PSCustomObject] $Config)
@@ -535,7 +535,7 @@ function Resolve-ToolchainsFlow {
     if ($Config.PSObject.Properties['ToolchainsFlow'] -and $Config.ToolchainsFlow) {
         return $Config.ToolchainsFlow
     }
-    return 'custom-powershell'
+    return 'ansible'
 }
 
 # Resolves the engine-specific parameters the jdk / dotnet assertion

@@ -75,38 +75,39 @@ function Invoke-E2EAgentLoop {
         [string] $UsersFlow = 'ansible',
 
         # Selects which register-runners implementation the runner
-        # lifecycle test dispatches to. 'custom-powershell' (the current
-        # default) keeps invoking Infrastructure-GitHubRunners'
-        # register-runners.ps1. 'ansible' opts in to the same repo's
-        # hyper-v/ubuntu/Ansible/ops/register-runners.sh. The default stays
-        # on custom-powershell for one full release cycle while the Ansible
-        # path validates on real hardware; the default-flip happens in a
-        # follow-up bump.
+        # lifecycle test dispatches to. 'ansible' (the default) runs
+        # Infrastructure-GitHubRunners'
+        # hyper-v/ubuntu/Ansible/ops/register-runners.sh.
+        # 'custom-powershell' opts back in to the same repo's
+        # register-runners.ps1 for parallel validation. Both are permanent
+        # first-class peers.
         [Parameter()]
         [ValidateSet('custom-powershell', 'ansible')]
-        [string] $RunnersFlow = 'custom-powershell',
+        [string] $RunnersFlow = 'ansible',
 
         # Selects which engine puts the jdk / dotnet toolchains on the VM
-        # during the provisioning phases. 'custom-powershell' (the default)
-        # keeps the PowerShell reconciler installing them via the
-        # javaDevKit / dotnetSdk / dotnetTools blocks in VmProvisionerConfig
-        # (today's behaviour, byte-for-byte). 'ansible' strips those blocks
-        # and drives Infrastructure-Vm-Provisioner's
-        # hyper-v/ubuntu/Ansible/ops/provision-toolchains.sh instead, with
-        # the same jdk / dotnet end-state assertions reused across both
-        # engines. The default stays on custom-powershell so every existing
-        # run is unchanged; the Common-Ansible PR opts in via its flow-spec.
+        # during the provisioning phases. 'ansible' (the default) drives
+        # Infrastructure-Vm-Provisioner's
+        # hyper-v/ubuntu/Ansible/ops/provision-toolchains.sh against the
+        # Common-Ansible jdk / dotnet_sdk / dotnet_tools roles.
+        # 'custom-powershell' opts back in to the PowerShell reconciler,
+        # which installs them via the javaDevKit / dotnetSdk / dotnetTools
+        # blocks in VmProvisionerConfig inside provision.ps1. The same jdk /
+        # dotnet end-state assertions run across both engines, so the two
+        # are measured against one bar. Both are permanent first-class peers.
         [Parameter()]
         [ValidateSet('custom-powershell', 'ansible')]
-        [string] $ToolchainsFlow = 'custom-powershell',
+        [string] $ToolchainsFlow = 'ansible',
 
         # Name of the WSL distro to run the Ansible bridge inside. Passed
         # via `wsl -d <name>` so the agent does not depend on the
         # workstation's WSL default - Docker Desktop's installer silently
         # changes the default to its no-bash `docker-desktop` engine
         # distro, which broke this code path until the explicit -d was
-        # added. Required when any of UsersFlow=ansible (the default),
-        # RunnersFlow=ansible, or ToolchainsFlow=ansible. Each ansible
+        # added. Required whenever any of UsersFlow / RunnersFlow /
+        # ToolchainsFlow is 'ansible' - all three default to 'ansible', so
+        # WslDistro is required unless a layer is set to custom-powershell.
+        # Each ansible
         # wrapper (create/remove-users.sh in Vm-Users, register-runners.sh
         # in GitHubRunners, provision-toolchains.sh in Vm-Provisioner)
         # self-resolves the Common-Ansible substrate as a sibling checkout,

@@ -54,8 +54,8 @@ function Invoke-VmProvisioningPhase1 {
     Write-Host "Phase 1: writing single-VM VmProvisionerConfig (VM1 + JDK $($script:JdkInitialVersion) + dotnet SDK $($script:DotnetInitialResolvedVersion)) ..." `
         -ForegroundColor Magenta
 
-    # Toolchain engine for this run (reconciler default, or ansible from
-    # the deployment payload). $tcx bundles the flow, the branch boolean,
+    # Toolchain engine for this run (ansible default, or custom-powershell
+    # from the deployment payload). $tcx bundles the flow, the branch boolean,
     # the engine-specific assertion params, and the WSL distro.
     $tcx = Get-ToolchainPhaseContext -Config $Config
     # Splat-ready engine params for this phase's assertions (reconciler
