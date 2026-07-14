@@ -661,8 +661,8 @@ carries only thin caller files:
 
 - [`.github/workflows/ci-yaml.yml`](.github/workflows/ci-yaml.yml) -
   delegates to Common-Automation's reusable `ci-yaml.yml`, which runs
-  actionlint, action-validator, yamllint, and ansible-lint in parallel.
-  Each job auto-skips when its target surface is absent.
+  actionlint, action-validator, and yamllint in parallel. Each job
+  auto-skips when its target surface is absent.
 - [`.github/workflows/ci-bash.yml`](.github/workflows/ci-bash.yml) -
   delegates to Common-Automation's reusable `ci-bash.yml`, which runs
   shellcheck, the `check-sh-executable` +x-bit gate, and every `*.bats`
@@ -686,8 +686,8 @@ Common-Automation's engine at this repo via `COMMON_AUTOMATION_TARGET_REPO`, so
   Double-clicking [`scripts/run-ci-yaml-and-bash.bat`](scripts/run-ci-yaml-and-bash.bat)
   is the Explorer launcher for the same flow.
 - To run a single half: [`scripts/run-lint-yaml-and-bash.sh`](scripts/run-lint-yaml-and-bash.sh)
-  runs the LINT half only (shellcheck, actionlint, action-validator, yamllint,
-  ansible-lint), and [`scripts/run-tests-bash.sh`](scripts/run-tests-bash.sh)
+  runs the LINT half only (shellcheck, actionlint, action-validator,
+  yamllint), and [`scripts/run-tests-bash.sh`](scripts/run-tests-bash.sh)
   runs the bats TEST half only. Each has a sibling `.bat` Explorer launcher.
 
 The lint shim is named `run-lint`, not `run-tests`, to stay distinct from this
