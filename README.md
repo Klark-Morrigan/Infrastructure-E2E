@@ -301,8 +301,11 @@ run.
    assertions pass an out-of-block sentinel
    (`MARKER_OUTSIDE="untouched"`) is seeded via SSH and the
    `/etc/environment` mtime is snapshotted for phase 2's re-write
-   check. On the lifecycle path, users + runner are then created and
-   verified online against the JDK-21 VM before phase 2 runs.
+   check. Under `ToolchainsFlow=ansible` VM1 also carries a `toolchains`
+   taxonomy block (see [Sections 2 and 3](#sections-2-and-3-of-the-toolchain-taxonomy)),
+   and the test asserts that end state too. On the lifecycle path, users
+   + runner are then created and verified online against the JDK-21 VM
+   before phase 2 runs.
 2. **Uninstall on VM1, add VM2 (no JDK) in the same run.** Asserts the
    `/opt/jdk-temurin-*` install dir, `/etc/profile.d/jdk.sh`, and stale
    `/usr/local/bin` symlinks are all gone from VM1; asserts VM2 is up
@@ -318,8 +321,11 @@ run.
    `MARKER_OUTSIDE` survived the re-write outside the block, and
    `/etc/environment`'s mtime advanced past the phase-1 snapshot
    (proving the transport actually rewrote the file rather than
-   skip-unchanged). On layers that exist above provisioning, users +
-   runner are re-asserted intact immediately after.
+   skip-unchanged). VM1's `toolchains` block is carried forward
+   unchanged, so this phase doubles as the sections-2/3 idempotence
+   check, and VM2 gets the matching "no section-2/3 tools" witness. On
+   layers that exist above provisioning, users + runner are re-asserted
+   intact immediately after.
 3. **Re-install JDK 17 on VM1, VM2 unchanged.** Asserts JDK 17 is the
    active install on VM1 (`JAVA_HOME` under `/opt/jdk-temurin-17`,
    `java -version` prefix matches `"17"`); re-runs the VM2 witness checks
@@ -374,6 +380,40 @@ the engine-agnostic checks (store dir, `/usr/local/bin` symlink, apphost
 launch, and tool-manifest presence). The observable end-state those
 reconciler-only checks stand in for stays covered by the presence and
 symlink probes.
+
+#### Sections 2 and 3 of the toolchain taxonomy
+
+Everything above covers **section 1** (host-pushed jdk / dotnet). Sections
+2 and 3 - apt packages the VM pulls itself, and the Docker daemon - are
+declared in an optional `toolchains` block on the VM's config entry and
+installed by the Common-Ansible `toolchain_apt` and `docker` roles. They
+are exercised under `ToolchainsFlow=ansible` **only**: the PowerShell
+reconciler has no section-2/3 concept, so under `custom-powershell` the
+phases neither author the block nor assert it.
+
+VM1 declares both sections (`shellcheck` and `bats` at exact apt pins,
+plus a `docker` entry in `baseImage`); VM2 declares nothing and is the
+blast-radius witness for the playbook's per-host `selectattr` targeting.
+Three assertion files under
+`agent/e2e/vm-provisioning/assertions/toolchains/` carry the checks:
+
+| File | Asserts |
+|---|---|
+| `Invoke-ToolchainAptInstallAssertions.ps1` | Per declared package: the command is on the **non-login** `PATH`, `dpkg-query` reports **exactly** the pinned version (equality, so a drifted-ahead build fails rather than silently passing), and the tool actually runs. Each package carries its own smoke recipe, so the file holds no per-tool knowledge - `shellcheck --version` reports the pin, `bats` runs a trivial generated `.bats` under `--tap`. |
+| `Invoke-DockerInstallAssertions.ps1` | Docker CLI on the non-login `PATH`, `systemctl is-active docker`, and `sudo docker ps` reaching the daemon socket. The socket probe runs **as root** on purpose: this flow installs the daemon but leaves `docker_group_members` empty, because the runner service user is owned by the GitHubRunners config. Asserting VM-admin group membership here would go red for a correct implementation. |
+| `Invoke-NoToolchainsVmAssertions.ps1` | The witness: on VM2, none of the declared apt packages are in dpkg's installed state, no docker CLI is on `PATH`, and the docker role's apt keyring (`/etc/apt/keyrings/docker.asc`) was never dropped - the last one catching the narrower leak where repo setup ran but the engine install did not. |
+
+The declared package list (`$script:ToolchainAptPackages` in
+`Invoke-VmProvisioningTest.ps1`) is the single source of truth: the JSON
+block written to `VmProvisionerConfig` is projected from it, and the same
+objects are passed to both the install and witness assertions, so what is
+installed cannot drift from what is asserted.
+
+Lifecycle here is **install + idempotence only**. Neither role implements
+removal, so there is no uninstall or version-change phase the way there is
+for jdk / dotnet: phase 1 installs and asserts, phase 2 carries the same
+declaration through a second flow run and re-asserts presence at the same
+pins.
 
 ```powershell
 # Standard VmLAN setup - no arguments needed:
@@ -467,7 +507,7 @@ its own assertions on top.
 
 | Layer | Script | Asserts |
 |---|---|---|
-| VM provisioning | `agent/e2e/vm-provisioning/Invoke-VmProvisioningTest.ps1` | Four-phase install / uninstall / re-install / deprovision lifecycle over two VMs (see [VM provisioning test](#vm-provisioning-test)). Each phase asserts: VM is reachable via SSH; cloud-init completed; root filesystem not full. Per-phase: phase 1 - JDK 21 installed on VM1 (`JAVA_HOME`, login + non-login `PATH`, `java -version` prefix), mixed `files` array landed - single fixture at target + three `*.jar` fixtures under `/opt/ci-jars` (per-file SHA-256, `root:root`, `0644`); phase 2 - VM1 JDK removed (install dir, `/etc/profile.d/jdk.sh`, stale symlinks all gone), VM2 has no JDK artifacts, file-transfer targets on VM1 idempotent vs phase-1 snapshot; phase 3 - JDK 17 active on VM1, VM2 still has no JDK artifacts; phase 4 - both VMs and their disk artifacts removed, host-side JDK cache for both versions preserved |
+| VM provisioning | `agent/e2e/vm-provisioning/Invoke-VmProvisioningTest.ps1` | Four-phase install / uninstall / re-install / deprovision lifecycle over two VMs (see [VM provisioning test](#vm-provisioning-test)). Each phase asserts: VM is reachable via SSH; cloud-init completed; root filesystem not full. Per-phase: phase 1 - JDK 21 installed on VM1 (`JAVA_HOME`, login + non-login `PATH`, `java -version` prefix), mixed `files` array landed - single fixture at target + three `*.jar` fixtures under `/opt/ci-jars` (per-file SHA-256, `root:root`, `0644`); phase 2 - VM1 JDK removed (install dir, `/etc/profile.d/jdk.sh`, stale symlinks all gone), VM2 has no JDK artifacts, file-transfer targets on VM1 idempotent vs phase-1 snapshot; phase 3 - JDK 17 active on VM1, VM2 still has no JDK artifacts; phase 4 - both VMs and their disk artifacts removed, host-side JDK cache for both versions preserved. Under `ToolchainsFlow=ansible` phases 1 and 2 additionally cover [sections 2 and 3 of the toolchain taxonomy](#sections-2-and-3-of-the-toolchain-taxonomy) - pinned apt packages (`shellcheck`, `bats`) on VM1's non-login `PATH` at their exact `dpkg-query` versions and smoke-running, the Docker daemon active and its socket answering `sudo docker ps` as root, phase 2 re-asserting all of it after a second flow run as the idempotence proof, and VM2 staying free of every section-2/3 artifact as the per-host targeting witness |
 | VM users | `agent/e2e/vm-users/Invoke-VmUsersTest.ps1` | Expected OS groups exist; expected users exist with correct shell and group membership; sudoers files are in place. The create half dispatches via [`Set-VmUsersForTest.ps1`](agent/e2e/vm-users/Set-VmUsersForTest.ps1) - both flows resolve under `$UsersPath` (`Infrastructure-Vm-Users`, the user domain owner): `UsersFlow=ansible` (default) runs `Infrastructure-Vm-Users/hyper-v/ubuntu/Ansible/ops/create-users.sh` under WSL (the wrapper self-resolves the `Common-Ansible` substrate as a sibling checkout); `UsersFlow=custom-powershell` runs `Infrastructure-Vm-Users/hyper-v/ubuntu/PowerShell/create-users.ps1`. The teardown half dispatches symmetrically via [`Remove-VmUsersForTest.ps1`](agent/e2e/vm-users/Remove-VmUsersForTest.ps1) - `UsersFlow=ansible` runs `Infrastructure-Vm-Users/hyper-v/ubuntu/Ansible/ops/remove-users.sh`; `UsersFlow=custom-powershell` runs `Infrastructure-Vm-Users/hyper-v/ubuntu/PowerShell/remove-users.ps1`. Both halves are first-class permanent peers and either pairing is supported - an `ansible` create can be torn down by a `custom-powershell` remove and vice versa, because both directions reconcile by username against the same on-VM contract. |
 | Runner lifecycle | `agent/e2e/runner-lifecycle/Invoke-RunnerLifecycleTest.ps1` | Runner systemd service is active; runner appears online in the GitHub API. The register half dispatches via [`Set-VmRunnersForTest.ps1`](agent/e2e/runner-lifecycle/Set-VmRunnersForTest.ps1) - both flows resolve under `$RunnersPath` (`Infrastructure-GitHubRunners`, the runner domain owner): `RunnersFlow=ansible` (default) runs `Infrastructure-GitHubRunners/hyper-v/ubuntu/Ansible/ops/register-runners.sh` under WSL (the wrapper self-resolves the `Common-Ansible` substrate as a sibling checkout); `RunnersFlow=custom-powershell` runs `Infrastructure-GitHubRunners/hyper-v/ubuntu/register-runners.ps1`. The teardown half stays on `Infrastructure-GitHubRunners/hyper-v/ubuntu/deregister-runners.ps1` for both flows until the symmetric remove-side fork lands in GitHubRunners. As with `UsersFlow`, either pairing is supported - an `ansible` register can be torn down by the PowerShell deregister and vice versa, because both directions reconcile against the same on-VM and GitHub-API contracts. |
 
@@ -734,6 +774,10 @@ will go green once `e2e.yml` is fixed.
     e2e.yml                        - E2E workflow (manual, scheduled, cross-repo)
     ci-yaml.yml                    - YAML/Actions lint, delegates to Common-Automation
     ci-bash.yml                    - Bash lint + bats, delegates to Common-Automation
+    ci-powershell.yml              - PowerShell parse + PSScriptAnalyzer + Pester, delegates to Common-PowerShell
+  actionlint.yaml                  - actionlint config suppressing stale create-github-app-token false positives
+.githooks/
+  pre-commit                       - Re-stages staged *.sh files with the executable bit
 .gitattributes                     - Pins *.sh to LF, *.bat to CRLF
 scripts/
   Run-Tests.ps1                    - Pester test runner (the real test suite)
@@ -747,51 +791,92 @@ scripts/
   publish-version-tags.bat         - Explorer launcher for publish-version-tags.sh
   fix-permissions.sh               - Re-stages +x on tracked *.sh (shim)
   fix-permissions.bat              - Explorer launcher for fix-permissions.sh
+  setup-hooks.sh                   - One-time per-clone wiring of .githooks into git (shim)
+  setup-hooks.bat                  - Explorer launcher for setup-hooks.sh
 agent/
+  Start-E2EAgent.ps1               - Polling agent entry point (run manually on workstation)
+  Invoke-E2EAgentLoop.ps1          - The deployment polling loop, split out so it is unit-testable
+  Initialize-E2EEnvironment.ps1    - Shared session bootstrap: SecretStore registration + module load
+  Install-ModuleDependencies.ps1   - Installs and imports every PowerShell module the agent needs
+  Get-RefreshedDeploymentToken.ps1 - Re-mints the deployment token when it nears expiry
+  Get-RateLimitBackoffDelay.ps1    - Reset-aware restart sleep after a GitHub rate-limit crash
+  Resolve-AgentCrashAction.ps1     - Side-effect-free crash routing: backoff, stop, or plain restart
+  Test-GitHubAuthError.ps1         - Classifies an error as a non-self-healing GitHub auth failure (401/403)
+  setup-secrets.ps1                - One-time idempotent write of the E2EConfig secret into the vault
   e2e/
     vm-provisioning/
-      Invoke-VmProvisioningTest.ps1            - Four-phase VM provisioning E2E orchestrator (Setup, Test, shared helpers)
-      Invoke-VmProvisioningPhase1.ps1          - Phase 1: install JDK 21 on VM1 + file-transfer fixture
-      Invoke-VmProvisioningPhase2.ps1          - Phase 2: uninstall on VM1 + add VM2 (no JDK)
-      Invoke-VmProvisioningPhase3.ps1          - Phase 3: re-install JDK 17 on VM1, VM2 unchanged
-      Invoke-VmProvisioningTeardown.ps1        - Deprovision + automatic Invoke-VmTeardownAssertions call
-      Invoke-VmTeardownAssertions.ps1          - Post-deprovision assertions (called from Teardown)
-      Invoke-NoLeftoverTestVmsAssertions.ps1   - Pre-flight: both test VMs absent in Hyper-V
-      Invoke-VmReadyAssertions.ps1             - Baseline cloud-init / hostname / disk checks (all VM1 phases)
-      Invoke-JdkInstallAssertions.ps1          - JDK install post-conditions (used by phases 1, 3)
-      Invoke-JdkUninstallAssertions.ps1        - JDK removal post-conditions (used by phase 2)
-      Invoke-NoJdkVmAssertions.ps1             - "VM2 untouched" witness assertions (phases 2, 3)
-      Invoke-DotnetToolsAssertions.ps1         - dotnetTools install / version-change / uninstall post-conditions (covers the happy-path nested-provider lifecycle across phases 1-3)
-      Invoke-FileTransferAssertions.ps1        - Copy-VmFiles (single) fixture post-conditions
-      Invoke-BulkFileTransferAssertions.ps1    - Copy-VmFilesByPattern (bulk) fixture post-conditions
-      Invoke-EnvVarsAppliedAssertions.ps1      - Managed envVars block post-conditions (phases 1, 2)
-      Invoke-EnvVarsRemovedAssertions.ps1      - Managed envVars block removal post-conditions (phase 3)
-      Start-VmProvisioningTest.ps1   - Manual runner for the provisioning test
+      Invoke-VmProvisioningTest.ps1          - Provisioning E2E orchestrator: Setup, Test, scenario constants, shared helpers
+      Set-VmToolchainsForTest.ps1            - Toolchain-flow dispatcher (custom-powershell reconciler | ansible)
+      Resolve-RouterIpFromKvp.ps1            - Discovers the router VM's IPv4 via Hyper-V KVP and stamps it on the def
+      Start-VmProvisioningTest.ps1           - Manual runner for the provisioning test (no polling agent)
+      Start-VmProvisioningTest.bat           - Explorer launcher for Start-VmProvisioningTest.ps1
+      phases/
+        Invoke-VmProvisioningPhase1.ps1      - Phase 1: install JDK 21 + dotnet + toolchains on VM1, file / envVars fixtures
+        Invoke-VmProvisioningPhase2.ps1      - Phase 2: uninstall on VM1, add VM2 (witness), then re-install
+        Invoke-VmProvisioningPhase3.ps1      - Phase 3: version change on VM1, then remove-via-empty
+        Invoke-VmProvisioningTeardown.ps1    - Deprovision + automatic Invoke-VmTeardownAssertions call
+      assertions/
+        network/
+          Invoke-VmReadyAssertions.ps1       - Baseline cloud-init / hostname / disk checks, before any phase-specific assertion
+          Invoke-StaticNetworkAssertions.ps1 - Static network config applied and netplan raised the interface
+          Invoke-EgressAssertions.ps1        - Outbound HTTPS from a workload VM through router NAT + dnsmasq
+          Get-EgressFailureDiagnostics.ps1   - Re-probes a failed endpoint, separating the DNS answer from the connect
+        jdk/
+          Invoke-JdkInstallAssertions.ps1    - JDK install post-conditions (phases 1, 2b)
+          Invoke-JdkUninstallAssertions.ps1  - JDK removal post-conditions (phases 2a, 3b)
+          Invoke-JdkNoopAssertions.ps1       - Artifact mtimes unmoved, proving a re-provision took the no-op branch
+          Invoke-JdkVersionChangeAssertions.ps1 - Version change swapped cleanly, no parallel install left behind
+          Invoke-NoJdkVmAssertions.ps1       - "VM2 untouched" JDK witness assertions (phases 2, 3)
+        dotnet/
+          Invoke-DotnetSdkInstallAssertions.ps1 - DOTNET_ROOT + dotnet on login and non-login PATH
+          Invoke-DotnetSdkUninstallAssertions.ps1 - SDK removal post-conditions after dotnetSdk is dropped
+          Invoke-DotnetSdkNoopAssertions.ps1 - SDK artifact mtimes unmoved across a re-provision
+          Invoke-DotnetSdkVersionChangeAssertions.ps1 - SDK version change swapped cleanly, no parallel install
+          Invoke-DotnetToolsAssertions.ps1   - dotnetTools install / version-change / uninstall post-conditions (phases 1-3)
+          Invoke-NoDotnetSdkVmAssertions.ps1 - "VM2 untouched" .NET SDK witness assertions (phases 2, 3)
+        toolchains/
+          Invoke-ToolchainAptInstallAssertions.ps1 - Section-2 (apt): non-login PATH, exact dpkg pin, smoke run (ansible flow only)
+          Invoke-DockerInstallAssertions.ps1 - Section-3 (docker): CLI on PATH, service active, socket answers as root
+          Invoke-NoToolchainsVmAssertions.ps1 - "VM2 has no section-2/3 tools" witness assertions (ansible flow only)
+        files/
+          Invoke-FileTransferAssertions.ps1  - Copy-VmFiles (single) fixture post-conditions
+          Invoke-BulkFileTransferAssertions.ps1 - Copy-VmFilesByPattern (bulk) fixture post-conditions
+        env-vars/
+          Invoke-EnvVarsAppliedAssertions.ps1 - Managed envVars block post-conditions (phases 1, 2)
+          Invoke-EnvVarsRemovedAssertions.ps1 - Managed envVars block removal post-conditions (phase 3)
+        lifecycle/
+          Invoke-NoLeftoverTestVmsAssertions.ps1 - Pre-flight guard: fails before any vault write if test VMs still exist
+          Invoke-VmTeardownAssertions.ps1    - Post-deprovision assertions (called from Teardown)
+      diag/
+        Invoke-PreTeardownRuntimeDiagCapture.ps1 - Snapshots host + guest runtime diagnostics before teardown destroys them
+      fixtures/
+        file-transfer-fixture.txt            - Single-file transfer fixture
+        jars/                                - Three distinct *.jar files for the bulk-pattern transfer fixture
     vm-users/
-      Invoke-VmUsersTest.ps1               - vm-users E2E + re-asserts after phases 2, 3
+      Invoke-VmUsersTest.ps1                 - vm-users E2E + re-asserts after phases 2, 3
       Invoke-VmUsersStillIntactAssertions.ps1 - "users untouched" re-verification block
-      Set-VmUsersForTest.ps1               - create-side dispatcher (custom-powershell | ansible)
-      Remove-VmUsersForTest.ps1            - teardown dispatcher (custom-powershell | ansible)
+      Set-VmUsersForTest.ps1                 - create-side dispatcher (custom-powershell | ansible)
+      Remove-VmUsersForTest.ps1              - teardown dispatcher (custom-powershell | ansible)
+      Start-VmUsersTest.ps1                  - Manual runner for the users test (no polling agent)
+      Start-VmUsersTest.bat                  - Explorer launcher for Start-VmUsersTest.ps1
     runner-lifecycle/
-      Invoke-RunnerLifecycleTest.ps1            - Full lifecycle E2E + re-asserts after phases 2, 3
-      Invoke-RunnerStillOnlineAssertions.ps1    - "runner still active + online" re-verification block
-      Set-VmRunnersForTest.ps1                  - register-side dispatcher (custom-powershell | ansible)
+      Invoke-RunnerLifecycleTest.ps1         - Full lifecycle E2E + re-asserts after phases 2, 3
+      Invoke-RunnerStillOnlineAssertions.ps1 - "runner still active + online" re-verification block
+      Set-VmRunnersForTest.ps1               - register-side dispatcher (custom-powershell | ansible)
+      Start-RunnerLifecycleTest.ps1          - Manual runner for the lifecycle test (no polling agent)
+      Start-RunnerLifecycleTest.bat          - Explorer launcher for Start-RunnerLifecycleTest.ps1
     timing/
-      Measure-ChildProcessTimingSpan.ps1        - Times a shell-out part + grafts the child's exported tree under it
-      Publish-E2ETimingReport.ps1               - End-of-run console report + rolling JSON artifact + retention
-  Initialize-E2EEnvironment.ps1    - Shared module bootstrap (dot-sourced by entry points)
-  Start-E2EAgent.ps1               - Polling agent (run manually on workstation)
+      Measure-ChildProcessTimingSpan.ps1     - Times a shell-out part + grafts the child's exported tree under it
+      Publish-E2ETimingReport.ps1            - End-of-run console report + rolling JSON artifact + retention
 Tests/
-  Invoke-E2EAgentLoop.Tests.ps1          - Unit tests for the polling loop
-  Set-VmUsersForTest.Tests.ps1           - Unit tests for the create-side flow dispatcher
-  Remove-VmUsersForTest.Tests.ps1        - Unit tests for the teardown flow dispatcher
-  Set-VmRunnersForTest.Tests.ps1         - Unit tests for the register-side flow dispatcher
-  Invoke-RunnerLifecycleTest.Tests.ps1   - Unit tests for the lifecycle timing tree + report emission
-  Measure-ChildProcessTimingSpan.Tests.ps1 - Unit tests for the child-tree graft
-  Invoke-VmProvisioningPhase1.Tests.ps1  - Unit tests for the nested provision-toolchains child span
-  Publish-E2ETimingReport.Tests.ps1      - Unit tests for the report + artifact + retention
+  <Name>.Tests.ps1                 - Each suite is named for the production file it covers, wherever that file
+                                     sits in the nested tree above. Coverage is deliberately partial: the
+                                     SSH-probing assertion helpers and flow dispatchers are unit-tested here,
+                                     while the orchestrators and Start-* entry points are exercised live.
+  Invoke-VmProvisioningPhase1.Tests.ps1 - EXCEPTION to the naming: covers only the nested provision-toolchains
+                                     child span, not the phase as a whole
   support/
-    TimingSpanTestDoubles.ps1            - Shared timing doubles for the three timing suites (not a *.Tests.ps1)
+    TimingSpanTestDoubles.ps1      - Shared timing doubles for the three timing suites (not a *.Tests.ps1)
 docs/
   dev/
     implementation/                - Problem and plan docs per implementation phase

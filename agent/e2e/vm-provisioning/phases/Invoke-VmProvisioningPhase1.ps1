@@ -20,6 +20,13 @@
 #   and mode unchanged), so the VM-side SHA-256s are captured here into
 #   $script:Phase1*Shas and consumed there.
 #
+#   Under ToolchainsFlow=ansible the entry also carries the sections 2/3
+#   `toolchains` taxonomy block (pinned apt packages + the docker daemon), and
+#   this phase asserts that end state alongside the section-1 one. That block
+#   has no custom-powershell counterpart, so it is authored and asserted on the
+#   ansible branch only; phase 2 re-runs the flow against the same declaration
+#   as the idempotence proof.
+#
 #   The no-op rerun at the end snapshots the JDK artifact mtimes after the
 #   first provision, calls provision.ps1 again with the SAME JSON, and
 #   asserts the mtimes did not move. A regression where the JdkProvider
@@ -100,6 +107,15 @@ function Invoke-VmProvisioningPhase1 {
             version = $script:DotnetToolInitialVersion
         }
     )
+    # Sections 2 and 3 of the toolchain taxonomy (apt packages + the docker
+    # daemon). Ansible-only: the PowerShell reconciler has no section-2/3
+    # concept, so declaring the block under custom-powershell would advertise
+    # tools nothing installs. Under ansible the playbook selects this block off
+    # vm_provisioner_config by matching vmName to inventory_hostname - VM2 never
+    # gets one, which is what makes it the witness for that targeting.
+    if ($tcx.IsAnsible) {
+        $entry.toolchains = New-ToolchainsTaxonomyBlock
+    }
     # Mixed files array: one single entry + one bulk entry. JSON order is
     # preserved by the per-entry dispatch in Invoke-VmPostProvisioning;
     # asserting both forms in one provision run covers the "mixed dispatch"
@@ -211,6 +227,22 @@ function Invoke-VmProvisioningPhase1 {
             -ToolVersion $script:DotnetToolInitialVersion `
             -Command     $script:DotnetToolCommand `
             @toolParams @toolInstallExtra
+
+        # Sections 2/3 end state, asserted only where it exists: the block is
+        # authored above under ansible alone, so under custom-powershell there
+        # is nothing installed to check. Runs after the section-1 assertions so
+        # a jdk / dotnet regression - the older, more load-bearing path -
+        # surfaces first.
+        if ($tcx.IsAnsible) {
+            Invoke-ToolchainAptInstallAssertions `
+                -SshClient $sshClient `
+                -VmName    $Vm1Def.vmName `
+                -Packages  $script:ToolchainAptPackages
+
+            Invoke-DockerInstallAssertions `
+                -SshClient $sshClient `
+                -VmName    $Vm1Def.vmName
+        }
 
         # Capture VM-side SHA-256s so phase 2 can assert idempotence by
         # snapshot. Helpers also assert C2-C5 (single) / C1-C4 (bulk)

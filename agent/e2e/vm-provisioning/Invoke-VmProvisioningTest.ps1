@@ -16,6 +16,8 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 # Files are grouped into subfolders by role and domain:
 #   - assertions\jdk\        : reconciler assertions for javaDevKit
 #   - assertions\dotnet\     : reconciler assertions for dotnetSdk + dotnetTools
+#   - assertions\toolchains\ : Ansible-engine assertions for the sections 2/3
+#                              'toolchains' taxonomy block (apt + docker)
 #   - assertions\files\      : reconciler assertions for the 'files' field
 #   - assertions\env-vars\   : reconciler assertions for the 'envVars' field
 #   - assertions\network\    : VM/router readiness, netplan, egress
@@ -39,6 +41,9 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 . "$PSScriptRoot\assertions\dotnet\Invoke-DotnetSdkVersionChangeAssertions.ps1"
 . "$PSScriptRoot\assertions\dotnet\Invoke-DotnetToolsAssertions.ps1"
 . "$PSScriptRoot\assertions\dotnet\Invoke-NoDotnetSdkVmAssertions.ps1"
+. "$PSScriptRoot\assertions\toolchains\Invoke-ToolchainAptInstallAssertions.ps1"
+. "$PSScriptRoot\assertions\toolchains\Invoke-DockerInstallAssertions.ps1"
+. "$PSScriptRoot\assertions\toolchains\Invoke-NoToolchainsVmAssertions.ps1"
 . "$PSScriptRoot\assertions\files\Invoke-FileTransferAssertions.ps1"
 . "$PSScriptRoot\assertions\files\Invoke-BulkFileTransferAssertions.ps1"
 . "$PSScriptRoot\assertions\env-vars\Invoke-EnvVarsAppliedAssertions.ps1"
@@ -176,6 +181,58 @@ $script:DotnetToolInitialVersion   = '5.4.4'
 $script:DotnetToolReinstallVersion = '5.4.5'
 $script:DotnetToolCommand          = 'reportgenerator'
 
+# Sections 2 and 3 of the toolchain taxonomy - the optional `toolchains` block
+# on a VM's config entry, consumed only by the Ansible engine (the PowerShell
+# reconciler has no section-2/3 concept, so the phases author this block and
+# assert it under ToolchainsFlow=ansible only).
+#
+# Section 2 ("vm-downloaded"): apt packages the VM pulls from its own archive,
+# with exact apt pins so a re-provision converges on a known build rather than
+# whatever the archive currently offers. These two are the ci-bash toolchain the
+# production runner declares, so the E2E exercises the real-world package set.
+# The pins are the Ubuntu 24.04 archive versions; they move with the base image,
+# not with this test.
+#
+# Each entry carries its own smoke recipe alongside the pin so
+# Invoke-ToolchainAptInstallAssertions can prove the binary runs without holding
+# per-tool knowledge itself:
+#   - shellcheck reports its version, so the smoke doubles as a pin cross-check.
+#     The pattern matches only the upstream part: the apt pin's '-1' Debian
+#     revision suffix is packaging metadata the tool itself never prints.
+#   - bats is a harness, not a versioned utility - "it runs a test file" is the
+#     property that matters, so its recipe writes a trivial .bats and runs it.
+#     --tap forces the machine-readable formatter; without it bats picks pretty
+#     vs tap from whether stdout is a terminal, which SSH would make ambiguous.
+#
+# This list is the single source of truth for the scenario: the config block
+# written to VmProvisionerConfig is projected from it by
+# New-ToolchainsTaxonomyBlock (see Internal helpers), and the same objects are
+# passed to the install and witness assertions - so a declared package can never
+# drift out of step with what is asserted.
+$script:ToolchainAptPackages = @(
+    [PSCustomObject]@{
+        Name         = 'shellcheck'
+        Version      = '0.9.0-1'
+        Command      = 'shellcheck'
+        SmokeCommand = 'shellcheck --version'
+        SmokePattern = 'version:\s*0\.9\.0'
+    },
+    [PSCustomObject]@{
+        Name         = 'bats'
+        Version      = '1.10.0-1'
+        Command      = 'bats'
+        SmokeCommand = 'printf ''@test "smoke" {\n  true\n}\n'' > ' +
+                       '/tmp/e2e-bats-smoke.bats && bats --tap ' +
+                       '/tmp/e2e-bats-smoke.bats'
+        SmokePattern = 'ok 1'
+    }
+)
+
+# Section 3 ("base-image"): a presence gate, not a version list - a `docker`
+# entry switches on the whole-daemon install. Named as a constant so the config
+# projection below and any future gate check read one source.
+$script:ToolchainBaseImageDocker = 'docker'
+
 # File-transfer fixture. Resolved from $PSScriptRoot so the absolute path is
 # computed on whichever workstation runs the test rather than being hard-
 # coded. The target lives under /opt/e2e-fixtures/ so it does not collide
@@ -275,6 +332,25 @@ function New-VmEntryBase {
         vmConfigPath      = $Config.TestVm.vmConfigPath
         vhdPath           = $Config.TestVm.vhdPath
         privateSwitchName = $script:PrivateSwitchName
+    }
+}
+
+# Projects $script:ToolchainAptPackages into the JSON shape a VM config entry's
+# `toolchains` block takes (lowercase keys, {name, version} per apt package, plus
+# the section-3 presence gate). Kept as a projection rather than a second literal
+# so adding a package to that list is the only edit needed - the declaration the
+# assertions read and the config the flow installs from cannot diverge.
+function New-ToolchainsTaxonomyBlock {
+    [CmdletBinding()]
+    param()
+
+    return [ordered]@{
+        vmDownloaded = @($script:ToolchainAptPackages | ForEach-Object {
+            [ordered]@{ name = $_.Name; version = $_.Version }
+        })
+        baseImage    = @(
+            [ordered]@{ name = $script:ToolchainBaseImageDocker }
+        )
     }
 }
 
