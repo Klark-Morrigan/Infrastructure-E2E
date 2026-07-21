@@ -32,6 +32,13 @@
 #       from empty -> a single version (the "reinstall after removal"
 #       scenario from feature 42's plan).
 #
+#   Under ToolchainsFlow=ansible the sections 2/3 `toolchains` block carries
+#   forward unchanged through both sub-phases. It has no removal direction (the
+#   apt and docker roles only install), so its lifecycle here is idempotence:
+#   the flow re-runs against an already-satisfied declaration and 2a re-asserts
+#   the tools are still present at their pins. VM2 gets the complementary
+#   witness in both sub-phases - it declares no block, so it must stay clean.
+#
 #   VM1's `files` array is carried forward unchanged from phase 1 across
 #   both sub-phases so the bulk-files plan's idempotence assertion still
 #   has snapshot data to validate against. envVars narrow to one entry
@@ -95,6 +102,15 @@ function Invoke-VmProvisioningPhase2 {
     # removed alongside its SDK.
     $vm1Entry.javaDevKit = $null
     $vm1Entry.dotnetSdk  = $null
+    # Sections 2/3 carry forward UNCHANGED from phase 1 while section 1 is being
+    # removed. The apt and docker roles implement no removal, so there is no
+    # uninstall direction to exercise here; keeping the declaration stable makes
+    # this re-run the idempotence probe instead - the flow runs again against an
+    # already-satisfied desired state and the tools must still be there,
+    # untouched by the section-1 teardown happening beside them.
+    if ($tcx.IsAnsible) {
+        $vm1Entry.toolchains = New-ToolchainsTaxonomyBlock
+    }
     # Carry the phase-1 files array forward unchanged so the bulk + single
     # idempotence assertions below have something to validate against.
     $vm1Entry.files = @(
@@ -175,6 +191,22 @@ function Invoke-VmProvisioningPhase2 {
             -Command   $script:DotnetToolCommand `
             @toolParams
 
+        # Sections 2/3 idempotence: the same declaration went through the flow
+        # a second time, so the pinned apt packages and the docker daemon must
+        # still be present at the same pins. A role that reinstalled
+        # destructively (or an apt pin that lost to a drifted-ahead build on
+        # the re-run) fails here rather than silently converging.
+        if ($tcx.IsAnsible) {
+            Invoke-ToolchainAptInstallAssertions `
+                -SshClient $sshClient `
+                -VmName    $Vm1Def.vmName `
+                -Packages  $script:ToolchainAptPackages
+
+            Invoke-DockerInstallAssertions `
+                -SshClient $sshClient `
+                -VmName    $Vm1Def.vmName
+        }
+
         # Idempotence: re-run the file-transfer assertions on the
         # re-provisioned VM. The phase-1 snapshots assert that nothing
         # externally visible about the file targets changed across the
@@ -236,6 +268,17 @@ function Invoke-VmProvisioningPhase2 {
         # a co-provisioned VM2.
         Invoke-NoJdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
         Invoke-NoDotnetSdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
+        # Sections 2/3 half of the same witness: VM2 carries no `toolchains`
+        # block, so the playbook's per-host selectattr must leave it with no apt
+        # packages and no docker daemon while VM1 has both. Ansible-only - under
+        # custom-powershell neither VM ever gets a section-2/3 install, so the
+        # check would prove nothing about targeting.
+        if ($tcx.IsAnsible) {
+            Invoke-NoToolchainsVmAssertions `
+                -SshClient $sshClient `
+                -VmName    $Vm2Def.vmName `
+                -Packages  $script:ToolchainAptPackages
+        }
     }
 
     # ------------------------------------------------------------------
@@ -272,6 +315,12 @@ function Invoke-VmProvisioningPhase2 {
             version = $script:DotnetToolInitialVersion
         }
     )
+    # Sections 2/3 carry forward again so VM1's declaration stays stable for
+    # the whole phase and the VM2 witness below still has a populated
+    # counterpart to be a witness against.
+    if ($tcx.IsAnsible) {
+        $vm1Entry.toolchains = New-ToolchainsTaxonomyBlock
+    }
     # files + envVars carry forward unchanged from 2a so the only diff
     # the reconciler sees is the new javaDevKit field. No mtime-advance
     # assertion here (envVars block content unchanged - the transport
@@ -354,5 +403,11 @@ function Invoke-VmProvisioningPhase2 {
         param($sshClient)
         Invoke-NoJdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
         Invoke-NoDotnetSdkVmAssertions -SshClient $sshClient -VmName $Vm2Def.vmName
+        if ($tcx.IsAnsible) {
+            Invoke-NoToolchainsVmAssertions `
+                -SshClient $sshClient `
+                -VmName    $Vm2Def.vmName `
+                -Packages  $script:ToolchainAptPackages
+        }
     }
 }
