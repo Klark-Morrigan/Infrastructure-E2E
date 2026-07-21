@@ -436,7 +436,7 @@ be overridden via parameters.
 ## How to trigger
 
 The polling agent must start and complete the test suite within
-**30 minutes** of the workflow creating the deployment - that is the
+**60 minutes** of the workflow creating the deployment - that is the
 workflow's polling window. Starting the agent before triggering is the
 simplest way to guarantee this.
 

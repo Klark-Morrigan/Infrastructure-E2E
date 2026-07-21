@@ -50,8 +50,8 @@ on:
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    # 35 minutes: covers the 30-minute poll window plus startup slack.
-    timeout-minutes: 35
+    # 65 minutes: covers the 60-minute poll window plus startup slack.
+    timeout-minutes: 65
 
     steps:
       - name: Obtain GitHub App token (Infrastructure-E2E)
@@ -141,11 +141,11 @@ jobs:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           DEPLOYMENT_ID: ${{ steps.create-deployment.outputs.deployment-id }}
         run: |
-          # Poll every 30 seconds for up to 30 minutes (60 attempts).
+          # Poll every 30 seconds for up to 60 minutes (120 attempts).
           # The polling agent on the workstation picks up the deployment,
           # runs the full test suite, then posts success or failure here.
           # GitHub returns statuses newest-first, so .[0] is the latest.
-          max_polls=60
+          max_polls=120
           timed_out=true
 
           for i in $(seq 1 $max_polls); do
@@ -166,7 +166,7 @@ jobs:
           done
 
           if [ "$timed_out" = "true" ]; then
-            echo "::error::Timed out after 30 minutes - polling agent posted no terminal status."
+            echo "::error::Timed out after 60 minutes - polling agent posted no terminal status."
             exit 1
           fi
 
