@@ -20,6 +20,8 @@
 #     W3 - the docker role's apt keyring was never dropped. Catches the
 #          narrower leak where the repo setup ran on this host but the engine
 #          install did not get far enough to satisfy W2.
+#     W4 - none of the section-2 bats libraries were baked (no
+#          <base>/<name>/load.bash). The batsLibs counterpart of W1.
 #
 #   Reachability and cloud-init health are NOT re-probed here - the phases
 #   call this alongside Invoke-NoJdkVmAssertions, which already asserts both
@@ -45,6 +47,16 @@ function Invoke-NoToolchainsVmAssertions {
         # next door.
         [Parameter(Mandatory)]
         [object[]] $Packages,
+
+        # The section-2 bats libraries VM1 declares. Only .Name is read; the
+        # same declaration the install assertions consume, so this witness
+        # cannot fall out of step with what is baked next door.
+        [Parameter(Mandatory)]
+        [object[]] $Libraries,
+
+        # The base the toolchain_bats_libs role installs under, matching its
+        # toolchain_bats_libs_base_dir default.
+        [string] $BatsLibsBaseDir = '/usr/lib',
 
         # The docker role's keyring path, matching the role's
         # docker_apt_keyring_path default.
@@ -73,6 +85,30 @@ function Invoke-NoToolchainsVmAssertions {
                 "from another VM in the same provision run."
         }
         Write-Host "  [OK] W1: no $($package.Name) installed" `
+            -ForegroundColor Green
+    }
+
+    # W4) No section-2 bats library baked. The toolchain_bats_libs role writes
+    #     <base>/<name>/load.bash; its absence proves this host's empty
+    #     batsLibs was honoured and VM1's libraries did not leak over. Grouped
+    #     with W1 as the two section-2 leak witnesses; numbered after the
+    #     docker checks so the pre-existing W2/W3 keep their numbers.
+    foreach ($library in $Libraries) {
+        $libDir = "$BatsLibsBaseDir/$($library.Name)"
+        $result = Invoke-SshClientCommand `
+            -SshClient $SshClient `
+            -Command   ("bash -c 'test -f $libDir/load.bash && echo present " +
+                        "|| echo absent'")
+        if ($result.ExitStatus -ne 0) {
+            throw "bats-library leak probe for $($library.Name) failed on " +
+                "$VmName (exit $($result.ExitStatus)): $($result.Error)"
+        }
+        if ($result.Output.Trim() -ne 'absent') {
+            throw "Unexpected $($library.Name) on ${VmName}: $libDir exists. " +
+                "It declared no toolchains block - a section-2 bats-library " +
+                "step leaked from another VM in the same provision run."
+        }
+        Write-Host "  [OK] W4: no $($library.Name) baked" `
             -ForegroundColor Green
     }
 

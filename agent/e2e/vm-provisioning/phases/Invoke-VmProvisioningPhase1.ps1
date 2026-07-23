@@ -239,6 +239,11 @@ function Invoke-VmProvisioningPhase1 {
                 -VmName    $Vm1Def.vmName `
                 -Packages  $script:ToolchainAptPackages
 
+            Invoke-ToolchainBatsLibsInstallAssertions `
+                -SshClient $sshClient `
+                -VmName    $Vm1Def.vmName `
+                -Libraries $script:ToolchainBatsLibs
+
             Invoke-DockerInstallAssertions `
                 -SshClient $sshClient `
                 -VmName    $Vm1Def.vmName

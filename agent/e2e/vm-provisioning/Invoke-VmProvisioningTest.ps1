@@ -42,6 +42,7 @@ Invoke-ModuleInstall -ModuleName 'Posh-SSH'
 . "$PSScriptRoot\assertions\dotnet\Invoke-DotnetToolsAssertions.ps1"
 . "$PSScriptRoot\assertions\dotnet\Invoke-NoDotnetSdkVmAssertions.ps1"
 . "$PSScriptRoot\assertions\toolchains\Invoke-ToolchainAptInstallAssertions.ps1"
+. "$PSScriptRoot\assertions\toolchains\Invoke-ToolchainBatsLibsInstallAssertions.ps1"
 . "$PSScriptRoot\assertions\toolchains\Invoke-DockerInstallAssertions.ps1"
 . "$PSScriptRoot\assertions\toolchains\Invoke-NoToolchainsVmAssertions.ps1"
 . "$PSScriptRoot\assertions\files\Invoke-FileTransferAssertions.ps1"
@@ -228,6 +229,17 @@ $script:ToolchainAptPackages = @(
     }
 )
 
+# Section 2 ("vm-downloaded"), batsLibs mechanism: the bats helper libraries
+# apt cannot serve, fetched from bats-core GitHub tag tarballs and baked by the
+# toolchain_bats_libs role. bats-support + bats-assert are the common pair
+# (assert depends on support at load time); the pins are the tags the role
+# installs. Consumed by New-ToolchainsTaxonomyBlock (projected into
+# vmDownloaded.batsLibs) and by Invoke-ToolchainBatsLibsInstallAssertions.
+$script:ToolchainBatsLibs = @(
+    [PSCustomObject]@{ Name = 'bats-support'; Version = '0.3.0' }
+    [PSCustomObject]@{ Name = 'bats-assert';  Version = '2.1.0' }
+)
+
 # Section 3 ("base-image"): a presence gate, not a version list - a `docker`
 # entry switches on the whole-daemon install. Named as a constant so the config
 # projection below and any future gate check read one source.
@@ -340,14 +352,24 @@ function New-VmEntryBase {
 # the section-3 presence gate). Kept as a projection rather than a second literal
 # so adding a package to that list is the only edit needed - the declaration the
 # assertions read and the config the flow installs from cannot diverge.
+#
+# vmDownloaded is a per-mechanism object ({ apt, batsLibs }), not a flat list:
+# section 2 spans two installers (apt packages and GitHub-tarball bats
+# libraries). Both are projected from their declaration lists so the config the
+# flow installs from and the declarations the assertions read cannot diverge.
 function New-ToolchainsTaxonomyBlock {
     [CmdletBinding()]
     param()
 
     return [ordered]@{
-        vmDownloaded = @($script:ToolchainAptPackages | ForEach-Object {
-            [ordered]@{ name = $_.Name; version = $_.Version }
-        })
+        vmDownloaded = [ordered]@{
+            apt = @($script:ToolchainAptPackages | ForEach-Object {
+                [ordered]@{ name = $_.Name; version = $_.Version }
+            })
+            batsLibs = @($script:ToolchainBatsLibs | ForEach-Object {
+                [ordered]@{ name = $_.Name; version = $_.Version }
+            })
+        }
         baseImage    = @(
             [ordered]@{ name = $script:ToolchainBaseImageDocker }
         )
