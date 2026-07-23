@@ -19,15 +19,23 @@ BeforeAll {
         [PSCustomObject]@{ Name = 'bats';       Version = '1.10.0-1' }
     )
 
+    # Section-2 bats libraries VM1 declares; only .Name is read by the witness.
+    $script:TestLibraries = @(
+        [PSCustomObject]@{ Name = 'bats-support'; Version = '0.3.0' },
+        [PSCustomObject]@{ Name = 'bats-assert';  Version = '2.1.0' }
+    )
+
     # Green-path (clean-VM) answers for every leak probe.
     function New-CleanVmRules {
         param(
-            [string] $DpkgStatus  = '',
-            [string] $DockerPath  = '',
-            [string] $KeyringState = 'absent'
+            [string] $DpkgStatus   = '',
+            [string] $BatsLoadState = 'absent',
+            [string] $DockerPath   = '',
+            [string] $KeyringState  = 'absent'
         )
         @(
             @{ Match = 'dpkg-query*';          Output = $DpkgStatus }
+            @{ Match = '*load.bash*';          Output = $BatsLoadState }
             @{ Match = '*command -v docker*';  Output = $DockerPath }
             @{ Match = '*docker.asc*';         Output = $KeyringState }
         )
@@ -54,13 +62,31 @@ Describe 'Invoke-NoToolchainsVmAssertions' {
         $script:SshRules = New-CleanVmRules
 
         { Invoke-NoToolchainsVmAssertions -SshClient ([object]::new()) `
-            -VmName 'vm2' -Packages $script:TestPackages } | Should -Not -Throw
+            -VmName 'vm2' -Packages $script:TestPackages `
+            -Libraries $script:TestLibraries } | Should -Not -Throw
 
         # Every declared package must be probed - a witness that checked only
         # the first would miss a partial leak.
         @($script:IssuedCommands -like 'dpkg-query*shellcheck*').Count |
             Should -Be 1
         @($script:IssuedCommands -like 'dpkg-query*bats*').Count | Should -Be 1
+
+        # Likewise every declared bats library gets a load.bash probe (W4).
+        @($script:IssuedCommands -like '*bats-support/load.bash*').Count |
+            Should -Be 1
+        @($script:IssuedCommands -like '*bats-assert/load.bash*').Count |
+            Should -Be 1
+    }
+
+    It 'catches a section-2 bats library that leaked onto the witness VM' {
+        # load.bash present means a batsLibs install ran on a VM that declared
+        # no toolchains block - the batsLibs counterpart of the apt leak.
+        $script:SshRules = New-CleanVmRules -BatsLoadState 'present'
+
+        { Invoke-NoToolchainsVmAssertions -SshClient ([object]::new()) `
+            -VmName 'vm2' -Packages $script:TestPackages `
+            -Libraries $script:TestLibraries } |
+            Should -Throw '*bats-library step leaked*'
     }
 
     It 'tolerates dpkg-query reporting a package it has never heard of' {
@@ -69,14 +95,16 @@ Describe 'Invoke-NoToolchainsVmAssertions' {
         $script:SshRules = New-CleanVmRules -DpkgStatus ''
 
         { Invoke-NoToolchainsVmAssertions -SshClient ([object]::new()) `
-            -VmName 'vm2' -Packages $script:TestPackages } | Should -Not -Throw
+            -VmName 'vm2' -Packages $script:TestPackages `
+            -Libraries $script:TestLibraries } | Should -Not -Throw
     }
 
     It 'catches a section-2 apt package that leaked onto the witness VM' {
         $script:SshRules = New-CleanVmRules -DpkgStatus 'install ok installed'
 
         { Invoke-NoToolchainsVmAssertions -SshClient ([object]::new()) `
-            -VmName 'vm2' -Packages $script:TestPackages } |
+            -VmName 'vm2' -Packages $script:TestPackages `
+            -Libraries $script:TestLibraries } |
             Should -Throw '*leaked from another VM*'
     }
 
@@ -86,14 +114,16 @@ Describe 'Invoke-NoToolchainsVmAssertions' {
         $script:SshRules = New-CleanVmRules -DpkgStatus 'deinstall ok config-files'
 
         { Invoke-NoToolchainsVmAssertions -SshClient ([object]::new()) `
-            -VmName 'vm2' -Packages $script:TestPackages } | Should -Not -Throw
+            -VmName 'vm2' -Packages $script:TestPackages `
+            -Libraries $script:TestLibraries } | Should -Not -Throw
     }
 
     It 'catches a docker CLI that leaked onto the witness VM' {
         $script:SshRules = New-CleanVmRules -DockerPath '/usr/bin/docker'
 
         { Invoke-NoToolchainsVmAssertions -SshClient ([object]::new()) `
-            -VmName 'vm2' -Packages $script:TestPackages } |
+            -VmName 'vm2' -Packages $script:TestPackages `
+            -Libraries $script:TestLibraries } |
             Should -Throw '*Unexpected docker CLI*'
     }
 
@@ -103,7 +133,8 @@ Describe 'Invoke-NoToolchainsVmAssertions' {
         $script:SshRules = New-CleanVmRules -KeyringState 'present'
 
         { Invoke-NoToolchainsVmAssertions -SshClient ([object]::new()) `
-            -VmName 'vm2' -Packages $script:TestPackages } |
+            -VmName 'vm2' -Packages $script:TestPackages `
+            -Libraries $script:TestLibraries } |
             Should -Throw "*apt repo setup leaked*"
     }
 }

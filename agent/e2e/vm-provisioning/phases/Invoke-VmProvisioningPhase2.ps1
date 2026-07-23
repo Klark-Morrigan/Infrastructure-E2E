@@ -202,6 +202,11 @@ function Invoke-VmProvisioningPhase2 {
                 -VmName    $Vm1Def.vmName `
                 -Packages  $script:ToolchainAptPackages
 
+            Invoke-ToolchainBatsLibsInstallAssertions `
+                -SshClient $sshClient `
+                -VmName    $Vm1Def.vmName `
+                -Libraries $script:ToolchainBatsLibs
+
             Invoke-DockerInstallAssertions `
                 -SshClient $sshClient `
                 -VmName    $Vm1Def.vmName
@@ -277,7 +282,8 @@ function Invoke-VmProvisioningPhase2 {
             Invoke-NoToolchainsVmAssertions `
                 -SshClient $sshClient `
                 -VmName    $Vm2Def.vmName `
-                -Packages  $script:ToolchainAptPackages
+                -Packages  $script:ToolchainAptPackages `
+                -Libraries $script:ToolchainBatsLibs
         }
     }
 
@@ -407,7 +413,8 @@ function Invoke-VmProvisioningPhase2 {
             Invoke-NoToolchainsVmAssertions `
                 -SshClient $sshClient `
                 -VmName    $Vm2Def.vmName `
-                -Packages  $script:ToolchainAptPackages
+                -Packages  $script:ToolchainAptPackages `
+                -Libraries $script:ToolchainBatsLibs
         }
     }
 }
